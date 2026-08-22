@@ -1,0 +1,54 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files (secretos NO versionados)
+.env
+.env.local
+.env.*.local
+
+# Instance secrets (NO versionados)
+instances/*/instance.env
+instances/*/secrets/
+
+# Logs
+*.log
+
+# Database
+*.sqlite
+*.db
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+
+# Test artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backups
+*.bak
+*.backup
