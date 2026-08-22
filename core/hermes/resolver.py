@@ -5,6 +5,8 @@ Principio crítico: La instancia debe quedar resuelta ANTES de procesar el conte
 del mensaje. NO se determina la empresa analizando el texto.
 """
 
+from __future__ import annotations
+
 from collections.abc import Awaitable, Callable
 from functools import lru_cache
 
@@ -312,18 +314,29 @@ def create_test_context(
     actor_id: str = "test_user",
 ) -> CompanyContext:
     """Crear CompanyContext para tests unitarios."""
-    from core.hermes.instance_config import AIConfig, DolibarrConfig, DomainConfig, InstanceConfig, TelegramConfig
+    from core.hermes.instance_config import (
+        AIConfig,
+        DatabaseConfig,
+        DolibarrConfig,
+        DomainConfig,
+        InstanceConfig,
+        TelegramConfig,
+    )
 
     config = InstanceConfig(
         instance_id=instance_id,
         company_name=company_name,
-        database=DolibarrConfig(
+        database=DatabaseConfig(
+            host="127.0.0.1",
+            port=3306,
+            name=f"dolibarr_{instance_id}",
+            user=f"db_{instance_id}",
+            password="test_pass",
+        ),
+        dolibarr=DolibarrConfig(
             internal_url="http://127.0.0.1:8081",
             api_key="test_key",
             documents_path="/tmp/test_docs",
-            db_name=f"dolibarr_{instance_id}",
-            db_user=f"db_{instance_id}",
-            db_password="test_pass",
         ),
         telegram=TelegramConfig(
             bot_token="test_token",

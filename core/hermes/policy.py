@@ -4,12 +4,17 @@ Model Router + AI Policy - Routing entre proveedores según privacidad.
 ADAPTADO desde Transvega Animal - integration-api/app/core/model_router.py
 """
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from core.hermes.ai import NvidiaProvider, OllamaProvider, OpenAIProvider
 from core.hermes.instance_config import AIConfig, AIPolicyScope
+
+if TYPE_CHECKING:
+    from core.hermes.context import CompanyContext
 
 logger = structlog.get_logger()
 
@@ -203,17 +208,15 @@ class AIPolicy:
 # =========================================================================
 
 
-def get_ai_policy(ctx: "CompanyContext" = None) -> AIPolicy:
+def get_ai_policy(ctx: CompanyContext = None) -> AIPolicy:
     """FastAPI dependency para AIPolicy de la instancia actual."""
     if ctx is None:
-
         raise RuntimeError("get_ai_policy requiere CompanyContext")
     return AIPolicy(ctx.ai_config)
 
 
-def get_model_router(ctx: "CompanyContext" = None) -> ModelRouter:
+def get_model_router(ctx: CompanyContext = None) -> ModelRouter:
     """FastAPI dependency para ModelRouter de la instancia actual."""
     if ctx is None:
-
         raise RuntimeError("get_model_router requiere CompanyContext")
     return create_model_router_from_config(ctx.ai_config)

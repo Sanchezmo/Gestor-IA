@@ -301,10 +301,17 @@ async def get_instance(instance_id: str):
         "company_name": config.company_name,
         "active": config.active,
         "database": {
-            "internal_url": config.database.internal_url,
-            "public_url": config.database.public_url,
-            "db_name": config.database.db_name,
-            "db_user": config.database.db_user,
+            "host": config.database.host,
+            "port": config.database.port,
+            "name": config.database.name,
+            "user": config.database.user,
+        },
+        "dolibarr": {
+            "internal_url": config.dolibarr.internal_url,
+            "public_url": config.dolibarr.public_url,
+            "api_key": config.dolibarr.api_key,
+            "documents_path": config.dolibarr.documents_path,
+            "version": config.dolibarr.version,
         },
         "telegram": {
             "webhook_path": config.telegram.webhook_path,
@@ -428,20 +435,25 @@ async def telegram_webhook(
             text = message.get("text", "")
 
             if text == "/start":
-                await telegram_client.send_message(
-                    chat_id=chat_id,
-                    text=f"🤖 Gestor-IA - {ctx.company_name}\n\nInstancia: {ctx.instance_id}\n\nComandos:\n/start - Este mensaje\n/help - Ayuda\n/status - Estado",
+                start_text = (
+                    f"🤖 Gestor-IA - {ctx.company_name}\n\n"
+                    f"Instancia: {ctx.instance_id}\n\n"
+                    "Comandos:\n/start - Este mensaje\n/help - Ayuda\n/status - Estado"
                 )
+                await telegram_client.send_message(chat_id=chat_id, text=start_text)
             elif text == "/help":
                 await telegram_client.send_message(
                     chat_id=chat_id,
                     text="Comandos disponibles:\n/start - Inicio\n/help - Esta ayuda\n/status - Estado de la instancia",
                 )
             elif text == "/status":
-                await telegram_client.send_message(
-                    chat_id=chat_id,
-                    text=f"Instancia: {ctx.instance_id}\nEmpresa: {ctx.company_name}\nAgentes: {', '.join(ctx.enabled_agents) or 'ninguno'}",
+                agents_text = ", ".join(ctx.enabled_agents) or "ninguno"
+                status_text = (
+                    f"Instancia: {ctx.instance_id}\n"
+                    f"Empresa: {ctx.company_name}\n"
+                    f"Agentes: {agents_text}"
                 )
+                await telegram_client.send_message(chat_id=chat_id, text=status_text)
             else:
                 await telegram_client.send_message(
                     chat_id=chat_id,

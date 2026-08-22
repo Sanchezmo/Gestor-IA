@@ -5,12 +5,17 @@ Cada empresa registra sus agents, tools, workflows, prompts.
 El Core NO conoce implementaciones específicas.
 """
 
+from __future__ import annotations
+
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
+
+if TYPE_CHECKING:
+    from core.hermes.instance_config import InstanceConfig
 
 logger = structlog.get_logger()
 
@@ -245,7 +250,7 @@ extension_registry = ExtensionRegistry()
 # =========================================================================
 
 
-def load_extensions_from_config(instance_config: "InstanceConfig", registry: ExtensionRegistry = None) -> None:
+def load_extensions_from_config(instance_config: InstanceConfig, registry: ExtensionRegistry = None) -> None:
     """
     Cargar extensiones declaradas en InstanceConfig.
 

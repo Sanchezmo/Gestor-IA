@@ -4,12 +4,12 @@ AI Provider Abstraction - Proveedores de IA intercambiables.
 ADAPTADO desde Transvega Animal - integration-api/app/core/model_router.py
 """
 
-from pathlib import Path
 from __future__ import annotations
 
 import base64
 import json
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 import httpx

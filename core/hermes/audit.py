@@ -5,15 +5,21 @@ ADAPTADO desde Transvega Animal - integration-api/app/services/audit_logger.py
 Modificado para usar MariaDB (misma instancia server) en lugar de PostgreSQL.
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import structlog
 from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Integer, String, Text, create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+if TYPE_CHECKING:
+    from core.hermes.context import CompanyContext
+    from core.hermes.instance_config import InstanceConfig
 
 logger = structlog.get_logger()
 
@@ -290,7 +296,7 @@ class AuditLogger:
 
     async def log_from_context(
         self,
-        ctx: "CompanyContext",
+        ctx: CompanyContext,
         action: str,
         **kwargs,
     ) -> str:
@@ -500,7 +506,7 @@ class AuditLogger:
 
 
 def create_audit_logger(
-    instance_config: "InstanceConfig" | None = None, database_url: str | None = None
+    instance_config: InstanceConfig | None = None, database_url: str | None = None
 ) -> AuditLogger:
     """Crear AuditLogger para una instancia o global."""
     if database_url:
