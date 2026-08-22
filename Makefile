@@ -2,7 +2,7 @@
 # Interfaz simple para gestión de infraestructura nativa
 # Uso: make help
 
-.PHONY: help install configure start stop restart status check backup restore test lint format type-check clean instance-create instance-list instance-status dev-install dev-start dev-stop dev-restart docker-test-up docker-test-down
+.PHONY: help install configure start stop restart status check backup restore test lint format type-check clean instance-create instance-list instance-status instance-enable instance-disable check-instance dev-install dev-start dev-stop dev-restart dev-logs docker-test-up docker-test-down
 
 # Variables
 SCRIPTS_DIR = ./scripts
@@ -97,7 +97,7 @@ status: ## Ver estado de todos los servicios con health checks
 	@$(SCRIPTS_DIR)/services/status.sh
 
 # =============================================================================
-# GESTIÓN DE INSTANCIAS
+# GESTIÓN DE INSTANCIAS (vía CLI interno)
 # =============================================================================
 
 instance-create: ## Crear nueva instancia (INSTANCE=empresa_a DOMAIN=empresa.com)
@@ -108,78 +108,20 @@ instance-create: ## Crear nueva instancia (INSTANCE=empresa_a DOMAIN=empresa.com
 
 instance-list: ## Listar instancias configuradas
 	@echo "$(GREEN)=== Instancias Configuradas ===$(NC)"
-	@$(VENV_PYTHON) -c "
-import sys
-sys.path.insert(0, '$(PROJECT_ROOT)')
-from core.hermes.instance_config import list_instances, load_instance_config
-for iid in list_instances():
-    cfg = load_instance_config(iid)
-    if cfg:
-        print(f'  {cfg.instance_id:20s} | {cfg.company_name:30s} | {\"active\" if cfg.active else \"inactive\"} | {cfg.domains.base}')
-"
+	@$(VENV_PYTHON) -m core.hermes.cli list-instances
 
 instance-status: ## Ver estado de una instancia (INSTANCE=empresa_a)
 	@if [ -z "$(INSTANCE)" ]; then echo "$(RED)Especificar INSTANCE=empresa_a$(NC)"; exit 1; fi
 	@echo "$(GREEN)=== Estado instancia $(INSTANCE) ===$(NC)"
-	@$(VENV_PYTHON) -c "
-import sys
-sys.path.insert(0, '$(PROJECT_ROOT)')
-from core.hermes.instance_config import load_instance_config
-cfg = load_instance_config('$(INSTANCE)')
-if cfg:
-    print(f'Instance ID: {cfg.instance_id}')
-    print(f'Company:     {cfg.company_name}')
-    print(f'Active:      {cfg.active}')
-    print(f'Dolibarr:    {cfg.database.internal_url} (DB: {cfg.database.db_name})')
-    print(f'Telegram:    {cfg.telegram.webhook_path}')
-    print(f'Domain:      {cfg.domains.base}')
-    print(f'  Dolibarr:  {cfg.domains.dolibarr}')
-    print(f'  Hermes:    {cfg.domains.hermes}')
-    print(f'Agents:      {\", \".join(cfg.enabled_agents) or \"none\"}')
-    print(f'Workflows:   {\", \".join(cfg.enabled_workflows) or \"none\"}')
-else:
-    print('Instance not found')
-"
+	@$(VENV_PYTHON) -m core.hermes.cli instance-status $(INSTANCE)
 
 instance-enable: ## Habilitar instancia (INSTANCE=empresa_a)
 	@if [ -z "$(INSTANCE)" ]; then echo "$(RED)Especificar INSTANCE=empresa_a$(NC)"; exit 1; fi
-	@$(VENV_PYTHON) -c "
-import sys, yaml
-sys.path.insert(0, '$(PROJECT_ROOT)')
-from pathlib import Path
-from core.hermes.instance_config import load_instance_config, clear_config_cache
-cfg = load_instance_config('$(INSTANCE)')
-if cfg:
-    cfg.active = True
-    config_path = Path('$(PROJECT_ROOT)') / 'instances' / '$(INSTANCE)' / 'config.yml'
-    with open(config_path, 'w') as f:
-        yaml.dump(cfg.model_dump(), f, default_flow_style=False, sort_keys=False)
-    clear_config_cache()
-    print('Instance enabled')
-else:
-    print('Instance not found')
-    sys.exit(1)
-"
+	@$(VENV_PYTHON) -m core.hermes.cli instance-enable $(INSTANCE)
 
 instance-disable: ## Deshabilitar instancia (INSTANCE=empresa_a)
 	@if [ -z "$(INSTANCE)" ]; then echo "$(RED)Especificar INSTANCE=empresa_a$(NC)"; exit 1; fi
-	@$(VENV_PYTHON) -c "
-import sys, yaml
-sys.path.insert(0, '$(PROJECT_ROOT)')
-from pathlib import Path
-from core.hermes.instance_config import load_instance_config, clear_config_cache
-cfg = load_instance_config('$(INSTANCE)')
-if cfg:
-    cfg.active = False
-    config_path = Path('$(PROJECT_ROOT)') / 'instances' / '$(INSTANCE)' / 'config.yml'
-    with open(config_path, 'w') as f:
-        yaml.dump(cfg.model_dump(), f, default_flow_style=False, sort_keys=False)
-    clear_config_cache()
-    print('Instance disabled')
-else:
-    print('Instance not found')
-    sys.exit(1)
-"
+	@$(VENV_PYTHON) -m core.hermes.cli instance-disable $(INSTANCE)
 
 # =============================================================================
 # VERIFICACIÓN Y DIAGNÓSTICO
@@ -197,57 +139,8 @@ check-apache: ## Verificar configuración Apache
 
 check-instance: ## Verificar configuración de instancia (INSTANCE=empresa_a)
 	@if [ -z "$(INSTANCE)" ]; then echo "$(RED)Especificar INSTANCE=empresa_a$(NC)"; exit 1; fi
-	@$(VENV_PYTHON) -c "
-import sys
-sys.path.insert(0, '$(PROJECT_ROOT)')
-from core.hermes.instance_config import load_instance_config
-cfg = load_instance_config('$(INSTANCE)')
-if not cfg:
-    print('ERROR: Instance not found')
-    sys.exit(1)
-errors = []
-# Verificar DB
-import mysql.connector
-try:
-    conn = mysql.connector.connect(
-        host=cfg.database.db_host, port=cfg.database.db_port,
-        user=cfg.database.db_user, password=cfg.database.db_password,
-        database=cfg.database.db_name
-    )
-    conn.close()
-    print('OK: MariaDB connection')
-except Exception as e:
-    errors.append(f'MariaDB: {e}')
-# Verificar Redis
-import redis
-try:
-    r = redis.Redis(host='127.0.0.1', port=6379, db=cfg.get_redis_db(), decode_responses=True)
-    r.ping()
-    r.close()
-    print('OK: Redis connection')
-except Exception as e:
-    errors.append(f'Redis: {e}')
-# Verificar Dolibarr API
-import httpx
-try:
-    import asyncio
-    async def check():
-        async with httpx.AsyncClient(timeout=5) as c:
-            r = await c.get(f'{cfg.database.internal_url}/api/index.php/thirdparties?limit=1',
-                          headers={'DOLAPIKEY': cfg.database.api_key})
-            r.raise_for_status()
-    asyncio.run(check())
-    print('OK: Dolibarr API')
-except Exception as e:
-    errors.append(f'Dolibarr API: {e}')
-
-if errors:
-    for e in errors:
-        print(f'ERROR: {e}')
-    sys.exit(1)
-else:
-    print('All checks passed')
-"
+	@echo "$(GREEN)=== Verificando instancia $(INSTANCE) ===$(NC)"
+	@$(VENV_PYTHON) -m core.hermes.cli check-instance $(INSTANCE)
 
 # =============================================================================
 # BACKUP Y RESTAURACIÓN
@@ -274,11 +167,19 @@ test: test-unit test-integration test-isolation ## Ejecutar todos los tests
 
 test-unit: ## Tests unitarios
 	@echo "$(GREEN)=== Tests Unitarios ===$(NC)"
-	@$(VENV_PYTHON) -m pytest tests/unit -v --tb=short
+	@if [ -n "$$(find tests/unit -name 'test_*.py' 2>/dev/null)" ]; then \
+		$(VENV_PYTHON) -m pytest tests/unit -v --tb=short; \
+	else \
+		echo "$(YELLOW)No unit tests found, skipping$(NC)"; \
+	fi
 
 test-integration: ## Tests de integración (requiere BD nativas corriendo)
 	@echo "$(GREEN)=== Tests Integración ===$(NC)"
-	@$(VENV_PYTHON) -m pytest tests/integration -v --tb=short --asyncio-mode=auto
+	@if [ -n "$$(find tests/integration -name 'test_*.py' 2>/dev/null)" ]; then \
+		$(VENV_PYTHON) -m pytest tests/integration -v --tb=short --asyncio-mode=auto; \
+	else \
+		echo "$(YELLOW)No integration tests found, skipping$(NC)"; \
+	fi
 
 test-isolation: ## Tests de aislamiento cross-instancia (CRÍTICOS)
 	@echo "$(RED)=== Tests Aislamiento Cross-Instancia (CRÍTICOS) ===$(NC)"
