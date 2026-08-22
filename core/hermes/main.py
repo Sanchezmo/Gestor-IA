@@ -22,13 +22,14 @@ from core.hermes.extensions import extension_registry, load_extensions_from_conf
 from core.hermes.identity import UserContext
 from core.hermes.instance_config import list_instances, load_instance_config
 from core.hermes.policy import create_model_router_from_config
-from core.hermes.query_layer import (
-    ThirdpartyIntentType,
+from core.hermes.query import (
+    CompositeIntentInterpreter,
     format_count_for_telegram,
     format_thirdparties_for_telegram,
     format_thirdparty_detail_for_telegram,
-    parse_natural_query,
+    structured_intent_to_tool_call,
 )
+from core.hermes.query.models import InterpretationStatus, ThirdpartyAction
 from core.hermes.resolver import InstanceResolutionMiddleware, get_company_context, get_user_context
 from core.hermes.tools import tool_registry
 from core.hermes.tools.thirdparty_tools import register_core_thirdparty_tools
@@ -61,12 +62,13 @@ _global_settings: GlobalSettings | None = None
 _audit_logger: AuditLogger | None = None
 _cloudflare_manager = None
 _telegram_clients: dict[str, TelegramClient] = {}
+_intent_interpreter: CompositeIntentInterpreter | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Gestión del ciclo de vida de la aplicación."""
-    global _global_settings, _audit_logger, _cloudflare_manager, _telegram_clients
+    global _global_settings, _audit_logger, _cloudflare_manager, _telegram_clients, _intent_interpreter
 
     # Startup
     _global_settings = get_global_settings()
@@ -103,6 +105,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Registrar core tools de Hermes
     register_core_thirdparty_tools()
 
+    # Crear intérprete de intención compuesto (parser-first + Ollama fallback)
+    # Usamos una config dummy para el intérprete global; se creará uno por request con CompanyContext
+    from core.hermes.query.factory import create_deterministic_interpreter
+    from core.hermes.query.interpreter import CompositeIntentInterpreter
+
+    _intent_interpreter = CompositeIntentInterpreter(
+        deterministic=create_deterministic_interpreter(),
+        ollama=None,  # Se crea por request con config de instancia
+    )
+
     logger.info("gestor_ia_started", active_instances=len(_telegram_clients))
 
     yield
@@ -117,6 +129,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.warning("telegram_client_close_failed", instance_id=instance_id, error=str(e))
     _telegram_clients.clear()
+
+    # Cerrar intérprete de intención
+    if _intent_interpreter:
+        await _intent_interpreter.aclose()
 
     # Cerrar Cloudflare
     if _cloudflare_manager:
@@ -728,7 +744,7 @@ async def telegram_webhook(
                             )
         else:
             # =====================================================================
-            # QUERY LAYER: Procesar lenguaje natural
+            # QUERY LAYER V2: Procesar lenguaje natural con IntentInterpreter
             # =====================================================================
             if not user_context:
                 response_text = "No tienes acceso autorizado a este asistente."
@@ -744,103 +760,150 @@ async def telegram_webhook(
                         error_message="Telegram user not linked",
                     )
             else:
-                # Parsear consulta natural
-                intent = parse_natural_query(text)
-                if intent:
-                    # AUTORIZACIÓN ANTES DE EJECUTAR
-                    auth_service = AuthorizationService()
-                    try:
-                        auth_service.require(user_context, "thirdparty.read")
-                    except Exception as e:
-                        response_text = "No tienes permiso para consultar terceros."
+                # Crear intérprete específico para esta instancia (con Ollama si está configurado)
+                from core.hermes.query.factory import create_interpreter_for_company_context
+
+                instance_interpreter = create_interpreter_for_company_context(ctx)
+
+                try:
+                    # Interpretar usando estrategia parser-first + Ollama fallback
+                    interpretation = await instance_interpreter.interpret(text)
+
+                    if interpretation.status == InterpretationStatus.MATCHED and interpretation.intent:
+                        # AUTORIZACIÓN ANTES DE EJECUTAR
+                        auth_service = AuthorizationService()
+                        try:
+                            auth_service.require(user_context, "thirdparty.read")
+                        except Exception as e:
+                            response_text = "No tienes permiso para consultar terceros."
+                            if _audit_logger:
+                                await _audit_logger.log_from_context(
+                                    ctx,
+                                    action=AuditActions.AUTHORIZATION_DENIED,
+                                    resource_type="tool",
+                                    resource_id=interpretation.intent.action.value,
+                                    status_code=403,
+                                    success=False,
+                                    error_code="PERMISSION_DENIED",
+                                    error_message=str(e),
+                                    telegram_user_id=user_context.telegram_user_id,
+                                    dolibarr_user_id=user_context.dolibarr_user_id,
+                                )
+                        else:
+                            # EJECUTAR TOOL via Hermes
+                            tool_name, tool_params = structured_intent_to_tool_call(interpretation.intent)
+                            tool_result = await tool_registry.execute_tool(
+                                instance_id=instance_id,
+                                name=tool_name,
+                                company_context=ctx,
+                                user_context=user_context,
+                                **tool_params,
+                            )
+
+                            if tool_result.success:
+                                # Formatear respuesta según tipo de intent
+                                action = interpretation.intent.action
+                                if action == ThirdpartyAction.LIST:
+                                    response_text = format_thirdparties_for_telegram(
+                                        tool_result.data["thirdparties"],
+                                        tool_result.data["limit"],
+                                        tool_result.data["offset"],
+                                    )
+                                elif action == ThirdpartyAction.SEARCH:
+                                    response_text = format_thirdparties_for_telegram(
+                                        tool_result.data["thirdparties"],
+                                        tool_result.data["limit"],
+                                        tool_result.data["offset"],
+                                    )
+                                elif action == ThirdpartyAction.GET:
+                                    response_text = format_thirdparty_detail_for_telegram(
+                                        tool_result.data["thirdparty"]
+                                    )
+                                elif action == ThirdpartyAction.COUNT:
+                                    party_type = interpretation.intent.arguments.party_type
+                                    response_text = format_count_for_telegram(
+                                        tool_result.data["count"],
+                                        party_type,
+                                    )
+                                else:
+                                    response_text = "Consulta procesada correctamente."
+
+                                if _audit_logger:
+                                    await _audit_logger.log_from_context(
+                                        ctx,
+                                        action=f"thirdparty.{action.value}",
+                                        resource_type="thirdparty",
+                                        status_code=200,
+                                        success=True,
+                                        telegram_user_id=user_context.telegram_user_id,
+                                        dolibarr_user_id=user_context.dolibarr_user_id,
+                                        new_state={
+                                            "count": tool_result.data.get(
+                                                "count", len(tool_result.data.get("thirdparties", []))
+                                            )
+                                        },
+                                    )
+                            else:
+                                response_text = (
+                                    tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                                )
+                                if _audit_logger:
+                                    await _audit_logger.log_from_context(
+                                        ctx,
+                                        action=f"thirdparty.{interpretation.intent.action.value}",
+                                        resource_type="thirdparty",
+                                        status_code=500,
+                                        success=False,
+                                        error_code=tool_result.error_code,
+                                        error_message=tool_result.error_message,
+                                        telegram_user_id=user_context.telegram_user_id,
+                                        dolibarr_user_id=user_context.dolibarr_user_id,
+                                    )
+                    elif interpretation.status == InterpretationStatus.NEEDS_CLARIFICATION:
+                        response_text = interpretation.clarification_message or (
+                            "No he entendido la consulta completamente. "
+                            "Intenta: 'lista clientes', 'busca cliente NOMBRE', 'cuántos proveedores hay'."
+                        )
                         if _audit_logger:
                             await _audit_logger.log_from_context(
                                 ctx,
-                                action=AuditActions.AUTHORIZATION_DENIED,
-                                resource_type="tool",
-                                resource_id=intent.to_tool_call()[0],
-                                status_code=403,
+                                action="thirdparty.clarification_needed",
+                                resource_type="thirdparty",
+                                status_code=400,
                                 success=False,
-                                error_code="PERMISSION_DENIED",
-                                error_message=str(e),
+                                error_code="NEEDS_CLARIFICATION",
+                                error_message=interpretation.clarification_message,
                                 telegram_user_id=user_context.telegram_user_id,
                                 dolibarr_user_id=user_context.dolibarr_user_id,
                             )
                     else:
-                        # EJECUTAR TOOL via Hermes
-                        tool_name, tool_params = intent.to_tool_call()
-                        tool_result = await tool_registry.execute_tool(
-                            instance_id=instance_id,
-                            name=tool_name,
-                            company_context=ctx,
-                            user_context=user_context,
-                            **tool_params,
+                        # NO_MATCH, INVALID_OUTPUT, PROVIDER_ERROR
+                        response_text = (
+                            f"No he entendido la consulta: {text}\n\n"
+                            f"Intenta:\n"
+                            f'• "lista clientes"\n'
+                            f'• "busca cliente ACME"\n'
+                            f'• "cuántos proveedores hay"\n'
+                            f'• "muestra el tercero 42"'
                         )
-
-                        if tool_result.success:
-                            # Formatear respuesta según tipo de intent
-                            if intent.intent_type == ThirdpartyIntentType.LIST:
-                                response_text = format_thirdparties_for_telegram(
-                                    tool_result.data["thirdparties"],
-                                    tool_result.data["limit"],
-                                    tool_result.data["offset"],
-                                )
-                            elif intent.intent_type == ThirdpartyIntentType.SEARCH:
-                                response_text = format_thirdparties_for_telegram(
-                                    tool_result.data["thirdparties"],
-                                    tool_result.data["limit"],
-                                    tool_result.data["offset"],
-                                )
-                            elif intent.intent_type == ThirdpartyIntentType.GET:
-                                response_text = format_thirdparty_detail_for_telegram(tool_result.data["thirdparty"])
-                            elif intent.intent_type == ThirdpartyIntentType.COUNT:
-                                response_text = format_count_for_telegram(
-                                    tool_result.data["count"],
-                                    intent.filter_type,
-                                )
-                            else:
-                                response_text = "Consulta procesada correctamente."
-
-                            if _audit_logger:
-                                await _audit_logger.log_from_context(
-                                    ctx,
-                                    action=f"thirdparty.{intent.intent_type.value}",
-                                    resource_type="thirdparty",
-                                    status_code=200,
-                                    success=True,
-                                    telegram_user_id=user_context.telegram_user_id,
-                                    dolibarr_user_id=user_context.dolibarr_user_id,
-                                    new_state={
-                                        "count": tool_result.data.get(
-                                            "count", len(tool_result.data.get("thirdparties", []))
-                                        )
-                                    },
-                                )
-                        else:
-                            response_text = (
-                                tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action="thirdparty.no_match",
+                                resource_type="thirdparty",
+                                status_code=400,
+                                success=False,
+                                error_code="NO_MATCH",
+                                error_message=(
+                                    f"Interpreter: {interpretation.interpreter_used}, "
+                                    f"status: {interpretation.status.value}"
+                                ),
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
                             )
-                            if _audit_logger:
-                                await _audit_logger.log_from_context(
-                                    ctx,
-                                    action=f"thirdparty.{intent.intent_type.value}",
-                                    resource_type="thirdparty",
-                                    status_code=500,
-                                    success=False,
-                                    error_code=tool_result.error_code,
-                                    error_message=tool_result.error_message,
-                                    telegram_user_id=user_context.telegram_user_id,
-                                    dolibarr_user_id=user_context.dolibarr_user_id,
-                                )
-                else:
-                    response_text = (
-                        f"Comando no reconocido: {text}\n\n"
-                        f"Usa /help para ver comandos disponibles.\n\n"
-                        f"También puedes preguntar en lenguaje natural:\n"
-                        f'• "lista clientes"\n'
-                        f'• "busca cliente ACME"\n'
-                        f'• "cuántos proveedores hay"'
-                    )
+
+                finally:
+                    await instance_interpreter.aclose()
 
         # Enviar respuesta
         if response_text:
