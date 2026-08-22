@@ -61,7 +61,6 @@ class GlobalSettings(BaseSettings):
     # =========================================================================
     OLLAMA_HOST: str = "127.0.0.1"
     OLLAMA_PORT: int = 11434
-    OLLAMA_DEFAULT_MODEL: str = "qwen3.5:4b"
 
     @property
     def ollama_endpoint(self) -> str:
@@ -97,7 +96,9 @@ class GlobalSettings(BaseSettings):
     # =========================================================================
     # CORS (Environment-aware)
     # =========================================================================
-    CORS_ALLOW_ORIGINS: str = ""  # Comma-separated list for production (e.g., "https://app.empresa.com,https://api.empresa.com")
+    CORS_ALLOW_ORIGINS: str = (
+        ""  # Comma-separated list for production (e.g., "https://app.empresa.com,https://api.empresa.com")
+    )
 
     # =========================================================================
     # RATE LIMITING GLOBAL
