@@ -8,7 +8,7 @@ No se permite extra="allow" - solo campos explícitos.
 """
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -210,56 +210,56 @@ def structured_intent_to_tool_call(intent: StructuredIntent) -> tuple[str, dict[
     args = intent.arguments
 
     if action == ThirdpartyAction.LIST:
-        a = args  # type: ListThirdpartiesArgs
+        list_args = cast(ListThirdpartiesArgs, args)
         filter_customer = None
-        if a.party_type == ThirdpartyPartyType.CUSTOMER:
+        if list_args.party_type == ThirdpartyPartyType.CUSTOMER:
             filter_customer = True
-        elif a.party_type == ThirdpartyPartyType.SUPPLIER:
+        elif list_args.party_type == ThirdpartyPartyType.SUPPLIER:
             filter_customer = False
 
         return "list_thirdparties", {
-            "limit": a.limit,
-            "offset": a.offset,
+            "limit": list_args.limit,
+            "offset": list_args.offset,
             "filter_customer": filter_customer,
-            "sort_field": a.sort_field.value,
-            "sort_order": a.sort_order.value,
+            "sort_field": list_args.sort_field.value,
+            "sort_order": list_args.sort_order.value,
         }
 
     elif action == ThirdpartyAction.SEARCH:
-        a = args  # type: SearchThirdpartiesArgs
+        search_args = cast(SearchThirdpartiesArgs, args)
         filter_customer = None
         filter_supplier = None
-        if a.party_type == ThirdpartyPartyType.CUSTOMER:
+        if search_args.party_type == ThirdpartyPartyType.CUSTOMER:
             filter_customer = True
             filter_supplier = False
-        elif a.party_type == ThirdpartyPartyType.SUPPLIER:
+        elif search_args.party_type == ThirdpartyPartyType.SUPPLIER:
             filter_customer = False
             filter_supplier = True
 
         return "search_thirdparties", {
-            "query": a.query,
+            "query": search_args.query,
             "filter_customer": filter_customer,
             "filter_supplier": filter_supplier,
-            "limit": a.limit,
-            "offset": a.offset,
-            "sort_field": a.sort_field.value,
-            "sort_order": a.sort_order.value,
+            "limit": search_args.limit,
+            "offset": search_args.offset,
+            "sort_field": search_args.sort_field.value,
+            "sort_order": search_args.sort_order.value,
         }
 
     elif action == ThirdpartyAction.GET:
-        a = args  # type: GetThirdpartyArgs
+        get_args = cast(GetThirdpartyArgs, args)
         return "get_thirdparty", {
-            "thirdparty_id": a.thirdparty_id,
+            "thirdparty_id": get_args.thirdparty_id,
         }
 
     elif action == ThirdpartyAction.COUNT:
-        a = args  # type: CountThirdpartiesArgs
+        count_args = cast(CountThirdpartiesArgs, args)
         filter_customer = None
         filter_supplier = None
-        if a.party_type == ThirdpartyPartyType.CUSTOMER:
+        if count_args.party_type == ThirdpartyPartyType.CUSTOMER:
             filter_customer = True
             filter_supplier = False
-        elif a.party_type == ThirdpartyPartyType.SUPPLIER:
+        elif count_args.party_type == ThirdpartyPartyType.SUPPLIER:
             filter_customer = False
             filter_supplier = True
 

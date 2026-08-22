@@ -141,6 +141,9 @@ class DeterministicIntentInterpreter(IntentInterpreter):
         }
         party_type = party_type_map.get(filter_type.value, ThirdpartyPartyType.ALL)
 
+        action: ThirdpartyAction
+        arguments: ListThirdpartiesArgs | SearchThirdpartiesArgs | GetThirdpartyArgs | CountThirdpartiesArgs
+
         if intent_type.value == "list":
             action = ThirdpartyAction.LIST
             arguments = ListThirdpartiesArgs(
