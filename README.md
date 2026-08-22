@@ -200,13 +200,19 @@ Si no se resuelve → `HTTPException 400 INSTANCE_RESOLUTION_FAILED`.
 | GlobalSettings / InstanceConfig | ✅ IMPLEMENTADO | Separación semántica DatabaseConfig vs DolibarrConfig |
 | CompanyContext + InstanceResolver | ✅ IMPLEMENTADO | Inmutable, request-scoped, propagación explícita |
 | DolibarrClient (multi-instancia) | ✅ IMPLEMENTADO | Config explícita por CompanyContext |
-| TelegramClient + Webhook multi-instancia | ✅ IMPLEMENTADO | Idempotencia Redis por instancia |
+| TelegramClient + Webhook multi-instancia | ✅ IMPLEMENTADO | Idempotencia Redis por instancia + secret validation |
+| IdentityResolver + UserContext | ✅ IMPLEMENTADO | SQLite por instancia, Telegram → Dolibarr user mapping |
+| AuthorizationService | ✅ IMPLEMENTADO | Permisos granulares (thirdparty.read, ai.use, audit.read) |
+| ToolRegistry | ✅ IMPLEMENTADO | Core tools + validación cross-instance |
+| list_thirdparties Tool | ✅ IMPLEMENTADO | Paginación, filtros, allowlist sort_field/sort_order |
+| Dolibarr REST Integration | ✅ IMPLEMENTADO | Cliente multi-instancia con mappers |
 | AIProvider (Ollama/NVIDIA/OpenAI) | ✅ IMPLEMENTADO | Abstracción + routing por AIPolicy |
 | AIPolicy (LOCAL_ONLY / CLOUD_ALLOWED) | ✅ IMPLEMENTADO | Por tarea + default por instancia |
 | AuditLogger (MariaDB) | ✅ IMPLEMENTADO | Inmutable, query por instancia |
 | ExtensionRegistry (agents/tools/workflows) | ✅ IMPLEMENTADO | Registrado por instance_id |
 | Cloudflare Adapter/Manager | ✅ IMPLEMENTADO | DNS, Access, Tunnel, Ingress dinámico |
 | Tests de aislamiento (44 tests) | ✅ IMPLEMENTADO | CRÍTICOS - pasan en CI |
+| Tests E2E HTTP (53 tests) | ✅ IMPLEMENTADO | Webhook, auth, cross-instance, idempotencia, error handling |
 | Makefile + CLI interno | ✅ IMPLEMENTADO | Interfaz fina, sin lógica Python inline |
 | Scripts nativos (install/configure/backup) | ✅ IMPLEMENTADO | Idempotentes, PROJECT_ROOT auto-detectado |
 | Systemd templates | ✅ IMPLEMENTADO | `${GESTOR_IA_ROOT}` configurable |
@@ -219,7 +225,7 @@ Si no se resuelve → `HTTPException 400 INSTANCE_RESOLUTION_FAILED`.
 | Cloudflare ingress apply (dinámico) | 🔄 EN DESARROLLO | Generación OK, apply + validación en progreso |
 | Cloudflare Access per-instance Dolibarr | 📋 PLANIFICADO | Requiere emails admins por instancia |
 | JobQueue abstraction + Celery opcional | 📋 PLANIFICADO | Diferido hasta carga real |
-| Primera vertical E2E (Telegram → Context → Hermes → Dolibarr) | 📋 PLANIFICADO | Próxima fase |
+| Query Layer (read-only) | 📋 PLANIFICADO | Próxima fase - consultas naturales a Dolibarr |
 
 ### No en el Core (van en `companies/{instancia}/`)
 
@@ -233,6 +239,22 @@ Si no se resuelve → `HTTPException 400 INSTANCE_RESOLUTION_FAILED`.
 ## Próximos Pasos
 
 1. **Completar Cloudflare ingress apply + validación dry-run**
-2. **Vertical E2E mínima**: Telegram webhook → CompanyContext → Hermes → Dolibarr (listar terceros)
+2. **Query Layer (read-only)**: Consultas naturales → SQL seguro → Dolibarr (próxima fase)
 3. **Documentar ADRs** en `docs/architecture/` (multi-instancia, CompanyContext, Redis no-seguridad, Cloudflare compartido)
 4. **Configurar CI/CD** con tests de aislamiento obligatorios
+
+---
+
+### ✅ Vertical E2E Primera Implementada: `/terceros`
+
+El flujo completo **Telegram → Webhook Secret → InstanceResolver → CompanyContext → IdentityResolver → UserContext → AuthorizationService → ToolRegistry → list_thirdparties → Dolibarr REST → Telegram** está **IMPLEMENTADO Y PROBADO** (53 tests E2E + 44 tests aislamiento).
+
+Componentes verificados:
+- Webhook secret validation (HMAC)
+- Idempotencia atómica Redis (`SET NX EX`)
+- Cross-instance isolation (CompanyContext, UserContext, DolibarrClient)
+- Autorización granular (`thirdparty.read`)
+- ToolRegistry con validación `instance_id == CompanyContext.instance_id == UserContext.instance_id`
+- Error handling Dolibarr sin fuga de secretos
+- Paginación y ordenación con allowlist (`sort_field`, `sort_order`)
+- Auditoría completa (éxito, denegación, identidad desconocida)
