@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import structlog
 
+from core.hermes.identity import DolibarrGroup, DolibarrUser
 from core.hermes.instance_config import DolibarrConfig
 
 if TYPE_CHECKING:
@@ -146,16 +147,118 @@ class DolibarrClient:
             )
 
     # =========================================================================
-    # HEALTH CHECK
+    # USUARIOS Y GRUPOS (User Management)
     # =========================================================================
 
-    async def health_check(self) -> bool:
-        """Verificar conectividad con Dolibarr."""
-        try:
-            await self._request("GET", "thirdparties", params={"limit": 1})
-            return True
-        except Exception:
-            return False
+    async def get_user(
+        self,
+        user_id: int,
+        include_permissions: bool = True,
+    ) -> DolibarrUser:
+        """
+        Obtener usuario por ID.
+
+        Args:
+            user_id: ID del usuario en Dolibarr
+            include_permissions: Si cargar permisos (includepermissions=1)
+
+        Returns:
+            DolibarrUser con datos del usuario
+
+        Raises:
+            DolibarrException: Si el usuario no existe (404) o error de API
+        """
+        params = {"includepermissions": 1} if include_permissions else {}
+        data = await self._request("GET", f"users/{user_id}", params=params)
+        return self._map_dolibarr_user(data)
+
+    async def get_user_by_login(
+        self,
+        login: str,
+        include_permissions: bool = True,
+    ) -> DolibarrUser:
+        """
+        Obtener usuario por login.
+
+        Args:
+            login: Login del usuario en Dolibarr
+            include_permissions: Si cargar permisos (includepermissions=1)
+
+        Returns:
+            DolibarrUser con datos del usuario
+
+        Raises:
+            DolibarrException: Si el usuario no existe (404) o error de API
+        """
+        params = {"includepermissions": 1} if include_permissions else {}
+        data = await self._request("GET", f"users/login/{login}", params=params)
+        return self._map_dolibarr_user(data)
+
+    async def get_user_groups(self, user_id: int) -> list[DolibarrGroup]:
+        """
+        Obtener grupos de un usuario.
+
+        Args:
+            user_id: ID del usuario en Dolibarr
+
+        Returns:
+            Lista de DolibarrGroup a los que pertenece el usuario
+
+        Raises:
+            DolibarrException: Error de API
+        """
+        data = await self._request("GET", f"users/{user_id}/groups")
+        if not isinstance(data, list):
+            return []
+        return [self._map_dolibarr_group(g) for g in data]
+
+    async def get_group_permissions(self, group_id: int) -> dict[str, Any]:
+        """
+        Obtener permisos de un grupo.
+
+        Args:
+            group_id: ID del grupo en Dolibarr
+
+        Returns:
+            Dict con permisos (módulo -> submódulo -> permiso -> nivel)
+
+        Raises:
+            DolibarrException: Error de API
+        """
+        data = await self._request("GET", f"groups/{group_id}", params={"includepermissions": 1})
+        if not isinstance(data, dict):
+            return {}
+        return data.get("rights", {})
+
+    @staticmethod
+    def _map_dolibarr_user(data: dict[str, Any]) -> DolibarrUser:
+        """Mapear respuesta de Dolibarr a DolibarrUser."""
+        # Extraer grupos si vienen en la respuesta
+        user_groups = []
+        if "user_group_list" in data and isinstance(data["user_group_list"], list):
+            user_groups = [DolibarrClient._map_dolibarr_group(g) for g in data["user_group_list"]]
+
+        return DolibarrUser(
+            id=int(data.get("id", 0)),
+            login=str(data.get("login", "")),
+            firstname=str(data.get("firstname", "")),
+            lastname=str(data.get("lastname", "")),
+            email=str(data.get("email", "")),
+            active=bool(data.get("status", 1)),
+            entity=int(data.get("entity", 1)),
+            rights=data.get("rights", {}),
+            user_group_list=user_groups,
+        )
+
+    @staticmethod
+    def _map_dolibarr_group(data: dict[str, Any]) -> DolibarrGroup:
+        """Mapear respuesta de Dolibarr a DolibarrGroup."""
+        return DolibarrGroup(
+            id=int(data.get("id", 0) or data.get("rowid", 0)),
+            name=str(data.get("name", "") or data.get("nom", "")),
+            entity=int(data.get("entity", 1)),
+            rights=data.get("rights"),
+        )
 
     # =========================================================================
     # TERCEROS (Thirdparties)

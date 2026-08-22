@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from core.hermes.identity import UserContext
 from core.hermes.instance_config import InstanceConfig
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ class CompanyContext:
     - InstanceConfig completa (DB, Telegram, Domains, AI, Extensions)
     - Actor info (quién hace la request)
     - Trazabilidad (request_id, correlation_id)
+    - Optional UserContext para operaciones autenticadas
     """
 
     instance_config: InstanceConfig
@@ -46,6 +48,9 @@ class CompanyContext:
     user_agent: str | None = None
     endpoint: str | None = None
     method: str | None = None
+
+    # User context for authenticated operations (set after identity resolution)
+    user_context: UserContext | None = None
 
     # =========================================================================
     # ACCESO CONVENIENTE A CONFIG FRECUENTE
@@ -94,6 +99,25 @@ class CompanyContext:
         return self.instance_config.enabled_tools
 
     # =========================================================================
+    # USER CONTEXT PROPERTIES
+    # =========================================================================
+
+    @property
+    def is_authenticated(self) -> bool:
+        """True if user context is available (authenticated request)."""
+        return self.user_context is not None
+
+    @property
+    def telegram_user_id(self) -> int | None:
+        """Telegram user ID if authenticated."""
+        return self.user_context.telegram_user_id if self.user_context else None
+
+    @property
+    def dolibarr_user_id(self) -> int | None:
+        """Dolibarr user ID if authenticated."""
+        return self.user_context.dolibarr_user_id if self.user_context else None
+
+    # =========================================================================
     # MÉTODOS DE CONVENIENCIA
     # =========================================================================
 
@@ -132,7 +156,7 @@ class CompanyContext:
 
     def to_audit_dict(self) -> dict[str, Any]:
         """Convertir a dict para logging de auditoría (sin secretos)."""
-        return {
+        audit = {
             "instance_id": self.instance_id,
             "company_name": self.company_name,
             "actor_type": self.actor_type,
@@ -145,6 +169,10 @@ class CompanyContext:
             "endpoint": self.endpoint,
             "method": self.method,
         }
+        if self.user_context:
+            audit["telegram_user_id"] = self.user_context.telegram_user_id
+            audit["dolibarr_user_id"] = self.user_context.dolibarr_user_id
+        return audit
 
 
 # =========================================================================
@@ -170,6 +198,7 @@ class CompanyContextBuilder:
         self._user_agent: str | None = None
         self._endpoint: str | None = None
         self._method: str | None = None
+        self._user_context: UserContext | None = None
 
     def with_actor(self, actor_type: str, actor_id: str) -> CompanyContextBuilder:
         self._actor_type = actor_type
@@ -197,6 +226,10 @@ class CompanyContextBuilder:
         self._method = method
         return self
 
+    def with_user_context(self, user_context: UserContext) -> CompanyContextBuilder:
+        self._user_context = user_context
+        return self
+
     def build(self) -> CompanyContext:
         return CompanyContext(
             instance_config=self._instance_config,
@@ -208,6 +241,7 @@ class CompanyContextBuilder:
             user_agent=self._user_agent,
             endpoint=self._endpoint,
             method=self._method,
+            user_context=getattr(self, "_user_context", None),
         )
 
 

@@ -16,7 +16,18 @@ from starlette.responses import Response
 
 from core.hermes.config import get_global_settings
 from core.hermes.context import CompanyContext, CompanyContextBuilder, extract_api_key_actor, extract_telegram_actor
+from core.hermes.identity import UserContext
+from core.hermes.identity_resolver import (
+    DolibarrConnectionError,
+    DolibarrUserDisabledError,
+    DolibarrUserNotFoundError,
+    IdentityDisabledError,
+    IdentityNotFoundError,
+    IdentityResolver,
+)
+from core.hermes.identity_store import IdentityStore
 from core.hermes.instance_config import InstanceConfig, list_instances, load_instance_config
+from core.integrations.dolibarr.client import DolibarrClient
 
 # =========================================================================
 # CACHE DE DOMINIOS -> INSTANCE_ID
@@ -258,6 +269,91 @@ async def get_company_context(request: Request) -> CompanyContext:
         .with_http_info(ip, user_agent, str(request.url.path), request.method)
         .build()
     )
+
+
+# =========================================================================
+# DEPENDENCY PARA USERCONTEXT (OPERACIONES AUTENTICADAS)
+# =========================================================================
+
+
+async def get_user_context(request: Request) -> UserContext:
+    """
+    Dependency de FastAPI que provee UserContext para endpoints autenticados.
+
+    Requiere que la instancia ya esté resuelta (CompanyContext).
+    Resuelve la identidad del usuario Telegram -> Dolibarr -> UserContext.
+
+    Lanza HTTPException 403 si no hay identidad válida.
+    Lanza HTTPException 503 si falla la conexión con Dolibarr (default deny).
+
+    Uso:
+        @app.get("/api/private")
+        async def handler(user_ctx: UserContext = Depends(get_user_context)):
+            # user_ctx.dolibarr_user, user_ctx.effective_permissions, etc.
+    """
+    # Get CompanyContext first (resolves instance)
+    company_context = await get_company_context(request)
+
+    # Extract telegram_user_id from webhook update or actor_id
+    telegram_user_id: int | None = None
+
+    if request.url.path.startswith("/webhook/"):
+        try:
+            body = await request.json()
+            _, actor_id = extract_telegram_actor(body)
+            telegram_user_id = int(actor_id)
+        except Exception:
+            pass
+    elif company_context.actor_type == "telegram_user":
+        try:
+            telegram_user_id = int(company_context.actor_id)
+        except Exception:
+            pass
+
+    if not telegram_user_id:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "AUTHENTICATION_REQUIRED", "message": "Telegram user identity required"},
+        )
+
+    # Resolve identity using IdentityResolver
+    identity_store = IdentityStore(company_context.instance_id)
+
+    def _client_factory(ctx: CompanyContext) -> DolibarrClient:
+        return DolibarrClient.from_instance_config(ctx.dolibarr_config)
+
+    resolver = IdentityResolver(identity_store, _client_factory)
+
+    try:
+        user_context = await resolver.resolve(company_context, telegram_user_id)
+    except IdentityNotFoundError:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "UNAUTHORIZED", "message": "No tienes acceso autorizado a este asistente"},
+        )
+    except IdentityDisabledError:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "ACCOUNT_DISABLED", "message": "Tu cuenta ha sido deshabilitada"},
+        )
+    except DolibarrUserNotFoundError:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "USER_NOT_FOUND", "message": "Usuario no encontrado en el ERP"},
+        )
+    except DolibarrUserDisabledError:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "ACCOUNT_DISABLED", "message": "Tu cuenta en el ERP está desactivada"},
+        )
+    except DolibarrConnectionError:
+        # Default deny on Dolibarr failure
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "AUTH_SERVICE_UNAVAILABLE", "message": "Servicio de autorización no disponible"},
+        )
+
+    return user_context
 
 
 # =========================================================================

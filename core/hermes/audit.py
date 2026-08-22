@@ -26,6 +26,40 @@ logger = structlog.get_logger()
 Base = declarative_base()
 
 
+# =========================================================================
+# ACTION CONSTANTS FOR IDENTITY/AUTHORIZATION EVENTS
+# =========================================================================
+
+class AuditActions:
+    """Standard action names for audit logging."""
+
+    # Identity events
+    TELEGRAM_IDENTITY_UNKNOWN = "telegram.identity.unknown"
+    TELEGRAM_IDENTITY_DISABLED = "telegram.identity.disabled"
+    DOLIBARR_USER_DISABLED = "dolibarr.user.disabled"
+
+    # Authorization events
+    AUTHORIZATION_DENIED = "authorization.denied"
+
+    # User management events
+    USER_LINKED = "user.linked"
+    USER_UNLINKED = "user.unlinked"
+    USER_ENABLED = "user.enabled"
+    USER_DISABLED = "user.disabled"
+
+    # Critical actions that should never be cleaned up
+    CRITICAL_ACTIONS = frozenset([
+        "login", "logout", "permission_change",
+        "approval_decision", "invoice_approval",
+        "supplier_creation", "data_export",
+        TELEGRAM_IDENTITY_UNKNOWN,
+        TELEGRAM_IDENTITY_DISABLED,
+        DOLIBARR_USER_DISABLED,
+        AUTHORIZATION_DENIED,
+        USER_LINKED, USER_UNLINKED, USER_ENABLED, USER_DISABLED,
+    ])
+
+
 class AuditLog(Base):
     """Tabla de auditoría inmutable (append-only)."""
 
@@ -42,6 +76,10 @@ class AuditLog(Base):
     actor_type = Column(String(50), nullable=False)  # telegram_user, api_key, system
     actor_id = Column(String(100), nullable=False, index=True)
     instance_id = Column(String(100), nullable=False, index=True)  # CRÍTICO: aislamiento
+
+    # User identity (for authenticated operations)
+    dolibarr_user_id = Column(Integer, nullable=True, index=True)
+    telegram_user_id = Column(Integer, nullable=True, index=True)
 
     # HTTP info
     method = Column(String(10), nullable=True)
@@ -87,6 +125,8 @@ class AuditLog(Base):
         Index("ix_audit_instance_actor", "instance_id", "actor_type", "actor_id"),
         Index("ix_audit_instance_resource", "instance_id", "resource_type", "resource_id"),
         Index("ix_audit_instance_action", "instance_id", "action"),
+        Index("ix_audit_instance_dolibarr_user", "instance_id", "dolibarr_user_id"),
+        Index("ix_audit_instance_telegram_user", "instance_id", "telegram_user_id"),
     )
 
 
@@ -188,6 +228,8 @@ class AuditLogger:
         idempotent: bool = False,
         ip_address: str | None = None,
         user_agent: str | None = None,
+        dolibarr_user_id: int | None = None,
+        telegram_user_id: int | None = None,
     ) -> str:
         """
         Registrar evento de auditoría.
@@ -220,6 +262,7 @@ class AuditLogger:
                     id, created_at,
                     request_id, correlation_id,
                     actor_type, actor_id, instance_id,
+                    dolibarr_user_id, telegram_user_id,
                     method, path, query_params, request_body_hash,
                     resource_type, resource_id, action,
                     previous_state, new_state, diff,
@@ -232,6 +275,7 @@ class AuditLogger:
                     :id, NOW(),
                     :request_id, :correlation_id,
                     :actor_type, :actor_id, :instance_id,
+                    :dolibarr_user_id, :telegram_user_id,
                     :method, :path, :query_params, :request_body_hash,
                     :resource_type, :resource_id, :action,
                     :previous_state, :new_state, :diff,
@@ -252,6 +296,8 @@ class AuditLogger:
                     "actor_type": actor_type,
                     "actor_id": actor_id,
                     "instance_id": instance_id,
+                    "dolibarr_user_id": dolibarr_user_id,
+                    "telegram_user_id": telegram_user_id,
                     "method": method,
                     "path": path,
                     "query_params": json.dumps(query_params) if query_params else None,
@@ -312,6 +358,8 @@ class AuditLogger:
             path=ctx.endpoint,
             ip_address=ctx.ip_address,
             user_agent=ctx.user_agent,
+            dolibarr_user_id=ctx.dolibarr_user_id,
+            telegram_user_id=ctx.telegram_user_id,
             **kwargs,
         )
 
@@ -469,16 +517,14 @@ class AuditLogger:
         """Limpiar logs antiguos (solo exitosos, no acciones críticas)."""
         session = self.Session()
         try:
-            query = text("""
+            # Build NOT IN clause from critical actions
+            critical_actions = ", ".join(f"'{a}'" for a in AuditActions.CRITICAL_ACTIONS)
+            query = text(f"""
                 DELETE FROM audit_log
                 WHERE instance_id = :instance_id
                   AND created_at < DATE_SUB(NOW(), INTERVAL :days DAY)
                   AND success = 1
-                  AND action NOT IN (
-                      'login', 'logout', 'permission_change',
-                      'approval_decision', 'invoice_approval',
-                      'supplier_creation', 'data_export'
-                  )
+                  AND action NOT IN ({critical_actions})
             """)
             result = session.execute(query, {"instance_id": instance_id, "days": retention_days})
             session.commit()
