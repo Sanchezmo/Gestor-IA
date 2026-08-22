@@ -96,6 +96,7 @@ class TestAuditLoggerExtensions:
     def test_log_accepts_dolibarr_user_id(self, audit_logger):
         """Verify log method accepts dolibarr_user_id parameter."""
         import inspect
+
         sig = inspect.signature(audit_logger.log)
         params = list(sig.parameters.keys())
         assert "dolibarr_user_id" in params
@@ -103,6 +104,7 @@ class TestAuditLoggerExtensions:
     def test_log_accepts_telegram_user_id(self, audit_logger):
         """Verify log method accepts telegram_user_id parameter."""
         import inspect
+
         sig = inspect.signature(audit_logger.log)
         params = list(sig.parameters.keys())
         assert "telegram_user_id" in params
@@ -141,6 +143,7 @@ class TestAuditLoggerExtensions:
             # Mock _get_last_hash
             with patch.object(logger, "_get_last_hash", return_value="genesis"):
                 import asyncio
+
                 asyncio.run(logger.log_from_context(mock_ctx, "test.action"))
 
             # Verify the call included user IDs
@@ -185,18 +188,14 @@ class TestAuditLogIntegration:
         return InstanceConfig(
             instance_id="empresa_a",
             company_name="Empresa A",
-            database=DatabaseConfig(
-                host="127.0.0.1", port=3306, name="dolibarr_a", user="db_a", password="pass"
-            ),
+            database=DatabaseConfig(host="127.0.0.1", port=3306, name="dolibarr_a", user="db_a", password="pass"),
             dolibarr=DolibarrConfig(
                 version="23.0.4",
                 internal_url="http://localhost:8081",
                 api_key="key_a",
                 documents_path="/docs",
             ),
-            telegram=TelegramConfig(
-                bot_token="token_a", webhook_path="/webhook/a", webhook_secret="secret_a"
-            ),
+            telegram=TelegramConfig(bot_token="token_a", webhook_path="/webhook/a", webhook_secret="secret_a"),
             domains=DomainConfig(base="a.com"),
             ai=AIConfig(ollama_model="test-model"),
         ).resolve_paths()

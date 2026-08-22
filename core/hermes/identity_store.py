@@ -53,6 +53,7 @@ CREATE INDEX IF NOT EXISTS idx_telegram_identities_dolibarr
 
 class CrossInstanceError(ValueError):
     """Raised when an identity from a different instance is used."""
+
     pass
 
 

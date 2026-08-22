@@ -187,6 +187,7 @@ class IdentityResolver:
 
         # 5. Update last_seen_at
         from datetime import UTC, datetime
+
         updated_identity = identity.with_last_seen(datetime.now(UTC))
         self._store.update(updated_identity)
 

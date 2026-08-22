@@ -182,6 +182,7 @@ class UserContext:
 # GESTOR-IA PERMISSION CONSTANTS
 # =========================================================================
 
+
 class GestorPermissions:
     """Gestor-IA specific permissions (not from Dolibarr ERP)."""
 
@@ -194,15 +195,17 @@ class GestorPermissions:
     ADMIN = "admin"
 
     # All Gestor-IA permissions
-    ALL: frozenset[str] = frozenset([
-        AI_USE,
-        AI_EXTERNAL_PROVIDER,
-        AUDIT_READ,
-        TELEGRAM_MANAGE,
-        INSTANCE_MANAGE,
-        CONTENT_GENERATE,
-        ADMIN,
-    ])
+    ALL: frozenset[str] = frozenset(
+        [
+            AI_USE,
+            AI_EXTERNAL_PROVIDER,
+            AUDIT_READ,
+            TELEGRAM_MANAGE,
+            INSTANCE_MANAGE,
+            CONTENT_GENERATE,
+            ADMIN,
+        ]
+    )
 
 
 # =========================================================================

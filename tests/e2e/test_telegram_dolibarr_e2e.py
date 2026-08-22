@@ -134,7 +134,7 @@ def telegram_identity_b():
     return TelegramIdentity(
         instance_id="empresa_b",
         telegram_user_id=123456,  # Same Telegram ID
-        dolibarr_user_id=8,       # Different Dolibarr user
+        dolibarr_user_id=8,  # Different Dolibarr user
     )
 
 
@@ -220,9 +220,7 @@ class TestTelegramToDolibarrHappyPath:
     """Test E2E completo: webhook válido → usuario autorizado → tool → Dolibarr → respuesta."""
 
     @pytest.mark.asyncio
-    async def test_happy_path_list_thirdparties(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_happy_path_list_thirdparties(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Happy path: /terceros con usuario válido devuelve terceros formateados."""
         import tempfile
         from pathlib import Path
@@ -240,32 +238,32 @@ class TestTelegramToDolibarrHappyPath:
                 groups_return_value=[DolibarrGroup(id=5, name="Comercial", entity=1)],
                 list_thirdparties_return_value=[
                     {
-                "id": 1,
-                "name": "Cliente Uno",
-                "client": 1,
-                "fournisseur": 0,
-                "email": "uno@test.com",
-                "phone": "111",
-                "status": 1,
-            },
+                        "id": 1,
+                        "name": "Cliente Uno",
+                        "client": 1,
+                        "fournisseur": 0,
+                        "email": "uno@test.com",
+                        "phone": "111",
+                        "status": 1,
+                    },
                     {
-                "id": 2,
-                "name": "Proveedor Dos",
-                "client": 0,
-                "fournisseur": 1,
-                "email": "dos@test.com",
-                "phone": "222",
-                "status": 1,
-            },
+                        "id": 2,
+                        "name": "Proveedor Dos",
+                        "client": 0,
+                        "fournisseur": 1,
+                        "email": "dos@test.com",
+                        "phone": "222",
+                        "status": 1,
+                    },
                     {
-                "id": 3,
-                "name": "Cliente Tres",
-                "client": 1,
-                "fournisseur": 0,
-                "email": None,
-                "phone": None,
-                "status": 1,
-            },
+                        "id": 3,
+                        "name": "Cliente Tres",
+                        "client": 1,
+                        "fournisseur": 0,
+                        "email": None,
+                        "phone": None,
+                        "status": 1,
+                    },
                 ],
             )
 
@@ -276,7 +274,7 @@ class TestTelegramToDolibarrHappyPath:
             user_context = await _resolver.resolve(context_a, 123456)
 
             # Patch DolibarrClient.from_instance_config to return our mock
-            with patch('core.hermes.context.CompanyContext.create_dolibarr_client', return_value=mock_client):
+            with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
                 result = await tool.execute(context_a, user_context, limit=10, offset=0)
 
@@ -328,6 +326,7 @@ class TestWebhookSecretValidation:
                 return mock_client
 
             from core.hermes.identity_resolver import IdentityResolver
+
             _resolver = IdentityResolver(store, mock_factory)
 
             # Simulate secret validation failure (this is what happens in webhook BEFORE resolver)
@@ -353,9 +352,7 @@ class TestUnknownUser:
     """Tests para usuario Telegram no vinculado."""
 
     @pytest.mark.asyncio
-    async def test_unknown_telegram_id_denied(
-        self, context_a
-    ):
+    async def test_unknown_telegram_id_denied(self, context_a):
         """Telegram ID no vinculado → DENY → Dolibarr NO llamado."""
         import tempfile
         from pathlib import Path
@@ -395,9 +392,7 @@ class TestDisabledUser:
     """Tests para identidades/usuarios deshabilitados."""
 
     @pytest.mark.asyncio
-    async def test_identity_disabled_denied(
-        self, context_a, dolibarr_user_a
-    ):
+    async def test_identity_disabled_denied(self, context_a, dolibarr_user_a):
         """Identity disabled → DENY."""
         import tempfile
         from pathlib import Path
@@ -430,9 +425,7 @@ class TestDisabledUser:
                 await _resolver.resolve(context_a, 123456)
 
     @pytest.mark.asyncio
-    async def test_dolibarr_user_disabled_denied(
-        self, context_a, telegram_identity_a
-    ):
+    async def test_dolibarr_user_disabled_denied(self, context_a, telegram_identity_a):
         """Dolibarr user inactive → DENY."""
         import tempfile
         from pathlib import Path
@@ -478,9 +471,7 @@ class TestNoPermission:
     """Tests para autorización denegada antes de ejecutar tool."""
 
     @pytest.mark.asyncio
-    async def test_user_without_thirdparty_read_denied(
-        self, context_a, telegram_identity_a, dolibarr_user_no_perms
-    ):
+    async def test_user_without_thirdparty_read_denied(self, context_a, telegram_identity_a, dolibarr_user_no_perms):
         """Usuario válido SIN thirdparty.read → AuthorizationDenied → Dolibarr NO llamado."""
         import tempfile
         from pathlib import Path
@@ -513,7 +504,7 @@ class TestNoPermission:
             # But ListThirdpartiesTool.execute is called directly here, so it will call Dolibarr
             # The permission check is in tool_registry.execute_tool, not in Tool.execute
             # So we test via tool_registry
-            with patch('core.hermes.context.CompanyContext.create_dolibarr_client', return_value=mock_client):
+            with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 result = await tool_registry.execute_tool(
                     instance_id="empresa_a",
                     name="list_thirdparties",
@@ -563,14 +554,14 @@ class TestCrossInstanceIsolation:
                     groups_return_value=[],
                     list_thirdparties_return_value=[
                         {
-                "id": 1,
-                "name": f"Cliente {instance_id}",
-                "client": 1,
-                "fournisseur": 0,
-                "email": None,
-                "phone": None,
-                "status": 1,
-            },
+                            "id": 1,
+                            "name": f"Cliente {instance_id}",
+                            "client": 1,
+                            "fournisseur": 0,
+                            "email": None,
+                            "phone": None,
+                            "status": 1,
+                        },
                     ],
                 )
                 return mock
@@ -588,8 +579,8 @@ class TestCrossInstanceIsolation:
 
             # Execute tool for instance A with patch
             with patch(
-                'core.hermes.context.CompanyContext.create_dolibarr_client',
-                return_value=make_mock_client('8081'),
+                "core.hermes.context.CompanyContext.create_dolibarr_client",
+                return_value=make_mock_client("8081"),
             ):
                 tool = ListThirdpartiesTool()
                 result = await tool.execute(context_a, user_context, limit=10, offset=0)
@@ -598,11 +589,15 @@ class TestCrossInstanceIsolation:
             # The patch above uses URL to determine which mock to return
             # Since context_a has internal_url "http://127.0.0.1:8081", it will use mock "8081" which maps to "a"
 
-
     @pytest.mark.asyncio
     async def test_same_telegram_id_different_companies(
-        self, instance_a_config, instance_b_config, telegram_identity_a, telegram_identity_b,
-        dolibarr_user_a, dolibarr_user_b
+        self,
+        instance_a_config,
+        instance_b_config,
+        telegram_identity_a,
+        telegram_identity_b,
+        dolibarr_user_a,
+        dolibarr_user_b,
     ):
         """Mismo Telegram ID (123456) en dos empresas → resuelve a usuarios Dolibarr distintos."""
         import tempfile
@@ -663,9 +658,7 @@ class TestDolibarrErrors:
     """Tests de errores de Dolibarr - respuesta segura al usuario."""
 
     @pytest.mark.asyncio
-    async def test_dolibarr_timeout_returns_safe_message(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_dolibarr_timeout_returns_safe_message(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Dolibarr timeout → respuesta segura, NO stacktrace."""
         import tempfile
         from pathlib import Path
@@ -685,7 +678,7 @@ class TestDolibarrErrors:
                 list_thirdparties_return_value=[],
                 list_thirdparties_side_effect=DolibarrException(
                     message="Timeout", endpoint="thirdparties", status_code=504
-                )
+                ),
             )
 
             def mock_factory(ctx):
@@ -694,7 +687,7 @@ class TestDolibarrErrors:
             _resolver = IdentityResolver(store, mock_factory)
             user_context = await _resolver.resolve(context_a, 123456)
 
-            with patch('core.hermes.context.CompanyContext.create_dolibarr_client', return_value=mock_client):
+            with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
                 result = await tool.execute(context_a, user_context, limit=10, offset=0)
 
@@ -706,11 +699,8 @@ class TestDolibarrErrors:
             assert "504" not in result.error_message
             assert "endpoint" not in str(result.error_message).lower()
 
-
     @pytest.mark.asyncio
-    async def test_dolibarr_500_returns_safe_message(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_dolibarr_500_returns_safe_message(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Dolibarr 500 → respuesta segura."""
         import tempfile
         from pathlib import Path
@@ -730,7 +720,7 @@ class TestDolibarrErrors:
                 list_thirdparties_return_value=[],
                 list_thirdparties_side_effect=DolibarrException(
                     message="Internal Server Error", endpoint="thirdparties", status_code=500
-                )
+                ),
             )
 
             def mock_factory(ctx):
@@ -739,7 +729,7 @@ class TestDolibarrErrors:
             _resolver = IdentityResolver(store, mock_factory)
             user_context = await _resolver.resolve(context_a, 123456)
 
-            with patch('core.hermes.context.CompanyContext.create_dolibarr_client', return_value=mock_client):
+            with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
                 result = await tool.execute(context_a, user_context, limit=10, offset=0)
 
@@ -747,11 +737,8 @@ class TestDolibarrErrors:
             assert result.error_code == "DOLIBARR_ERROR"
             assert "No he podido consultar Dolibarr" in result.error_message
 
-
     @pytest.mark.asyncio
-    async def test_dolibarr_401_returns_safe_message(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_dolibarr_401_returns_safe_message(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Dolibarr 401 (auth failure) → respuesta segura."""
         import tempfile
         from pathlib import Path
@@ -771,7 +758,7 @@ class TestDolibarrErrors:
                 list_thirdparties_return_value=[],
                 list_thirdparties_side_effect=DolibarrException(
                     message="Invalid API key", endpoint="thirdparties", status_code=401
-                )
+                ),
             )
 
             def mock_factory(ctx):
@@ -780,7 +767,7 @@ class TestDolibarrErrors:
             _resolver = IdentityResolver(store, mock_factory)
             user_context = await _resolver.resolve(context_a, 123456)
 
-            with patch('core.hermes.context.CompanyContext.create_dolibarr_client', return_value=mock_client):
+            with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
                 result = await tool.execute(context_a, user_context, limit=10, offset=0)
 
@@ -801,9 +788,7 @@ class TestAuditLogging:
     """Tests de auditoría de operaciones exitosas y denegadas."""
 
     @pytest.mark.asyncio
-    async def test_successful_list_audits_thirdparty_list(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_successful_list_audits_thirdparty_list(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Ejecución exitosa genera auditoría thirdparty.list con datos correctos."""
         import tempfile
         from pathlib import Path
@@ -830,7 +815,7 @@ class TestAuditLogging:
             _resolver = IdentityResolver(store, mock_factory)
             user_context = await _resolver.resolve(context_a, 123456)
 
-            with patch('core.hermes.context.CompanyContext.create_dolibarr_client', return_value=mock_client):
+            with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
                 result = await tool.execute(context_a, user_context, limit=10, offset=0)
 
@@ -866,7 +851,7 @@ class TestAuditLogging:
             _resolver = IdentityResolver(store, mock_factory)
             user_context = await _resolver.resolve(context_a, 123456)
 
-            with patch('core.hermes.context.CompanyContext.create_dolibarr_client', return_value=mock_client):
+            with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 result = await tool_registry.execute_tool(
                     instance_id="empresa_a",
                     name="list_thirdparties",
@@ -891,9 +876,7 @@ class TestPaginationAndFormatting:
     """Tests de paginación y formato de respuesta."""
 
     @pytest.mark.asyncio
-    async def test_list_thirdparties_respects_limit_offset(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_list_thirdparties_respects_limit_offset(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Tool respeta limit y offset en llamada a Dolibarr."""
         import tempfile
         from pathlib import Path
@@ -918,7 +901,7 @@ class TestPaginationAndFormatting:
             _resolver = IdentityResolver(store, mock_factory)
             user_context = await _resolver.resolve(context_a, 123456)
 
-            with patch('core.hermes.context.CompanyContext.create_dolibarr_client', return_value=mock_client):
+            with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
                 await tool.execute(context_a, user_context, limit=5, offset=10)
 
@@ -928,9 +911,7 @@ class TestPaginationAndFormatting:
             assert call_args.kwargs["offset"] == 10
 
     @pytest.mark.asyncio
-    async def test_empty_results_returns_no_thirdparties_message(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_empty_results_returns_no_thirdparties_message(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Dolibarr devuelve cero terceros → mensaje 'No se han encontrado terceros'."""
         import tempfile
         from pathlib import Path
@@ -955,7 +936,7 @@ class TestPaginationAndFormatting:
             _resolver = IdentityResolver(store, mock_factory)
             user_context = await _resolver.resolve(context_a, 123456)
 
-            with patch('core.hermes.context.CompanyContext.create_dolibarr_client', return_value=mock_client):
+            with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
                 result = await tool.execute(context_a, user_context, limit=10, offset=0)
 
@@ -1002,9 +983,7 @@ class TestToolRegistry:
         assert "thirdparty.read" in tool.required_permissions
 
     @pytest.mark.asyncio
-    async def test_tool_registry_execute_with_permissions(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_tool_registry_execute_with_permissions(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Registry ejecuta tool verificando permisos."""
         import tempfile
         from pathlib import Path
@@ -1028,7 +1007,7 @@ class TestToolRegistry:
             _resolver = IdentityResolver(store, mock_factory)
             user_context = await _resolver.resolve(context_a, 123456)
 
-            with patch('core.hermes.context.CompanyContext.create_dolibarr_client', return_value=mock_client):
+            with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 result = await tool_registry.execute_tool(
                     instance_id="empresa_a",
                     name="list_thirdparties",
@@ -1041,9 +1020,7 @@ class TestToolRegistry:
             assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_tool_registry_returns_error_for_unknown_tool(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_tool_registry_returns_error_for_unknown_tool(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Tool desconocida → TOOL_NOT_FOUND error."""
         import tempfile
         from pathlib import Path
@@ -1087,9 +1064,7 @@ class TestParametersValidation:
     """Tests de validación de parámetros de la tool."""
 
     @pytest.mark.asyncio
-    async def test_invalid_params_returns_error(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_invalid_params_returns_error(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Parámetros inválidos → INVALID_PARAMS error."""
         import tempfile
         from pathlib import Path
@@ -1114,7 +1089,7 @@ class TestParametersValidation:
             _resolver = IdentityResolver(store, mock_factory)
             user_context = await _resolver.resolve(context_a, 123456)
 
-            with patch('core.hermes.context.CompanyContext.create_dolibarr_client', return_value=mock_client):
+            with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
                 # Invalid param: limit negative
                 result = await tool.execute(context_a, user_context, limit=-5, offset=0)
@@ -1126,6 +1101,7 @@ class TestParametersValidation:
     async def test_params_schema_defined(self):
         """Tool tiene schema de parámetros definido."""
         from core.hermes.tools.thirdparty_tools import ListThirdpartiesTool
+
         tool = ListThirdpartiesTool()
         schema = tool.definition.parameters_schema
         assert schema["type"] == "object"
@@ -1144,20 +1120,15 @@ class TestNoResultsFormat:
     """Tests de formato cuando no hay resultados."""
 
     @pytest.mark.asyncio
-    async def test_zero_thirdparties_formatted_correctly(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_zero_thirdparties_formatted_correctly(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Cero terceros -> respuesta formateada correcta."""
         from core.hermes.main import _format_thirdparties_response
 
         formatted = await _format_thirdparties_response([], limit=10, offset=0)
         assert "No se han encontrado terceros" in formatted
 
-
     @pytest.mark.asyncio
-    async def test_multiple_thirdparties_formatted_correctly(
-        self, context_a, telegram_identity_a, dolibarr_user_a
-    ):
+    async def test_multiple_thirdparties_formatted_correctly(self, context_a, telegram_identity_a, dolibarr_user_a):
         """Múltiples terceros -> lista numerada con tipos."""
         from core.hermes.main import _format_thirdparties_response
 

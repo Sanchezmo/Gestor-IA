@@ -59,8 +59,10 @@ def mock_redis():
     def mock_redis_factory(*args, **kwargs):
         return fake_redis
 
-    with patch("redis.Redis", side_effect=mock_redis_factory), \
-         patch("redis.asyncio.Redis", side_effect=mock_redis_factory):
+    with (
+        patch("redis.Redis", side_effect=mock_redis_factory),
+        patch("redis.asyncio.Redis", side_effect=mock_redis_factory),
+    ):
         yield fake_redis
 
 
@@ -152,7 +154,7 @@ def telegram_identity_b():
     return TelegramIdentity(
         instance_id="empresa_b",
         telegram_user_id=123456,  # Same Telegram ID
-        dolibarr_user_id=8,       # Different Dolibarr user
+        dolibarr_user_id=8,  # Different Dolibarr user
     )
 
 
@@ -390,10 +392,11 @@ class TestWebhookSecretValidation:
 
             mock_telegram = make_mock_telegram_client()
 
-            with patch("core.hermes.main._get_telegram_client", return_value=mock_telegram), \
-                 patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr), \
-                 patch("core.hermes.resolver.IdentityStore", return_value=store):
-
+            with (
+                patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+                patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr),
+                patch("core.hermes.resolver.IdentityStore", return_value=store),
+            ):
                 client = TestClient(app)
                 payload = make_valid_webhook_payload(1, "/terceros")
                 headers = make_webhook_secret_header("secret_a")
@@ -412,9 +415,7 @@ class TestWebhookSecretValidation:
 class TestHappyPath:
     """Tests del happy path completo."""
 
-    def test_terceros_command_returns_formatted_response(
-        self, instance_a_config, telegram_identity_a, dolibarr_user_a
-    ):
+    def test_terceros_command_returns_formatted_response(self, instance_a_config, telegram_identity_a, dolibarr_user_a):
         """Comando /terceros → respuesta formateada con terceros."""
         from core.hermes.identity_store import IdentityStore
         from core.hermes.instance_config import _config_cache
@@ -427,6 +428,7 @@ class TestHappyPath:
 
             # Create a mock user_context directly
             from core.hermes.identity import UserContext
+
             mock_user_context = UserContext(
                 instance_id="empresa_a",
                 telegram_user_id=123456,
@@ -464,10 +466,11 @@ class TestHappyPath:
 
             mock_telegram = make_mock_telegram_client()
 
-            with patch("core.hermes.main._get_telegram_client", return_value=mock_telegram), \
-                 patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr), \
-                 patch("core.hermes.main.get_user_context", return_value=mock_user_context):
-
+            with (
+                patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+                patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr),
+                patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+            ):
                 client = TestClient(app)
                 payload = make_valid_webhook_payload(100, "/terceros")
                 headers = make_webhook_secret_header("secret_a")
@@ -492,9 +495,7 @@ class TestHappyPath:
 class TestPermissionDenied:
     """Tests de autorización denegada."""
 
-    def test_user_without_permission_denied(
-        self, instance_a_config, telegram_identity_a, dolibarr_user_no_perms
-    ):
+    def test_user_without_permission_denied(self, instance_a_config, telegram_identity_a, dolibarr_user_no_perms):
         """Usuario válido SIN thirdparty.read → denegado, Dolibarr NO llamado."""
         from core.hermes.identity import UserContext
         from core.hermes.instance_config import _config_cache
@@ -520,10 +521,11 @@ class TestPermissionDenied:
 
         mock_telegram = make_mock_telegram_client()
 
-        with patch("core.hermes.main._get_telegram_client", return_value=mock_telegram), \
-             patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr), \
-             patch("core.hermes.main.get_user_context", return_value=mock_user_context):
-
+        with (
+            patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+            patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr),
+            patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+        ):
             client = TestClient(app)
             payload = make_valid_webhook_payload(200, "/terceros")
             headers = make_webhook_secret_header("secret_a")
@@ -560,6 +562,7 @@ class TestCrossInstanceIsolation:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             from core.hermes.identity_store import IdentityStore
+
             store_a = IdentityStore("empresa_a", Path(tmpdir))
             store_a.create(telegram_identity_a)
 
@@ -585,10 +588,11 @@ class TestCrossInstanceIsolation:
 
             mock_telegram = make_mock_telegram_client()
 
-            with patch("core.hermes.main._get_telegram_client", return_value=mock_telegram), \
-                 patch.object(DolibarrClient, "__init__", tracking_init), \
-                 patch("core.hermes.main.get_user_context", return_value=mock_user_context):
-
+            with (
+                patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+                patch.object(DolibarrClient, "__init__", tracking_init),
+                patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+            ):
                 client = TestClient(app)
                 payload = make_valid_webhook_payload(300, "/terceros")
                 headers = make_webhook_secret_header("secret_a")
@@ -610,9 +614,7 @@ class TestCrossInstanceIsolation:
 class TestIdempotency:
     """Tests de idempotencia webhook via Redis."""
 
-    def test_duplicate_update_id_executed_once(
-        self, instance_a_config, telegram_identity_a, dolibarr_user_a
-    ):
+    def test_duplicate_update_id_executed_once(self, instance_a_config, telegram_identity_a, dolibarr_user_a):
         """Mismo update_id dos veces → Tool ejecutada 1 vez."""
         from core.hermes.identity import UserContext
         from core.hermes.instance_config import _config_cache
@@ -649,10 +651,11 @@ class TestIdempotency:
 
         mock_telegram = make_mock_telegram_client()
 
-        with patch("core.hermes.main._get_telegram_client", return_value=mock_telegram), \
-             patch("core.hermes.context.CompanyContext.create_dolibarr_client", side_effect=counting_mock_dolibarr), \
-             patch("core.hermes.main.get_user_context", return_value=mock_user_context):
-
+        with (
+            patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+            patch("core.hermes.context.CompanyContext.create_dolibarr_client", side_effect=counting_mock_dolibarr),
+            patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+        ):
             client = TestClient(app)
             payload = make_valid_webhook_payload(400, "/terceros")
             headers = make_webhook_secret_header("secret_a")
@@ -678,9 +681,7 @@ class TestIdempotency:
 class TestDolibarrErrorsNoLeaks:
     """Tests de errores de Dolibarr - respuesta segura."""
 
-    def test_dolibarr_timeout_returns_safe_message(
-        self, instance_a_config, telegram_identity_a, dolibarr_user_a
-    ):
+    def test_dolibarr_timeout_returns_safe_message(self, instance_a_config, telegram_identity_a, dolibarr_user_a):
         """Dolibarr timeout → respuesta segura, NO stacktrace."""
         from core.hermes.identity import UserContext
         from core.hermes.instance_config import _config_cache
@@ -710,10 +711,11 @@ class TestDolibarrErrorsNoLeaks:
 
         mock_telegram = make_mock_telegram_client()
 
-        with patch("core.hermes.main._get_telegram_client", return_value=mock_telegram), \
-             patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr), \
-             patch("core.hermes.main.get_user_context", return_value=mock_user_context):
-
+        with (
+            patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+            patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr),
+            patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+        ):
             client = TestClient(app)
             payload = make_valid_webhook_payload(500, "/terceros")
             headers = make_webhook_secret_header("secret_a")
@@ -733,9 +735,7 @@ class TestDolibarrErrorsNoLeaks:
             assert "traceback" not in response_text.lower()
             assert "exception" not in response_text.lower()
 
-    def test_dolibarr_500_returns_safe_message(
-        self, instance_a_config, telegram_identity_a, dolibarr_user_a
-    ):
+    def test_dolibarr_500_returns_safe_message(self, instance_a_config, telegram_identity_a, dolibarr_user_a):
         """Dolibarr 500 → respuesta segura."""
         from core.hermes.identity import UserContext
         from core.hermes.instance_config import _config_cache
@@ -765,10 +765,11 @@ class TestDolibarrErrorsNoLeaks:
 
         mock_telegram = make_mock_telegram_client()
 
-        with patch("core.hermes.main._get_telegram_client", return_value=mock_telegram), \
-             patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr), \
-             patch("core.hermes.main.get_user_context", return_value=mock_user_context):
-
+        with (
+            patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+            patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr),
+            patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+        ):
             client = TestClient(app)
             payload = make_valid_webhook_payload(501, "/terceros")
             headers = make_webhook_secret_header("secret_a")
@@ -816,10 +817,11 @@ class TestDolibarrErrorsNoLeaks:
 
         mock_telegram = make_mock_telegram_client()
 
-        with patch("core.hermes.main._get_telegram_client", return_value=mock_telegram), \
-             patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr), \
-             patch("core.hermes.main.get_user_context", return_value=mock_user_context):
-
+        with (
+            patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+            patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr),
+            patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+        ):
             client = TestClient(app)
             payload = make_valid_webhook_payload(502, "/terceros")
             headers = make_webhook_secret_header("secret_a")
@@ -1174,4 +1176,3 @@ class TestEndpointClassification:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
-

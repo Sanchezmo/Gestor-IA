@@ -250,9 +250,7 @@ class TestUserContext:
                 "thirdparty": {"read": 1, "create": 1},
                 "invoice": {"read": 1},
             },
-            user_group_list=[
-                DolibarrGroup(id=5, name="Comercial", entity=1)
-            ],
+            user_group_list=[DolibarrGroup(id=5, name="Comercial", entity=1)],
         )
 
     def test_effective_permissions_from_dolibarr(self):
@@ -448,7 +446,7 @@ class TestIdentityStore:
         identity2 = TelegramIdentity(
             instance_id="empresa_a",
             telegram_user_id=123456,  # Same telegram_user_id
-            dolibarr_user_id=18,      # Different dolibarr_user_id
+            dolibarr_user_id=18,  # Different dolibarr_user_id
         )
         store.create(identity1)
         with pytest.raises(sqlite3.IntegrityError):
@@ -463,7 +461,7 @@ class TestIdentityStore:
         identity2 = TelegramIdentity(
             instance_id="empresa_a",
             telegram_user_id=123457,  # Different telegram_user_id
-            dolibarr_user_id=17,      # Same dolibarr_user_id
+            dolibarr_user_id=17,  # Same dolibarr_user_id
         )
         store.create(identity1)
         with pytest.raises(sqlite3.IntegrityError):
@@ -482,7 +480,7 @@ class TestIdentityStore:
         identity_b = TelegramIdentity(
             instance_id="empresa_b",
             telegram_user_id=123456,  # Same Telegram ID
-            dolibarr_user_id=8,       # Different Dolibarr user
+            dolibarr_user_id=8,  # Different Dolibarr user
         )
 
         store_a.create(identity_a)

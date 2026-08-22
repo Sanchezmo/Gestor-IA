@@ -168,6 +168,7 @@ def cmd_user_link(
 
     # Validate Dolibarr user exists via API
     try:
+
         async def check_dolibarr_user():
             async with httpx.AsyncClient(timeout=10) as c:
                 r = await c.get(
@@ -282,7 +283,7 @@ def cmd_user_list(project_root: Path, instance_id: str) -> int:
 
     print(f"Users in {instance_id} ({cfg.company_name}):")
     print(f"  {'Telegram ID':>15} | {'Dolibarr ID':>12} | {'Enabled':>7} | {'Created':>19} | {'Last Seen':>19}")
-    print(f"  {'-'*15} | {'-'*12} | {'-'*7} | {'-'*19} | {'-'*19}")
+    print(f"  {'-' * 15} | {'-' * 12} | {'-' * 7} | {'-' * 19} | {'-' * 19}")
     for identity in identities:
         created = identity.created_at.strftime("%Y-%m-%d %H:%M:%S") if identity.created_at else "N/A"
         last_seen = identity.last_seen_at.strftime("%Y-%m-%d %H:%M:%S") if identity.last_seen_at else "N/A"
@@ -324,6 +325,7 @@ def cmd_user_show(project_root: Path, instance_id: str, telegram_user: int) -> i
 
     # Try to fetch Dolibarr user info
     try:
+
         async def get_dolibarr_user():
             async with httpx.AsyncClient(timeout=10) as c:
                 r = await c.get(

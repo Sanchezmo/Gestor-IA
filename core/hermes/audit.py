@@ -30,6 +30,7 @@ Base = declarative_base()
 # ACTION CONSTANTS FOR IDENTITY/AUTHORIZATION EVENTS
 # =========================================================================
 
+
 class AuditActions:
     """Standard action names for audit logging."""
 
@@ -48,16 +49,25 @@ class AuditActions:
     USER_DISABLED = "user.disabled"
 
     # Critical actions that should never be cleaned up
-    CRITICAL_ACTIONS = frozenset([
-        "login", "logout", "permission_change",
-        "approval_decision", "invoice_approval",
-        "supplier_creation", "data_export",
-        TELEGRAM_IDENTITY_UNKNOWN,
-        TELEGRAM_IDENTITY_DISABLED,
-        DOLIBARR_USER_DISABLED,
-        AUTHORIZATION_DENIED,
-        USER_LINKED, USER_UNLINKED, USER_ENABLED, USER_DISABLED,
-    ])
+    CRITICAL_ACTIONS = frozenset(
+        [
+            "login",
+            "logout",
+            "permission_change",
+            "approval_decision",
+            "invoice_approval",
+            "supplier_creation",
+            "data_export",
+            TELEGRAM_IDENTITY_UNKNOWN,
+            TELEGRAM_IDENTITY_DISABLED,
+            DOLIBARR_USER_DISABLED,
+            AUTHORIZATION_DENIED,
+            USER_LINKED,
+            USER_UNLINKED,
+            USER_ENABLED,
+            USER_DISABLED,
+        ]
+    )
 
 
 class AuditLog(Base):

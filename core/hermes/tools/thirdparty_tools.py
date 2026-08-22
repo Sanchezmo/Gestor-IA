@@ -19,18 +19,20 @@ from core.integrations.dolibarr.client import DolibarrException
 # =========================================================================
 
 # Dolibarr thirdparty sortable fields (confirmed from Dolibarr API)
-ALLOWED_THIRDPARTY_SORT_FIELDS: frozenset[str] = frozenset({
-    "rowid",       # ID interno
-    "name",        # Nombre
-    "ref",         # Referencia
-    "date_creation",  # Fecha creación
-    "date_modification",  # Fecha modificación
-    "email",       # Email
-    "phone",       # Teléfono
-    "client",      # Es cliente (0/1)
-    "fournisseur", # Es proveedor (0/1)
-    "status",      # Estado
-})
+ALLOWED_THIRDPARTY_SORT_FIELDS: frozenset[str] = frozenset(
+    {
+        "rowid",  # ID interno
+        "name",  # Nombre
+        "ref",  # Referencia
+        "date_creation",  # Fecha creación
+        "date_modification",  # Fecha modificación
+        "email",  # Email
+        "phone",  # Teléfono
+        "client",  # Es cliente (0/1)
+        "fournisseur",  # Es proveedor (0/1)
+        "status",  # Estado
+    }
+)
 
 ALLOWED_SORT_ORDERS: frozenset[str] = frozenset({"ASC", "DESC"})
 
@@ -48,8 +50,16 @@ class ListThirdpartiesParams:
     filter_customer: bool | None = None  # True=clientes, False=proveedores, None=todos
     filter_status: int | None = None  # 0=borrador, 1=activo, etc.
     sort_field: Literal[
-        "rowid", "name", "ref", "date_creation", "date_modification",
-        "email", "phone", "client", "fournisseur", "status"
+        "rowid",
+        "name",
+        "ref",
+        "date_creation",
+        "date_modification",
+        "email",
+        "phone",
+        "client",
+        "fournisseur",
+        "status",
     ] = "name"
     sort_order: Literal["ASC", "DESC"] = "ASC"
 

@@ -33,9 +33,7 @@ class TestDolibarrClientUserExtensions:
                 "thirdparty": {"read": 1, "create": 1},
                 "invoice": {"read": 1},
             },
-            "user_group_list": [
-                {"id": "5", "name": "Comercial", "entity": "1"}
-            ],
+            "user_group_list": [{"id": "5", "name": "Comercial", "entity": "1"}],
         }
 
     @pytest.fixture
@@ -97,9 +95,9 @@ class TestDolibarrClientUserExtensions:
 
     @pytest.mark.asyncio
     async def test_get_user_not_found(self, client):
-        client._request = AsyncMock(side_effect=DolibarrException(
-            message="User not found", endpoint="users/999", status_code=404
-        ))
+        client._request = AsyncMock(
+            side_effect=DolibarrException(message="User not found", endpoint="users/999", status_code=404)
+        )
 
         async with client as c:
             with pytest.raises(DolibarrException) as exc_info:
@@ -207,14 +205,10 @@ class TestDolibarrClientUserIntegration:
             "rights": {
                 "thirdparty": {"read": 1},
             },
-            "user_group_list": [
-                {"id": "5", "name": "Comercial", "entity": "1"}
-            ],
+            "user_group_list": [{"id": "5", "name": "Comercial", "entity": "1"}],
         }
 
-        groups_data = [
-            {"id": "5", "name": "Comercial", "entity": "1"}
-        ]
+        groups_data = [{"id": "5", "name": "Comercial", "entity": "1"}]
 
         group_perms = {
             "id": "5",

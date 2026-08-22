@@ -157,9 +157,7 @@ class TestIdentityResolver:
         assert exc_info.value.telegram_user_id == 999999
 
     @pytest.mark.asyncio
-    async def test_resolve_identity_disabled(
-        self, resolver, company_context, identity_store, telegram_identity
-    ):
+    async def test_resolve_identity_disabled(self, resolver, company_context, identity_store, telegram_identity):
         disabled_identity = telegram_identity.with_enabled(False)
         identity_store.create(disabled_identity)
 
@@ -170,17 +168,15 @@ class TestIdentityResolver:
         assert exc_info.value.telegram_user_id == 123456
 
     @pytest.mark.asyncio
-    async def test_resolve_dolibarr_user_not_found(
-        self, resolver, company_context, identity_store, telegram_identity
-    ):
+    async def test_resolve_dolibarr_user_not_found(self, resolver, company_context, identity_store, telegram_identity):
         identity_store.create(telegram_identity)
 
         mock_client = AsyncMock(spec=DolibarrClient)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client.get_user = AsyncMock(side_effect=DolibarrException(
-            message="User not found", endpoint="users/17", status_code=404
-        ))
+        mock_client.get_user = AsyncMock(
+            side_effect=DolibarrException(message="User not found", endpoint="users/17", status_code=404)
+        )
 
         def mock_factory(ctx):
             return mock_client
@@ -193,9 +189,7 @@ class TestIdentityResolver:
         assert exc_info.value.dolibarr_user_id == 17
 
     @pytest.mark.asyncio
-    async def test_resolve_dolibarr_user_disabled(
-        self, resolver, company_context, identity_store, telegram_identity
-    ):
+    async def test_resolve_dolibarr_user_disabled(self, resolver, company_context, identity_store, telegram_identity):
         identity_store.create(telegram_identity)
 
         inactive_user = DolibarrUser(
@@ -232,9 +226,9 @@ class TestIdentityResolver:
         mock_client = AsyncMock(spec=DolibarrClient)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client.get_user = AsyncMock(side_effect=DolibarrException(
-            message="Timeout", endpoint="users/17", status_code=504
-        ))
+        mock_client.get_user = AsyncMock(
+            side_effect=DolibarrException(message="Timeout", endpoint="users/17", status_code=504)
+        )
 
         def mock_factory(ctx):
             return mock_client
@@ -293,7 +287,7 @@ class TestIdentityResolverCrossInstance:
         identity_b = TelegramIdentity(
             instance_id="empresa_b",
             telegram_user_id=123456,  # Same Telegram ID
-            dolibarr_user_id=8,       # Different Dolibarr user
+            dolibarr_user_id=8,  # Different Dolibarr user
         )
 
         store_a.create(identity_a)
@@ -303,18 +297,14 @@ class TestIdentityResolverCrossInstance:
         config_a = InstanceConfig(
             instance_id="empresa_a",
             company_name="Empresa A",
-            database=DatabaseConfig(
-                host="127.0.0.1", port=3306, name="dolibarr_a", user="db_a", password="pass"
-            ),
+            database=DatabaseConfig(host="127.0.0.1", port=3306, name="dolibarr_a", user="db_a", password="pass"),
             dolibarr=DolibarrConfig(
                 version="23.0.4",
                 internal_url="http://localhost:8081",
                 api_key="key_a",
                 documents_path="/docs",
             ),
-            telegram=TelegramConfig(
-                bot_token="token_a", webhook_path="/webhook/a", webhook_secret="secret_a"
-            ),
+            telegram=TelegramConfig(bot_token="token_a", webhook_path="/webhook/a", webhook_secret="secret_a"),
             domains=DomainConfig(base="a.com"),
             ai=AIConfig(ollama_model="test-model"),
         ).resolve_paths()
@@ -322,18 +312,14 @@ class TestIdentityResolverCrossInstance:
         config_b = InstanceConfig(
             instance_id="empresa_b",
             company_name="Empresa B",
-            database=DatabaseConfig(
-                host="127.0.0.1", port=3306, name="dolibarr_b", user="db_b", password="pass"
-            ),
+            database=DatabaseConfig(host="127.0.0.1", port=3306, name="dolibarr_b", user="db_b", password="pass"),
             dolibarr=DolibarrConfig(
                 version="23.0.4",
                 internal_url="http://localhost:8082",
                 api_key="key_b",
                 documents_path="/docs",
             ),
-            telegram=TelegramConfig(
-                bot_token="token_b", webhook_path="/webhook/b", webhook_secret="secret_b"
-            ),
+            telegram=TelegramConfig(bot_token="token_b", webhook_path="/webhook/b", webhook_secret="secret_b"),
             domains=DomainConfig(base="b.com"),
             ai=AIConfig(ollama_model="test-model"),
         ).resolve_paths()

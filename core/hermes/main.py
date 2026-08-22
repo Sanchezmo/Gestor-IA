@@ -238,9 +238,7 @@ class RequirePermission:
     def __init__(self, permission: str):
         self.permission = permission
 
-    async def __call__(
-        self, request: Request, user_context: UserContext = Depends(get_user_context)
-    ) -> UserContext:
+    async def __call__(self, request: Request, user_context: UserContext = Depends(get_user_context)) -> UserContext:
         auth_service = AuthorizationService()
         auth_service.require(user_context, self.permission)
         return user_context
@@ -271,18 +269,14 @@ async def require_admin_user(request: Request) -> CompanyContext:
         dummy_config = InstanceConfig(
             instance_id="admin",
             company_name="Gestor-IA Admin",
-            database=DatabaseConfig(
-                host="127.0.0.1", port=3306, name="admin", user="admin", password="admin"
-            ),
+            database=DatabaseConfig(host="127.0.0.1", port=3306, name="admin", user="admin", password="admin"),
             dolibarr=DolibarrConfig(
                 version="1.0",
                 internal_url="http://127.0.0.1:8081",
                 api_key="admin",
                 documents_path="/tmp",
             ),
-            telegram=TelegramConfig(
-                bot_token="admin", webhook_path="/webhook/admin", webhook_secret="admin"
-            ),
+            telegram=TelegramConfig(bot_token="admin", webhook_path="/webhook/admin", webhook_secret="admin"),
             domains=DomainConfig(base="admin.local"),
             ai=AIConfig(ollama_model="dummy"),
         )
@@ -303,18 +297,14 @@ async def require_admin_user(request: Request) -> CompanyContext:
         dummy_config = InstanceConfig(
             instance_id="system",
             company_name="Gestor-IA System",
-            database=DatabaseConfig(
-                host="127.0.0.1", port=3306, name="system", user="system", password="system"
-            ),
+            database=DatabaseConfig(host="127.0.0.1", port=3306, name="system", user="system", password="system"),
             dolibarr=DolibarrConfig(
                 version="1.0",
                 internal_url="http://127.0.0.1:8081",
                 api_key="system",
                 documents_path="/tmp",
             ),
-            telegram=TelegramConfig(
-                bot_token="system", webhook_path="/webhook/system", webhook_secret="system"
-            ),
+            telegram=TelegramConfig(bot_token="system", webhook_path="/webhook/system", webhook_secret="system"),
             domains=DomainConfig(base="system.local"),
             ai=AIConfig(ollama_model="dummy"),
         )
