@@ -157,7 +157,9 @@ def main() -> int:
         return 1
 
     command = sys.argv[1]
-    project_root = Path.cwd()
+    from core.hermes.utils import get_project_root
+
+    project_root = get_project_root()
 
     if command == "list-instances":
         return cmd_list_instances(project_root)

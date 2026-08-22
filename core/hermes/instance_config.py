@@ -217,6 +217,8 @@ import threading
 
 import yaml
 
+from core.hermes.utils import get_instances_root
+
 _config_cache: dict[str, InstanceConfig] = {}
 _cache_lock = threading.Lock()
 
@@ -239,9 +241,7 @@ def load_instance_config(instance_id: str, instances_root: Path | None = None) -
             return _config_cache[instance_id]
 
     if instances_root is None:
-        from core.hermes.config import get_global_settings
-
-        instances_root = get_global_settings().PROJECT_ROOT / "instances"
+        instances_root = get_instances_root()
 
     config_path = instances_root / instance_id / "config.yml"
     if not config_path.exists():
@@ -264,9 +264,7 @@ def load_instance_config(instance_id: str, instances_root: Path | None = None) -
 def list_instances(instances_root: Path | None = None) -> list[str]:
     """Listar IDs de instancias disponibles."""
     if instances_root is None:
-        from core.hermes.config import get_global_settings
-
-        instances_root = get_global_settings().PROJECT_ROOT / "instances"
+        instances_root = get_instances_root()
 
     if not instances_root.exists():
         return []

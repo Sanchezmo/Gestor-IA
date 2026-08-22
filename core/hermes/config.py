@@ -8,6 +8,8 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from core.hermes.utils import get_project_root
+
 
 class GlobalSettings(BaseSettings):
     """
@@ -28,7 +30,7 @@ class GlobalSettings(BaseSettings):
     # ENTORNO GENERAL
     # =========================================================================
     ENVIRONMENT: str = "development"  # development | staging | production
-    PROJECT_ROOT: Path = Field(default_factory=lambda: Path.cwd())
+    PROJECT_ROOT: Path = Field(default_factory=get_project_root)
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"
 
