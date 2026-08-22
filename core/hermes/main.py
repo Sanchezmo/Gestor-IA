@@ -14,13 +14,16 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from core.hermes.audit import AuditLogger, create_audit_logger
+from core.hermes.audit import AuditActions, AuditLogger, create_audit_logger
+from core.hermes.authorization import AuthorizationService
 from core.hermes.config import GlobalSettings, get_global_settings
-from core.hermes.context import CompanyContext, get_company_context
+from core.hermes.context import CompanyContext
 from core.hermes.extensions import extension_registry, load_extensions_from_config
 from core.hermes.instance_config import list_instances, load_instance_config
 from core.hermes.policy import create_model_router_from_config
-from core.hermes.resolver import InstanceResolutionMiddleware
+from core.hermes.resolver import InstanceResolutionMiddleware, get_company_context, get_user_context
+from core.hermes.tools import tool_registry
+from core.hermes.tools.thirdparty_tools import register_core_thirdparty_tools
 from core.integrations.cloudflare.manager import create_cloudflare_manager
 from core.integrations.dolibarr.client import DolibarrClient
 from core.integrations.telegram.client import TelegramClient, create_telegram_client
@@ -88,6 +91,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     _telegram_clients[instance_id] = client
                 except Exception as e:
                     logger.warning("telegram_client_preload_failed", instance_id=instance_id, error=str(e))
+
+    # Registrar core tools de Hermes
+    register_core_thirdparty_tools()
 
     logger.info("gestor_ia_started", active_instances=len(_telegram_clients))
 
@@ -363,6 +369,37 @@ async def reload_instance(instance_id: str):
 # =========================================================================
 
 
+async def _get_telegram_client(instance_id: str, bot_token: str) -> TelegramClient:
+    """Obtener o crear TelegramClient para una instancia."""
+    client = _telegram_clients.get(instance_id)
+    if not client:
+        client = await create_telegram_client(bot_token)
+        _telegram_clients[instance_id] = client
+    return client
+
+
+async def _format_thirdparties_response(parties: list[dict], limit: int, offset: int) -> str:
+    """Formatear lista de terceros para Telegram."""
+    if not parties:
+        return "No se han encontrado terceros."
+
+    lines = ["Terceros encontrados:"]
+    for i, p in enumerate(parties, 1):
+        tipo = []
+        if p.get("is_customer"):
+            tipo.append("Cliente")
+        if p.get("is_supplier"):
+            tipo.append("Proveedor")
+        tipo_str = f" ({', '.join(tipo)})" if tipo else ""
+        email_str = f" - {p['email']}" if p.get("email") else ""
+        lines.append(f"{i}. {p['name']}{tipo_str}{email_str}")
+
+    if len(parties) >= limit:
+        lines.append(f"\nMostrando los primeros {limit} resultados (offset {offset}).")
+
+    return "\n".join(lines)
+
+
 @app.post("/webhook/{instance_id}", tags=["Telegram"])
 @app.post("/webhook/{instance_id}/", tags=["Telegram"])
 async def telegram_webhook(
@@ -373,8 +410,13 @@ async def telegram_webhook(
     """
     Webhook de Telegram multi-instancia.
 
-    La instancia se resuelve ANTES por el path /webhook/{instance_id}.
-    El middleware InstanceResolutionMiddleware valida que coincida.
+    Pipeline:
+    1. Validar webhook secret (ya hecho por middleware/get_company_context)
+    2. Idempotencia (Redis)
+    3. Resolver identidad -> UserContext
+    4. Enrutar comando a Hermes Tool
+    5. Formatear respuesta
+    6. Auditar
     """
     # Verificar que el instance_id del path coincide con el resuelto
     if ctx.instance_id != instance_id:
@@ -422,39 +464,152 @@ async def telegram_webhook(
 
     try:
         # Obtener Telegram client para esta instancia
-        telegram_client = _telegram_clients.get(instance_id)
-        if not telegram_client:
-            telegram_client = await create_telegram_client(ctx.telegram_config.bot_token)
-            _telegram_clients[instance_id] = telegram_client
+        telegram_client = await _get_telegram_client(instance_id, ctx.telegram_config.bot_token)
 
-        # TODO: Procesar update con SupervisorAgent/ExtensionRegistry
-        # Por ahora: echo básico
+        # Extraer mensaje
         message = update.get("message") or update.get("edited_message")
-        if message:
-            chat_id = message.get("chat", {}).get("id")
-            text = message.get("text", "")
+        if not message:
+            r.setex(idempotency_key, 86400, "completed")
+            return {"success": True, "update_id": update_id, "ignored": "no_message"}
 
-            if text == "/start":
-                start_text = (
-                    f"🤖 Gestor-IA - {ctx.company_name}\n\n"
-                    f"Instancia: {ctx.instance_id}\n\n"
-                    "Comandos:\n/start - Este mensaje\n/help - Ayuda\n/status - Estado"
-                )
-                await telegram_client.send_message(chat_id=chat_id, text=start_text)
-            elif text == "/help":
-                await telegram_client.send_message(
-                    chat_id=chat_id,
-                    text="Comandos disponibles:\n/start - Inicio\n/help - Esta ayuda\n/status - Estado de la instancia",
-                )
-            elif text == "/status":
-                agents_text = ", ".join(ctx.enabled_agents) or "ninguno"
-                status_text = f"Instancia: {ctx.instance_id}\nEmpresa: {ctx.company_name}\nAgentes: {agents_text}"
-                await telegram_client.send_message(chat_id=chat_id, text=status_text)
+        chat_id = message.get("chat", {}).get("id")
+        text = (message.get("text") or "").strip()
+        telegram_user_id = message.get("from", {}).get("id")
+
+        if not text:
+            await telegram_client.send_message(chat_id=chat_id, text="Solo se procesan mensajes de texto.")
+            r.setex(idempotency_key, 86400, "completed")
+            return {"success": True, "update_id": update_id}
+
+        # =====================================================================
+        # PIPELINE: Resolver identidad -> UserContext
+        # =====================================================================
+        user_context = None
+        auth_error = None
+
+        if telegram_user_id:
+            try:
+                # Usar get_user_context que ya resuelve identidad + permisos
+                user_context = await get_user_context(request)
+            except HTTPException as e:
+                auth_error = e.detail
+                if isinstance(auth_error, dict):
+                    auth_error = auth_error.get("message", "No autorizado")
+                else:
+                    auth_error = str(auth_error)
+
+        # =====================================================================
+        # ENRUTAMIENTO DE COMANDOS
+        # =====================================================================
+        response_text = ""
+
+        if text == "/start":
+            response_text = (
+                f"🤖 Gestor-IA - {ctx.company_name}\n\n"
+                f"Instancia: {ctx.instance_id}\n\n"
+                "Comandos:\n/start - Este mensaje\n/help - Ayuda\n/status - Estado\n/terceros - Listar terceros"
+            )
+
+        elif text == "/help":
+            response_text = (
+                "Comandos disponibles:\n"
+                "/start - Inicio\n"
+                "/help - Esta ayuda\n"
+                "/status - Estado de la instancia\n"
+                "/terceros - Listar terceros (clientes/proveedores)"
+            )
+
+        elif text == "/status":
+            agents_text = ", ".join(ctx.enabled_agents) or "ninguno"
+            response_text = f"Instancia: {ctx.instance_id}\nEmpresa: {ctx.company_name}\nAgentes: {agents_text}"
+
+        elif text == "/terceros":
+            if not user_context:
+                response_text = "No tienes acceso autorizado a este asistente."
+                # Auditoría: identidad desconocida
+                if _audit_logger:
+                    await _audit_logger.log_from_context(
+                        ctx,
+                        action=AuditActions.TELEGRAM_IDENTITY_UNKNOWN,
+                        resource_type="telegram_update",
+                        resource_id=str(update_id),
+                        status_code=403,
+                        success=False,
+                        error_code="UNAUTHORIZED",
+                        error_message="Telegram user not linked",
+                    )
             else:
-                await telegram_client.send_message(
-                    chat_id=chat_id,
-                    text=f"Recibido: {text}\n\nUsa /help para comandos.",
-                )
+                # AUTORIZACIÓN ANTES DE EJECUTAR
+                auth_service = AuthorizationService()
+                try:
+                    auth_service.require(user_context, "thirdparty.read")
+                except Exception as e:
+                    response_text = "No tienes permiso para consultar terceros."
+                    # Auditoría: autorización denegada
+                    if _audit_logger:
+                        await _audit_logger.log_from_context(
+                            ctx,
+                            action=AuditActions.AUTHORIZATION_DENIED,
+                            resource_type="tool",
+                            resource_id="list_thirdparties",
+                            status_code=403,
+                            success=False,
+                            error_code="PERMISSION_DENIED",
+                            error_message=str(e),
+                            telegram_user_id=user_context.telegram_user_id,
+                            dolibarr_user_id=user_context.dolibarr_user_id,
+                        )
+                else:
+                    # EJECUTAR TOOL via Hermes
+                    tool_result = await tool_registry.execute_tool(
+                        instance_id=instance_id,
+                        name="list_thirdparties",
+                        company_context=ctx,
+                        user_context=user_context,
+                        limit=10,  # Pequeño para Telegram
+                        offset=0,
+                    )
+
+                    if tool_result.success:
+                        response_text = await _format_thirdparties_response(
+                            tool_result.data["thirdparties"],
+                            tool_result.data["limit"],
+                            tool_result.data["offset"],
+                        )
+                        # Auditoría: éxito
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action="thirdparty.list",
+                                resource_type="thirdparty",
+                                status_code=200,
+                                success=True,
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
+                                new_state={"count": tool_result.data["count"]},
+                            )
+                    else:
+                        # Error de tool (Dolibarr, etc.)
+                        response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                        # Auditoría: error
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action="thirdparty.list",
+                                resource_type="thirdparty",
+                                status_code=500,
+                                success=False,
+                                error_code=tool_result.error_code,
+                                error_message=tool_result.error_message,
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
+                            )
+        else:
+            response_text = f"Comando no reconocido: {text}\n\nUsa /help para ver comandos disponibles."
+
+        # Enviar respuesta
+        if response_text:
+            await telegram_client.send_message(chat_id=chat_id, text=response_text)
 
         # Marcar completado
         r.setex(idempotency_key, 86400, "completed")
