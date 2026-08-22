@@ -8,14 +8,12 @@ Modificado para usar MariaDB (misma instancia server) en lugar de PostgreSQL.
 import hashlib
 import json
 from datetime import datetime
-from typing import Any, Optional
-from uuid import UUID, uuid4
+from typing import Any
+from uuid import uuid4
 
 import structlog
-from sqlalchemy import Column, String, Text, Integer, Boolean, DateTime, JSON, Index, create_engine, text
-from sqlalchemy.dialects.mysql import LONGTEXT
+from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Integer, String, Text, create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy.pool import NullPool
 
 logger = structlog.get_logger()
 
@@ -24,58 +22,59 @@ Base = declarative_base()
 
 class AuditLog(Base):
     """Tabla de auditoría inmutable (append-only)."""
+
     __tablename__ = "audit_log"
-    
+
     id = Column(String(36), primary_key=True)  # UUID
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    
+
     # Request tracking
     request_id = Column(String(36), nullable=False, index=True)
     correlation_id = Column(String(36), nullable=True, index=True)
-    
+
     # Actor info
     actor_type = Column(String(50), nullable=False)  # telegram_user, api_key, system
     actor_id = Column(String(100), nullable=False, index=True)
     instance_id = Column(String(100), nullable=False, index=True)  # CRÍTICO: aislamiento
-    
+
     # HTTP info
     method = Column(String(10), nullable=True)
     path = Column(String(500), nullable=True)
     query_params = Column(JSON, nullable=True)
     request_body_hash = Column(String(64), nullable=True)  # SHA256
-    
+
     # Resource info
     resource_type = Column(String(100), nullable=True, index=True)
     resource_id = Column(String(100), nullable=True, index=True)
     action = Column(String(100), nullable=False, index=True)
-    
+
     # State changes
     previous_state = Column(JSON, nullable=True)
     new_state = Column(JSON, nullable=True)
     diff = Column(JSON, nullable=True)
-    
+
     # Response
     status_code = Column(Integer, nullable=True)
     success = Column(Boolean, nullable=False, default=True, index=True)
     error_code = Column(String(100), nullable=True)
     error_message = Column(Text, nullable=True)
     error_details = Column(JSON, nullable=True)
-    
+
     # Performance
     duration_ms = Column(Integer, nullable=True)
-    
+
     # Idempotency
     idempotency_key = Column(String(200), nullable=True, index=True)
     idempotent = Column(Boolean, nullable=False, default=False)
-    
+
     # Network
     ip_address = Column(String(45), nullable=True)
     user_agent = Column(Text, nullable=True)
-    
+
     # Integrity chain
     previous_hash = Column(String(64), nullable=True)
     current_hash = Column(String(64), nullable=True)
-    
+
     # Índices compuestos para consultas comunes
     __table_args__ = (
         Index("ix_audit_instance_created", "instance_id", "created_at"),
@@ -88,7 +87,7 @@ class AuditLog(Base):
 class AuditLogger:
     """
     Logger de auditoría inmutable para MariaDB.
-    
+
     Características:
     - Append-only (no UPDATE/DELETE en aplicación)
     - Hash chain para integridad
@@ -96,7 +95,7 @@ class AuditLogger:
     - Query con filtros por instancia (aislamiento)
     - No bloquea request principal (fire-and-forget opcional)
     """
-    
+
     def __init__(self, database_url: str, pool_size: int = 5):
         """
         Args:
@@ -114,14 +113,14 @@ class AuditLogger:
             echo=False,
         )
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
-        
+
         # Crear tabla si no existe
         Base.metadata.create_all(self.engine)
-    
+
     def _calculate_hash(self, data: dict) -> str:
         """Calcular SHA256 de dict ordenado."""
         return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
-    
+
     def _calculate_diff(self, old: dict | None, new: dict | None) -> dict | None:
         """Calcular diferencia entre dos estados."""
         if not old and not new:
@@ -130,34 +129,32 @@ class AuditLogger:
             return {"added": new, "removed": {}, "changed": {}}
         if not new:
             return {"added": {}, "removed": old, "changed": {}}
-        
+
         diff = {"added": {}, "removed": {}, "changed": {}}
         all_keys = set(old.keys()) | set(new.keys())
-        
+
         for key in all_keys:
             old_val = old.get(key)
             new_val = new.get(key)
-            
+
             if key not in old:
                 diff["added"][key] = new_val
             elif key not in new:
                 diff["removed"][key] = old_val
             elif old_val != new_val:
                 diff["changed"][key] = {"from": old_val, "to": new_val}
-        
+
         # Si no hay cambios, retornar None
         if not diff["added"] and not diff["removed"] and not diff["changed"]:
             return None
-        
+
         return diff
-    
+
     def _get_last_hash(self, session) -> str:
         """Obtener hash del último registro para cadena de integridad."""
-        result = session.execute(
-            text("SELECT current_hash FROM audit_log ORDER BY created_at DESC LIMIT 1")
-        ).scalar()
+        result = session.execute(text("SELECT current_hash FROM audit_log ORDER BY created_at DESC LIMIT 1")).scalar()
         return result or "genesis"
-    
+
     async def log(
         self,
         *,
@@ -188,23 +185,21 @@ class AuditLogger:
     ) -> str:
         """
         Registrar evento de auditoría.
-        
+
         Returns:
             audit_id (UUID) del registro creado
         """
         audit_id = str(uuid4())
         request_id = request_id or str(uuid4())
-        
+
         # Hashes para integridad
         request_body_hash = self._calculate_hash(request_body) if request_body else None
-        
+
         diff = self._calculate_diff(previous_state, new_state)
-        
+
         previous_hash = "genesis"
-        current_hash = hashlib.sha256(
-            f"{previous_hash}{audit_id}{datetime.utcnow().isoformat()}".encode()
-        ).hexdigest()
-        
+        current_hash = hashlib.sha256(f"{previous_hash}{audit_id}{datetime.utcnow().isoformat()}".encode()).hexdigest()
+
         # Insertar (sync - para simplicidad; async opcional con aiomysql)
         session = self.Session()
         try:
@@ -213,7 +208,7 @@ class AuditLogger:
             current_hash = hashlib.sha256(
                 f"{previous_hash}{audit_id}{datetime.utcnow().isoformat()}".encode()
             ).hexdigest()
-            
+
             stmt = text("""
                 INSERT INTO audit_log (
                     id, created_at,
@@ -241,42 +236,45 @@ class AuditLogger:
                     :previous_hash, :current_hash
                 )
             """)
-            
-            session.execute(stmt, {
-                "id": audit_id,
-                "request_id": request_id,
-                "correlation_id": correlation_id,
-                "actor_type": actor_type,
-                "actor_id": actor_id,
-                "instance_id": instance_id,
-                "method": method,
-                "path": path,
-                "query_params": json.dumps(query_params) if query_params else None,
-                "request_body_hash": request_body_hash,
-                "resource_type": resource_type,
-                "resource_id": resource_id,
-                "action": action,
-                "previous_state": json.dumps(previous_state) if previous_state else None,
-                "new_state": json.dumps(new_state) if new_state else None,
-                "diff": json.dumps(diff) if diff else None,
-                "status_code": status_code,
-                "success": success,
-                "error_code": error_code,
-                "error_message": error_message,
-                "error_details": json.dumps(error_details) if error_details else None,
-                "duration_ms": int(duration_ms) if duration_ms else None,
-                "idempotency_key": idempotency_key,
-                "idempotent": idempotent,
-                "ip_address": ip_address,
-                "user_agent": user_agent,
-                "previous_hash": previous_hash,
-                "current_hash": current_hash,
-            })
+
+            session.execute(
+                stmt,
+                {
+                    "id": audit_id,
+                    "request_id": request_id,
+                    "correlation_id": correlation_id,
+                    "actor_type": actor_type,
+                    "actor_id": actor_id,
+                    "instance_id": instance_id,
+                    "method": method,
+                    "path": path,
+                    "query_params": json.dumps(query_params) if query_params else None,
+                    "request_body_hash": request_body_hash,
+                    "resource_type": resource_type,
+                    "resource_id": resource_id,
+                    "action": action,
+                    "previous_state": json.dumps(previous_state) if previous_state else None,
+                    "new_state": json.dumps(new_state) if new_state else None,
+                    "diff": json.dumps(diff) if diff else None,
+                    "status_code": status_code,
+                    "success": success,
+                    "error_code": error_code,
+                    "error_message": error_message,
+                    "error_details": json.dumps(error_details) if error_details else None,
+                    "duration_ms": int(duration_ms) if duration_ms else None,
+                    "idempotency_key": idempotency_key,
+                    "idempotent": idempotent,
+                    "ip_address": ip_address,
+                    "user_agent": user_agent,
+                    "previous_hash": previous_hash,
+                    "current_hash": current_hash,
+                },
+            )
             session.commit()
-            
+
             logger.info("audit_logged", audit_id=audit_id, action=action, instance_id=instance_id)
             return audit_id
-            
+
         except Exception as e:
             session.rollback()
             # No fallar la request principal por error de auditoría
@@ -289,7 +287,7 @@ class AuditLogger:
             return audit_id
         finally:
             session.close()
-    
+
     async def log_from_context(
         self,
         ctx: "CompanyContext",
@@ -310,11 +308,11 @@ class AuditLogger:
             user_agent=ctx.user_agent,
             **kwargs,
         )
-    
+
     # =========================================================================
     # CONSULTAS
     # =========================================================================
-    
+
     def query_logs(
         self,
         *,
@@ -335,7 +333,7 @@ class AuditLogger:
         try:
             conditions = ["instance_id = :instance_id"]
             params = {"instance_id": instance_id}
-            
+
             if actor_type:
                 conditions.append("actor_type = :actor_type")
                 params["actor_type"] = actor_type
@@ -360,24 +358,24 @@ class AuditLogger:
             if end_date:
                 conditions.append("created_at <= :end_date")
                 params["end_date"] = end_date
-            
+
             where_clause = " AND ".join(conditions)
-            
+
             query = text(f"""
-                SELECT * FROM audit_log 
+                SELECT * FROM audit_log
                 WHERE {where_clause}
                 ORDER BY created_at DESC
                 LIMIT :limit OFFSET :offset
             """)
             params["limit"] = limit
             params["offset"] = offset
-            
+
             result = session.execute(query, params)
             columns = result.keys()
-            return [dict(zip(columns, row)) for row in result.fetchall()]
+            return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
         finally:
             session.close()
-    
+
     def get_summary(
         self,
         instance_id: str,
@@ -388,7 +386,7 @@ class AuditLogger:
         session = self.Session()
         try:
             query = text("""
-                SELECT 
+                SELECT
                     DATE(created_at) as day,
                     COUNT(*) as total,
                     SUM(success = 1) as successful,
@@ -403,23 +401,26 @@ class AuditLogger:
                 GROUP BY DATE(created_at)
                 ORDER BY day DESC
             """)
-            result = session.execute(query, {
-                "instance_id": instance_id,
-                "start_date": start_date,
-                "end_date": end_date,
-            })
+            result = session.execute(
+                query,
+                {
+                    "instance_id": instance_id,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                },
+            )
             columns = result.keys()
-            return [dict(zip(columns, row)) for row in result.fetchall()]
+            return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
         finally:
             session.close()
-    
+
     def verify_integrity(self, instance_id: str | None = None) -> dict[str, Any]:
         """Verificar integridad de la cadena de hash."""
         session = self.Session()
         try:
             where = "WHERE instance_id = :instance_id" if instance_id else ""
             params = {"instance_id": instance_id} if instance_id else {}
-            
+
             query = text(f"""
                 SELECT id, created_at, previous_hash, current_hash
                 FROM audit_log
@@ -427,25 +428,25 @@ class AuditLogger:
                 ORDER BY created_at ASC
             """)
             result = session.execute(query, params)
-            
+
             broken = []
             prev_hash = "genesis"
-            
+
             for row in result:
-                expected = hashlib.sha256(
-                    f"{prev_hash}{row.id}{row.created_at.isoformat()}".encode()
-                ).hexdigest()
-                
+                expected = hashlib.sha256(f"{prev_hash}{row.id}{row.created_at.isoformat()}".encode()).hexdigest()
+
                 if row.current_hash != expected:
-                    broken.append({
-                        "id": row.id,
-                        "expected": expected,
-                        "actual": row.current_hash,
-                        "created_at": row.created_at.isoformat(),
-                    })
-                
+                    broken.append(
+                        {
+                            "id": row.id,
+                            "expected": expected,
+                            "actual": row.current_hash,
+                            "created_at": row.created_at.isoformat(),
+                        }
+                    )
+
                 prev_hash = row.current_hash
-            
+
             return {
                 "verified": len(broken) == 0,
                 "total_records": result.rowcount,
@@ -453,10 +454,10 @@ class AuditLogger:
             }
         finally:
             session.close()
-    
+
     def cleanup_old_logs(
-        self, 
-        instance_id: str, 
+        self,
+        instance_id: str,
         retention_days: int = 90,
     ) -> int:
         """Limpiar logs antiguos (solo exitosos, no acciones críticas)."""
@@ -468,7 +469,7 @@ class AuditLogger:
                   AND created_at < DATE_SUB(NOW(), INTERVAL :days DAY)
                   AND success = 1
                   AND action NOT IN (
-                      'login', 'logout', 'permission_change', 
+                      'login', 'logout', 'permission_change',
                       'approval_decision', 'invoice_approval',
                       'supplier_creation', 'data_export'
                   )
@@ -476,10 +477,10 @@ class AuditLogger:
             result = session.execute(query, {"instance_id": instance_id, "days": retention_days})
             session.commit()
             deleted = result.rowcount
-            
+
             if deleted:
                 logger.info("audit_cleanup", deleted=deleted, instance_id=instance_id, retention_days=retention_days)
-            
+
             return deleted
         except Exception as e:
             session.rollback()
@@ -487,7 +488,7 @@ class AuditLogger:
             return 0
         finally:
             session.close()
-    
+
     def close(self):
         """Cerrar conexiones."""
         self.engine.dispose()
@@ -497,15 +498,21 @@ class AuditLogger:
 # FACTORY
 # =========================================================================
 
-def create_audit_logger(instance_config: "InstanceConfig" | None = None, database_url: str | None = None) -> AuditLogger:
+
+def create_audit_logger(
+    instance_config: "InstanceConfig" | None = None, database_url: str | None = None
+) -> AuditLogger:
     """Crear AuditLogger para una instancia o global."""
     if database_url:
         return AuditLogger(database_url)
-    
+
     if instance_config:
         return AuditLogger(instance_config.get_dolibarr_db_url().replace("mysql://", "mysql+pymysql://"))
-    
+
     # Fallback: global audit DB (separada)
     from core.hermes.config import get_global_settings
+
     settings = get_global_settings()
-    return AuditLogger(f"mysql+pymysql://root:{settings.MARIADB_ROOT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/gestor_ia_audit")
+    return AuditLogger(
+        f"mysql+pymysql://root:{settings.MARIADB_ROOT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/gestor_ia_audit"
+    )

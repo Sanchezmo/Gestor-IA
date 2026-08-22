@@ -1,0 +1,318 @@
+Metadata-Version: 2.4
+Name: gestor-ia
+Version: 0.1.0
+Summary: Plataforma empresarial multiempresa y multisector asistida por IA
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.110.0
+Requires-Dist: uvicorn[standard]>=0.29.0
+Requires-Dist: pydantic>=2.7.0
+Requires-Dist: pydantic-settings>=2.3.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: structlog>=24.1.0
+Requires-Dist: redis>=5.0.0
+Requires-Dist: sqlalchemy>=2.0.0
+Requires-Dist: asyncpg>=0.29.0
+Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: cryptography>=42.0.0
+Requires-Dist: pyyaml>=6.0.1
+Requires-Dist: tenacity>=8.2.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0.0; extra == "dev"
+Requires-Dist: httpx>=0.27.0; extra == "dev"
+Requires-Dist: ruff>=0.4.0; extra == "dev"
+Requires-Dist: mypy>=1.10.0; extra == "dev"
+Requires-Dist: pre-commit>=3.7.0; extra == "dev"
+Provides-Extra: celery
+Requires-Dist: celery>=5.4.0; extra == "celery"
+Requires-Dist: redis>=5.0.0; extra == "celery"
+Provides-Extra: postgresql
+Requires-Dist: asyncpg>=0.29.0; extra == "postgresql"
+Provides-Extra: ai
+Requires-Dist: ollama>=0.3.0; extra == "ai"
+
+# Gestor-IA
+
+> **Plataforma empresarial multiempresa y multisector asistida por IA**
+
+Gestor-IA es una plataforma para gestionar múltiples empresas independientes mediante IA, cada una con su propia instancia aislada (Dolibarr, base de datos, Telegram, dominio, workflows, agentes).
+
+## 🏗️ Arquitectura
+
+```
+                         GESTOR-IA CORE (Compartido)
+                              │
+                    ┌─────────┼─────────┐
+                    ▼         ▼         ▼
+              ┌─────────┐ ┌─────────┐ ┌─────────┐
+              │Empresa A│ │Empresa B│ │Empresa C│
+              │         │ │         │ │         │
+              │Dolibarr │ │Dolibarr │ │Dolibarr │
+              │    DB   │ │    DB   │ │    DB   │
+              │Telegram │ │Telegram │ │Telegram │
+              │ Dominio │ │ Dominio │ │ Dominio │
+              │Agents   │ │Agents   │ │Agents   │
+              └─────────┘ └─────────┘ └─────────┘
+```
+
+### Principios Innegociables
+
+- **Multi-instancia, NO Dolibarr MultiCompany**: Cada empresa tiene su Dolibarr, DB, usuario, Telegram, dominio
+- **Hermes Core genérico**: Sin conocimiento de dominio (perros, transporte, construcción, etc.)
+- **CompanyContext inmutable**: Acompaña TODA operación empresarial
+- **InstanceConfig explícito**: Modelo de configuración por empresa
+- **AI Provider abstraction**: Ollama (local), NVIDIA/OpenAI (cloud) con AIPolicy
+- **Cloudflare Tunnel compartido**: Routing por hostname, sin abrir puertos
+- **Runtime nativo on-premise**: systemd, Apache, MariaDB, Ollama, cloudflared
+- **Docker solo para tests/CI**: No requisito de producción
+- **Tests de aislamiento obligatorios**: Empresa A ≠ Empresa B demostrado por tests
+
+## 🚀 Inicio Rápido
+
+### 1. Clonar e instalar
+
+```bash
+git clone https://github.com/Sanchezmo/Gestor-IA.git
+cd Gestor-IA
+cp .env.example .env
+# Editar .env con passwords seguros
+sudo make install
+```
+
+### 2. Configurar servicios
+
+```bash
+sudo make configure
+```
+
+### 3. Crear primera instancia
+
+```bash
+make instance-create INSTANCE=mi_empresa DOMAIN=mi-empresa.com
+# Editar instances/mi_empresa/instance.env con tokens reales
+```
+
+### 4. Configurar instancia
+
+```bash
+make configure-dolibarr INSTANCE=mi_empresa
+make configure-cloudflare
+```
+
+### 5. Iniciar
+
+```bash
+make start
+make status
+```
+
+## 📁 Estructura del Proyecto
+
+```
+Gestor-IA/
+├── core/
+│   ├── hermes/                 # Core compartido
+│   │   ├── config.py           # GlobalSettings
+│   │   ├── instance_config.py  # InstanceConfig model
+│   │   ├── context.py          # CompanyContext
+│   │   ├── resolver.py         # InstanceResolver
+│   │   ├── audit.py            # AuditLogger (MariaDB)
+│   │   ├── ai.py               # AIProvider (Ollama/NVIDIA/OpenAI)
+│   │   ├── policy.py           # AIPolicy + ModelRouter
+│   │   ├── extensions.py       # ExtensionRegistry
+│   │   └── main.py             # FastAPI app
+│   └── integrations/
+│       ├── dolibarr/           # DolibarrClient + mappers
+│       ├── telegram/           # TelegramClient
+│       └── cloudflare/         # CloudflareManager
+├── companies/                  # Código específico por empresa (FUERA del core)
+│   ├── transvega/              # Ejemplo: agentes perros, Milanuncios, etc.
+│   └── ejemplo/
+├── instances/                  # Configs runtime por instancia
+│   ├── ejemplo/
+│   │   ├── config.yml          # InstanceConfig (versionado)
+│   │   └── instance.env        # Secretos (NO versionado)
+│   └── mi_empresa/
+├── infrastructure/             # Configs systemd, Apache, Cloudflare, DB
+├── scripts/                    # Instalación, configuración, backup, instancia
+├── tests/
+│   ├── isolation/              # Tests cross-instancia (CRÍTICOS)
+│   ├── unit/
+│   └── integration/
+├── .env.example                # Template configuración global
+├── Makefile                    # Interfaz de gestión
+└── pyproject.toml              # Dependencias Python
+```
+
+## 🔧 Gestión de Instancias
+
+```bash
+# Crear instancia
+make instance-create INSTANCE=empresa_a DOMAIN=empresa-a.com
+
+# Listar instancias
+make instance-list
+
+# Ver estado de instancia
+make instance-status INSTANCE=empresa_a
+
+# Habilitar/deshabilitar
+make instance-enable INSTANCE=empresa_a
+make instance-disable INSTANCE=empresa_a
+
+# Recargar config
+make instance-reload INSTANCE=empresa_a
+```
+
+## 🧪 Tests de Aislamiento (CRÍTICOS)
+
+```bash
+# Ejecutar tests de aislamiento cross-instancia
+make test-isolation
+```
+
+Estos tests **DEMUESTRAN** que:
+- Contexto A no resuelve secretos de B
+- Webhook A no carga workflows de B
+- DolibarrClient A no recibe config B
+- Telegram A no resuelve B
+- Tools A no aparecen en B
+- Documentos A no resuelven paths B
+- Path traversal no permite escapar de instancia
+- Dominio A no resuelve servicio B
+- Config Cloudflare no cruza instancias
+
+## 🤖 IA y Privacidad
+
+```python
+# En tu código, usar CompanyContext inyectado
+async def handler(ctx: CompanyContext = Depends(get_company_context)):
+    # Política automática según tarea
+    policy = AIPolicy(ctx.ai_config)
+    scope = policy.get_scope_for_task("invoice_processing")  # LOCAL_ONLY
+    
+    router = create_model_router_from_config(ctx.ai_config)
+    result = await router.generate(
+        privacy_scope=scope,
+        prompt="Procesa esta factura..."
+    )
+```
+
+**Políticas**:
+- `LOCAL_ONLY`: Ollama local - facturas, datos clientes, documentos sensibles
+- `CLOUD_ALLOWED`: NVIDIA/OpenAI - contenido público, marketing, chat general
+
+## ☁️ Cloudflare Tunnel
+
+```bash
+# Login manual (una vez)
+cloudflared tunnel login
+
+# Configurar ingress automático desde instancias
+make configure-cloudflare
+```
+
+Genera ingress dinámico:
+```yaml
+ingress:
+  - hostname: dolibarr.empresa-a.com
+    service: http://127.0.0.1:8081
+  - hostname: bot.empresa-a.com
+    service: http://127.0.0.1:8000
+  - hostname: dolibarr.empresa-b.es
+    service: http://127.0.0.1:8082
+  - hostname: bot.empresa-b.es
+    service: http://127.0.0.1:8000
+  - service: http_status:404
+```
+
+## 🔐 Secretos
+
+```bash
+# Cada instancia tiene su instance.env (gitignored)
+instances/empresa_a/
+├── config.yml          # Versionado
+├── instance.env        # NO versionado - secretos reales
+└── secrets/            # Opcional: archivos cert/key
+```
+
+Variables en `instance.env`:
+```bash
+DOLIBARR_DB_PASSWORD=xxx
+DOLIBARR_API_KEY=xxx
+TELEGRAM_BOT_TOKEN=xxx
+TELEGRAM_WEBHOOK_SECRET=xxx
+```
+
+## 📦 Backup y Restauración
+
+```bash
+# Backup completo
+make backup
+
+# Backup de una instancia
+make backup-instance INSTANCE=empresa_a
+
+# Restaurar
+make restore BACKUP_FILE=/var/backups/gestor-ia/gestor-ia-full-20240115_020000.tar.gz
+```
+
+## 🛠️ Comandos Makefile
+
+```bash
+make help              # Ver todos los comandos
+make install           # Instalación completa
+make configure         # Configuración post-instalación
+make start|stop|restart|status
+make check             # Verificación profunda
+make test              # Todos los tests
+make test-isolation    # Tests de aislamiento (CRÍTICOS)
+make lint|format|type-check
+make clean             # Limpieza segura
+```
+
+## 📚 Extender para una Empresa
+
+```bash
+# 1. Crear directorio en companies/
+mkdir -p companies/mi_empresa/{agents,tools,workflows,prompts}
+
+# 2. Implementar agentes/herramientas específicos
+# companies/mi_empresa/agents/mi_agente.py
+
+# 3. Registrar en InstanceConfig
+enabled_agents: ["mi_agente"]
+enabled_tools: ["mi_tool"]
+
+# 4. Cargar automáticamente al iniciar
+load_extensions_from_config(instance_config)
+```
+
+## 🔄 Migración desde Transvega Animal
+
+Transvega será una **instancia futura** de Gestor-IA:
+
+```
+Gestor-IA/
+└── companies/transvega/     # Código específico de Transvega
+    ├── agents/dog_intake/   # DogIntakeAgent → fuera del core
+    ├── agents/listing/      # Milanuncios publishing
+    ├── workflows/           # Workflows transporte animal
+    └── prompts/             # Prompts perros/transportes
+```
+
+Componentes reutilizados del core:
+- DolibarrClient, CloudflareManager, TelegramClient
+- ModelRouter, ConversationManager, AuditLogger
+- Makefile, scripts nativos, systemd
+
+## 📄 Licencia
+
+Proyecto privado - Todos los derechos reservados.
+
+---
+
+**Gestor-IA** - Plataforma empresarial multiempresa asistida por IA

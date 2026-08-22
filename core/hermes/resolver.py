@@ -5,17 +5,16 @@ Principio crítico: La instancia debe quedar resuelta ANTES de procesar el conte
 del mensaje. NO se determina la empresa analizando el texto.
 """
 
-from typing import Optional, Callable, Awaitable
+from collections.abc import Awaitable, Callable
 from functools import lru_cache
 
-from fastapi import Request, HTTPException, Depends, Header
+from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from core.hermes.instance_config import InstanceConfig, load_instance_config, list_instances
-from core.hermes.context import CompanyContext, CompanyContextBuilder, extract_telegram_actor, extract_api_key_actor
 from core.hermes.config import get_global_settings
-
+from core.hermes.context import CompanyContext, CompanyContextBuilder, extract_api_key_actor, extract_telegram_actor
+from core.hermes.instance_config import InstanceConfig, list_instances, load_instance_config
 
 # =========================================================================
 # CACHE DE DOMINIOS -> INSTANCE_ID
@@ -25,31 +24,47 @@ _domain_cache: dict[str, str] = {}
 _cache_loaded = False
 
 
-def _build_domain_index(instances_root: Optional[str] = None) -> dict[str, str]:
+def _build_domain_index(instances_root: str | None = None) -> dict[str, str]:
     """Construir índice dominio -> instance_id desde todas las configs."""
     global _domain_cache, _cache_loaded
-    
+
     if _cache_loaded:
         return _domain_cache
-    
-    settings = get_global_settings()
-    if instances_root is None:
-        instances_root = settings.PROJECT_ROOT / "instances"
-    
-    for instance_id in list_instances(instances_root):
-        config = load_instance_config(instance_id, instances_root)
+
+    # Primero cargar desde cache en memoria (para tests)
+    from core.hermes.instance_config import _config_cache
+
+    for instance_id, config in _config_cache.items():
         if config and config.active:
             domains = config.domains
-            # Dominio base
             _domain_cache[domains.base.lower()] = instance_id
-            # Subdominios configurados
             if domains.dolibarr:
                 _domain_cache[domains.dolibarr.lower()] = instance_id
             if domains.hermes:
                 _domain_cache[domains.hermes.lower()] = instance_id
             for _, hostname in domains.custom.items():
                 _domain_cache[hostname.lower()] = instance_id
-    
+
+    # Luego cargar desde filesystem (para producción)
+    settings = get_global_settings()
+    if instances_root is None:
+        instances_root = settings.PROJECT_ROOT / "instances"
+
+    for instance_id in list_instances(instances_root):
+        config = load_instance_config(instance_id, instances_root)
+        if config and config.active:
+            domains = config.domains
+            _domain_cache[domains.base.lower()] = instance_id
+            if domains.dolibarr:
+                _domain_cache[domains.dolibarr.lower()] = instance_id
+            if domains.hermes:
+                _domain_cache[domains.hermes.lower()] = instance_id
+            for _, hostname in domains.custom.items():
+                _domain_cache[hostname.lower()] = instance_id
+
+    _cache_loaded = True
+    return _domain_cache
+
     _cache_loaded = True
     return _domain_cache
 
@@ -61,19 +76,33 @@ def invalidate_domain_cache():
     _cache_loaded = False
 
 
-async def lookup_instance_by_domain(host: str) -> Optional[str]:
+async def lookup_instance_by_domain(host: str) -> str | None:
     """Buscar instance_id por hostname (Host header)."""
     host = host.lower().split(":")[0]  # Quitar puerto
     index = _build_domain_index()
     return index.get(host)
 
 
-async def lookup_instance_by_api_key(api_key: str) -> Optional[str]:
-    """Buscar instance_id por API key (prefijo: gsk_{instance}_)."""
+async def lookup_instance_by_api_key(api_key: str) -> str | None:
+    """Buscar instance_id por API key (formato: gsk_{b64_instance_id}_{key})."""
     if api_key.startswith("gsk_"):
+        # Formato: gsk_{b64_instance_id}_{key}
+        # instance_id se codifica en base64 URL-safe para permitir underscores
         parts = api_key.split("_", 2)
-        if len(parts) >= 2:
-            return parts[1]
+        if len(parts) >= 3:
+            import base64
+
+            try:
+                # Decodificar instance_id desde base64 URL-safe
+                b64_instance_id = parts[1]
+                # Añadir padding si necesario
+                padding = 4 - len(b64_instance_id) % 4
+                if padding != 4:
+                    b64_instance_id += "=" * padding
+                instance_id = base64.urlsafe_b64decode(b64_instance_id).decode()
+                return instance_id
+            except Exception:
+                pass
     return None
 
 
@@ -81,33 +110,34 @@ async def lookup_instance_by_api_key(api_key: str) -> Optional[str]:
 # RESOLVER PRINCIPAL
 # =========================================================================
 
+
 async def resolve_instance_config(request: Request) -> InstanceConfig:
     """
     Resolver InstanceConfig para el request actual.
-    
+
     Prioridad de resolución (orden estricto):
     1. Header X-Instance-ID (API calls explícitos)
     2. Telegram webhook path: /webhook/{instance_id}/...
     3. Host header → DomainConfig lookup
     4. API Key (Authorization: Bearer gsk_{instance}_...)
-    
+
     Lanza HTTPException si no se puede resolver.
     """
-    instance_id: Optional[str] = None
+    instance_id: str | None = None
     resolution_method = "unknown"
-    
+
     # 1. Header explícito X-Instance-ID (máxima prioridad para APIs)
     instance_id = request.headers.get("X-Instance-ID")
     if instance_id:
         resolution_method = "header"
-    
+
     # 2. Telegram webhook path: /webhook/{instance_id}/...
     if not instance_id and request.url.path.startswith("/webhook/"):
         path_parts = request.url.path.strip("/").split("/")
         if len(path_parts) >= 2 and path_parts[0] == "webhook":
             instance_id = path_parts[1]
             resolution_method = "webhook_path"
-    
+
     # 3. Host header (dominio personalizado)
     if not instance_id:
         host = request.headers.get("host", "").split(":")[0]
@@ -115,7 +145,7 @@ async def resolve_instance_config(request: Request) -> InstanceConfig:
             instance_id = await lookup_instance_by_domain(host)
             if instance_id:
                 resolution_method = "domain"
-    
+
     # 4. API Key (Authorization: Bearer gsk_{instance}_...)
     if not instance_id:
         auth = request.headers.get("Authorization", "")
@@ -124,17 +154,20 @@ async def resolve_instance_config(request: Request) -> InstanceConfig:
             instance_id = await lookup_instance_by_api_key(api_key)
             if instance_id:
                 resolution_method = "api_key"
-    
+
     if not instance_id:
         raise HTTPException(
             status_code=400,
             detail={
                 "error": "INSTANCE_RESOLUTION_FAILED",
-                "message": "Cannot resolve company instance. Provide X-Instance-ID header, use correct webhook path, or configure custom domain.",
+                "message": (
+                    "Cannot resolve company instance. Provide X-Instance-ID header, "
+                    "use correct webhook path, or configure custom domain."
+                ),
                 "tried_methods": ["header", "webhook_path", "domain", "api_key"],
-            }
+            },
         )
-    
+
     # Cargar config completa
     config = load_instance_config(instance_id)
     if not config:
@@ -144,9 +177,9 @@ async def resolve_instance_config(request: Request) -> InstanceConfig:
                 "error": "INSTANCE_NOT_FOUND",
                 "message": f"Instance '{instance_id}' not found or inactive",
                 "resolved_by": resolution_method,
-            }
+            },
         )
-    
+
     if not config.active:
         raise HTTPException(
             status_code=403,
@@ -154,15 +187,15 @@ async def resolve_instance_config(request: Request) -> InstanceConfig:
                 "error": "INSTANCE_INACTIVE",
                 "message": f"Instance '{instance_id}' is disabled",
                 "instance_id": instance_id,
-            }
+            },
         )
-    
+
     # Log de resolución para debugging/auditoría
     request.state.instance_resolution = {
         "instance_id": instance_id,
         "method": resolution_method,
     }
-    
+
     return config
 
 
@@ -170,10 +203,11 @@ async def resolve_instance_config(request: Request) -> InstanceConfig:
 # DEPENDENCY PARA COMPANYCONTEXT COMPLETO
 # =========================================================================
 
+
 async def get_company_context(request: Request) -> CompanyContext:
     """
     Dependency de FastAPI que provee CompanyContext completo.
-    
+
     Uso:
         @app.get("/api/resource")
         async def handler(ctx: CompanyContext = Depends(get_company_context)):
@@ -181,11 +215,11 @@ async def get_company_context(request: Request) -> CompanyContext:
     """
     # Resolver InstanceConfig
     instance_config = await resolve_instance_config(request)
-    
+
     # Determinar actor
     actor_type = "unknown"
     actor_id = "unknown"
-    
+
     # Telegram webhook
     if request.url.path.startswith("/webhook/"):
         try:
@@ -193,62 +227,66 @@ async def get_company_context(request: Request) -> CompanyContext:
             actor_type, actor_id = extract_telegram_actor(body)
         except Exception:
             actor_type, actor_id = "telegram_webhook", "unknown"
-    
+
     # API Key
     elif auth := request.headers.get("Authorization", ""):
         if auth.startswith("Bearer "):
             actor_type, actor_id = extract_api_key_actor(auth[7:])
-    
+
     # System/Internal
     elif request.headers.get("X-Internal-Request"):
         actor_type, actor_id = "system", "internal"
-    
+
     # Request ID para trazabilidad
     request_id = request.headers.get("X-Request-ID", "")
-    
+
     # Correlation ID (para rastrear requests relacionados)
     correlation_id = request.headers.get("X-Correlation-ID")
-    
+
     # Info HTTP para auditoría
     client = request.client
     ip = client.host if client else None
     user_agent = request.headers.get("User-Agent")
-    
-    return CompanyContextBuilder(instance_config) \
-        .with_actor(actor_type, actor_id) \
-        .with_request_id(request_id) \
-        .with_correlation_id(correlation_id or "") \
-        .with_http_info(ip, user_agent, str(request.url.path), request.method) \
+
+    return (
+        CompanyContextBuilder(instance_config)
+        .with_actor(actor_type, actor_id)
+        .with_request_id(request_id)
+        .with_correlation_id(correlation_id or "")
+        .with_http_info(ip, user_agent, str(request.url.path), request.method)
         .build()
+    )
 
 
 # =========================================================================
 # MIDDLEWARE OPCIONAL (PARA AUTO-INJECT EN REQUEST.STATE)
 # =========================================================================
 
+
 class InstanceResolutionMiddleware(BaseHTTPMiddleware):
     """
     Middleware que resuelve la instancia y la pone en request.state.
-    
+
     Útil si se prefiere middleware sobre dependency injection.
     """
-    
-    async def dispatch(
-        self, 
-        request: Request, 
-        call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
+
+    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         # Solo resolver para rutas que lo necesiten
         path = request.url.path
-        
+
         # Rutas que NO requieren resolución de instancia
         skip_paths = {
-            "/health", "/health/ready", "/metrics", "/docs", "/redoc", "/openapi.json",
+            "/health",
+            "/health/ready",
+            "/metrics",
+            "/docs",
+            "/redoc",
+            "/openapi.json",
         }
-        
+
         if any(path.startswith(p) for p in skip_paths):
             return await call_next(request)
-        
+
         try:
             instance_config = await resolve_instance_config(request)
             request.state.instance_config = instance_config
@@ -258,13 +296,14 @@ class InstanceResolutionMiddleware(BaseHTTPMiddleware):
             raise
         except Exception as e:
             raise HTTPException(500, f"Instance resolution error: {e}")
-        
+
         return await call_next(request)
 
 
 # =========================================================================
 # HELPERS PARA TESTING
 # =========================================================================
+
 
 def create_test_context(
     instance_id: str = "test",
@@ -273,8 +312,8 @@ def create_test_context(
     actor_id: str = "test_user",
 ) -> CompanyContext:
     """Crear CompanyContext para tests unitarios."""
-    from core.hermes.instance_config import InstanceConfig, DolibarrConfig, TelegramConfig, DomainConfig, AIConfig
-    
+    from core.hermes.instance_config import AIConfig, DolibarrConfig, DomainConfig, InstanceConfig, TelegramConfig
+
     config = InstanceConfig(
         instance_id=instance_id,
         company_name=company_name,
@@ -294,7 +333,7 @@ def create_test_context(
         domains=DomainConfig(base="test.example.com"),
         ai=AIConfig(),
     )
-    
+
     return CompanyContext(
         instance_config=config,
         actor_type=actor_type,
@@ -303,6 +342,6 @@ def create_test_context(
 
 
 @lru_cache
-def get_cached_instance_config(instance_id: str) -> Optional[InstanceConfig]:
+def get_cached_instance_config(instance_id: str) -> InstanceConfig | None:
     """Versión cacheada para uso en workers/background tasks."""
     return load_instance_config(instance_id)

@@ -4,7 +4,6 @@ Configuración global de infraestructura compartida (NO por empresa).
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,13 +12,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class GlobalSettings(BaseSettings):
     """
     Configuración de infraestructura compartida del servidor Gestor-IA.
-    
+
     NO contiene configuración específica de empresas.
     Cada empresa tiene su InstanceConfig independiente.
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", ".env.test"),
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
@@ -69,11 +68,11 @@ class GlobalSettings(BaseSettings):
     # =========================================================================
     # CLOUDFLARE (Infraestructura compartida - Tunnel + DNS + Access)
     # =========================================================================
-    CLOUDFLARE_API_TOKEN: Optional[str] = None
-    CLOUDFLARE_ACCOUNT_ID: Optional[str] = None
-    CLOUDFLARE_ZONE_ID: Optional[str] = None
-    CLOUDFLARE_TUNNEL_TOKEN: Optional[str] = None
-    CLOUDFLARE_TUNNEL_ID: Optional[str] = None
+    CLOUDFLARE_API_TOKEN: str | None = None
+    CLOUDFLARE_ACCOUNT_ID: str | None = None
+    CLOUDFLARE_ZONE_ID: str | None = None
+    CLOUDFLARE_TUNNEL_TOKEN: str | None = None
+    CLOUDFLARE_TUNNEL_ID: str | None = None
 
     # =========================================================================
     # APACHE (Proxy reverso local para Dolibarr por instancia)
@@ -89,7 +88,9 @@ class GlobalSettings(BaseSettings):
     JWT_EXPIRATION_MINUTES: int = 30
     JWT_REFRESH_EXPIRATION_DAYS: int = 7
 
-    FERNET_KEY: str  # Generar: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    FERNET_KEY: (
+        str  # Generar: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    )
 
     # =========================================================================
     # RATE LIMITING GLOBAL
