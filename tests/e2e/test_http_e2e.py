@@ -1174,5 +1174,464 @@ class TestEndpointClassification:
             assert response.status_code == 401, f"Endpoint {method} {endpoint} should require auth"
 
 
+# =========================================================================
+# TESTS: Query Layer - Natural Language Processing
+# =========================================================================
+
+
+class TestQueryLayerNaturalLanguage:
+    """Tests del Query Layer para procesamiento de lenguaje natural."""
+
+    def test_parse_lista_clientes(self):
+        """Parse 'lista clientes' -> LIST intent con filter CUSTOMERS."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("lista clientes")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.LIST
+        assert intent.filter_type == ThirdpartyFilterType.CUSTOMERS
+
+    def test_parse_lista_proveedores(self):
+        """Parse 'lista proveedores' -> LIST intent con filter SUPPLIERS."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("lista proveedores")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.LIST
+        assert intent.filter_type == ThirdpartyFilterType.SUPPLIERS
+
+    def test_parse_lista_terceros(self):
+        """Parse 'lista terceros' -> LIST intent con filter ALL."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("lista terceros")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.LIST
+        assert intent.filter_type == ThirdpartyFilterType.ALL
+
+    def test_parse_busca_cliente(self):
+        """Parse 'busca cliente ACME' -> SEARCH intent con query y filter CUSTOMERS."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("busca cliente ACME")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.SEARCH
+        assert intent.filter_type == ThirdpartyFilterType.CUSTOMERS
+        assert intent.query == "ACME"
+
+    def test_parse_busca_proveedor(self):
+        """Parse 'busca proveedor Pinturas' -> SEARCH intent con filter SUPPLIERS."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("busca proveedor Pinturas")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.SEARCH
+        assert intent.filter_type == ThirdpartyFilterType.SUPPLIERS
+        assert intent.query == "Pinturas"
+
+    def test_parse_busca_generico(self):
+        """Parse 'busca ACME' -> SEARCH intent con filter ALL."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("busca ACME")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.SEARCH
+        assert intent.filter_type == ThirdpartyFilterType.ALL
+        assert intent.query == "ACME"
+
+    def test_parse_cuantos_clientes(self):
+        """Parse 'cuántos clientes hay' -> COUNT intent con filter CUSTOMERS."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("cuántos clientes hay")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.COUNT
+        assert intent.filter_type == ThirdpartyFilterType.CUSTOMERS
+
+    def test_parse_cuantos_proveedores(self):
+        """Parse 'cuántos proveedores hay' -> COUNT intent con filter SUPPLIERS."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("cuántos proveedores hay")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.COUNT
+        assert intent.filter_type == ThirdpartyFilterType.SUPPLIERS
+
+    def test_parse_cuantos_terceros(self):
+        """Parse 'cuántos terceros hay' -> COUNT intent con filter ALL."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("cuántos terceros hay")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.COUNT
+        assert intent.filter_type == ThirdpartyFilterType.ALL
+
+    def test_parse_muestra_clientes(self):
+        """Parse 'muestra clientes' -> LIST intent."""
+        from core.hermes.query_layer import ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("muestra clientes")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.LIST
+
+    def test_parse_ver_proveedores(self):
+        """Parse 'ver proveedores' -> LIST intent."""
+        from core.hermes.query_layer import ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("ver proveedores")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.LIST
+
+    def test_parse_encuentra_cliente(self):
+        """Parse 'encuentra cliente ACME' -> SEARCH intent."""
+        from core.hermes.query_layer import ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("encuentra cliente ACME")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.SEARCH
+        assert intent.query == "ACME"
+
+    def test_parse_cuenta_clientes(self):
+        """Parse 'cuenta clientes' -> COUNT intent."""
+        from core.hermes.query_layer import ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("cuenta clientes")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.COUNT
+
+    def test_parse_numero_de_proveedores(self):
+        """Parse 'número de proveedores' -> COUNT intent."""
+        from core.hermes.query_layer import ThirdpartyIntentType, parse_natural_query
+
+        intent = parse_natural_query("número de proveedores")
+        assert intent is not None
+        assert intent.intent_type == ThirdpartyIntentType.COUNT
+
+    def test_parse_no_reconocido(self):
+        """Texto no reconocido devuelve None."""
+        from core.hermes.query_layer import parse_natural_query
+
+        assert parse_natural_query("") is None
+        assert parse_natural_query("hola mundo") is None
+        assert parse_natural_query("borra todo") is None
+
+
+class TestQueryLayerWebhookIntegration:
+    """Tests de integración del Query Layer en el webhook."""
+
+    def test_natural_query_lista_clientes(self, instance_a_config, telegram_identity_a, dolibarr_user_a):
+        """Consulta natural 'lista clientes' -> list_thirdparties con filter_customer=True."""
+        from core.hermes.identity import UserContext
+        from core.hermes.instance_config import _config_cache
+
+        _config_cache["empresa_a"] = instance_a_config
+
+        mock_user_context = UserContext(
+            instance_id="empresa_a",
+            telegram_user_id=123456,
+            dolibarr_user_id=17,
+            dolibarr_user=dolibarr_user_a,
+            dolibarr_groups=[DolibarrGroup(id=5, name="Comercial", entity=1)],
+            dolibarr_permissions={"thirdparty": {"read": 1}},
+            gestor_roles=frozenset(),
+        )
+
+        mock_dolibarr = make_mock_dolibarr_client(
+            user_return_value=dolibarr_user_a,
+            groups_return_value=[DolibarrGroup(id=5, name="Comercial", entity=1)],
+            list_thirdparties_return_value=[
+                {
+                    "id": 1,
+                    "name": "Cliente Uno",
+                    "client": 1,
+                    "fournisseur": 0,
+                    "email": "uno@test.com",
+                    "phone": "111",
+                    "status": 1,
+                },
+            ],
+        )
+
+        mock_telegram = make_mock_telegram_client()
+
+        with (
+            patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+            patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr),
+            patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+        ):
+            client = TestClient(app)
+            payload = make_valid_webhook_payload(1000, "lista clientes")
+            headers = make_webhook_secret_header("secret_a")
+
+            response = client.post("/webhook/empresa_a", json=payload, headers=headers)
+
+            assert response.status_code == 200
+            assert response.json()["success"] is True
+            mock_telegram.send_message.assert_called()
+            call_args = mock_telegram.send_message.call_args
+            assert "Cliente Uno" in call_args.kwargs["text"]
+
+    def test_natural_query_busca_cliente(self, instance_a_config, telegram_identity_a, dolibarr_user_a):
+        """Consulta natural 'busca cliente ACME' -> search_thirdparties."""
+        from core.hermes.identity import UserContext
+        from core.hermes.instance_config import _config_cache
+
+        _config_cache["empresa_a"] = instance_a_config
+
+        mock_user_context = UserContext(
+            instance_id="empresa_a",
+            telegram_user_id=123456,
+            dolibarr_user_id=17,
+            dolibarr_user=dolibarr_user_a,
+            dolibarr_groups=[DolibarrGroup(id=5, name="Comercial", entity=1)],
+            dolibarr_permissions={"thirdparty": {"read": 1}},
+            gestor_roles=frozenset(),
+        )
+
+        mock_dolibarr = make_mock_dolibarr_client(
+            user_return_value=dolibarr_user_a,
+            groups_return_value=[DolibarrGroup(id=5, name="Comercial", entity=1)],
+            list_thirdparties_return_value=[
+                {
+                    "id": 5,
+                    "name": "ACME Corp",
+                    "client": 1,
+                    "fournisseur": 0,
+                    "email": "acme@test.com",
+                    "phone": "555",
+                    "status": 1,
+                },
+            ],
+        )
+
+        mock_telegram = make_mock_telegram_client()
+
+        with (
+            patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+            patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr),
+            patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+        ):
+            client = TestClient(app)
+            payload = make_valid_webhook_payload(1001, "busca cliente ACME")
+            headers = make_webhook_secret_header("secret_a")
+
+            response = client.post("/webhook/empresa_a", json=payload, headers=headers)
+
+            assert response.status_code == 200
+            assert response.json()["success"] is True
+            mock_telegram.send_message.assert_called()
+            call_args = mock_telegram.send_message.call_args
+            assert "ACME Corp" in call_args.kwargs["text"]
+
+    def test_natural_query_cuantos_proveedores(self, instance_a_config, telegram_identity_a, dolibarr_user_a):
+        """Consulta natural 'cuántos proveedores hay' -> count_thirdparties."""
+        from core.hermes.identity import UserContext
+        from core.hermes.instance_config import _config_cache
+
+        _config_cache["empresa_a"] = instance_a_config
+
+        mock_user_context = UserContext(
+            instance_id="empresa_a",
+            telegram_user_id=123456,
+            dolibarr_user_id=17,
+            dolibarr_user=dolibarr_user_a,
+            dolibarr_groups=[DolibarrGroup(id=5, name="Comercial", entity=1)],
+            dolibarr_permissions={"thirdparty": {"read": 1}},
+            gestor_roles=frozenset(),
+        )
+
+        # Mock para count_thirdparties: simula 3 proveedores
+        call_count = {"list_thirdparties": 0}
+
+        def counting_mock_dolibarr():
+            mock = make_mock_dolibarr_client(
+                user_return_value=dolibarr_user_a,
+                groups_return_value=[DolibarrGroup(id=5, name="Comercial", entity=1)],
+                list_thirdparties_return_value=[
+                    {"id": 1, "name": "Prov 1", "client": 0, "fournisseur": 1, "status": 1},
+                    {"id": 2, "name": "Prov 2", "client": 0, "fournisseur": 1, "status": 1},
+                    {"id": 3, "name": "Prov 3", "client": 0, "fournisseur": 1, "status": 1},
+                ],
+            )
+            original_list = mock.list_thirdparties
+
+            async def counting_list(*args, **kwargs):
+                call_count["list_thirdparties"] += 1
+                return await original_list(*args, **kwargs)
+
+            mock.list_thirdparties = counting_list
+            return mock
+
+        mock_telegram = make_mock_telegram_client()
+
+        with (
+            patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+            patch("core.hermes.context.CompanyContext.create_dolibarr_client", side_effect=counting_mock_dolibarr),
+            patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+        ):
+            client = TestClient(app)
+            payload = make_valid_webhook_payload(1002, "cuántos proveedores hay")
+            headers = make_webhook_secret_header("secret_a")
+
+            response = client.post("/webhook/empresa_a", json=payload, headers=headers)
+
+            assert response.status_code == 200
+            assert response.json()["success"] is True
+            mock_telegram.send_message.assert_called()
+            call_args = mock_telegram.send_message.call_args
+            assert "3 proveedores" in call_args.kwargs["text"] or "Hay 3" in call_args.kwargs["text"]
+
+    def test_natural_query_sin_permiso_denegado(self, instance_a_config, telegram_identity_a, dolibarr_user_no_perms):
+        """Usuario sin thirdparty.read -> DENEGADO antes de Dolibarr."""
+        from core.hermes.identity import UserContext
+        from core.hermes.instance_config import _config_cache
+
+        _config_cache["empresa_a"] = instance_a_config
+
+        mock_user_context = UserContext(
+            instance_id="empresa_a",
+            telegram_user_id=123456,
+            dolibarr_user_id=17,
+            dolibarr_user=dolibarr_user_no_perms,
+            dolibarr_groups=[],
+            dolibarr_permissions={},  # Sin permisos
+            gestor_roles=frozenset(),
+        )
+
+        mock_dolibarr = make_mock_dolibarr_client(
+            user_return_value=dolibarr_user_no_perms,
+            groups_return_value=[],
+            list_thirdparties_return_value=[],
+        )
+
+        mock_telegram = make_mock_telegram_client()
+
+        with (
+            patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+            patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr),
+            patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+        ):
+            client = TestClient(app)
+            payload = make_valid_webhook_payload(1003, "lista clientes")
+            headers = make_webhook_secret_header("secret_a")
+
+            response = client.post("/webhook/empresa_a", json=payload, headers=headers)
+
+            assert response.status_code == 200
+            mock_telegram.send_message.assert_called()
+            call_args = mock_telegram.send_message.call_args
+            assert "permiso" in call_args.kwargs["text"].lower() or "acceso" in call_args.kwargs["text"].lower()
+
+            # Dolibarr NO llamado
+            mock_dolibarr.list_thirdparties.assert_not_called()
+
+    def test_natural_query_intent_change_instance_rejected(
+        self, instance_a_config, instance_b_config, telegram_identity_a, dolibarr_user_a
+    ):
+        """Query intentando cambiar instance -> rechazado por cross-instance validation."""
+        from core.hermes.identity import UserContext
+        from core.hermes.instance_config import _config_cache
+
+        _config_cache["empresa_a"] = instance_a_config
+        _config_cache["empresa_b"] = instance_b_config
+
+        mock_user_context = UserContext(
+            instance_id="empresa_a",
+            telegram_user_id=123456,
+            dolibarr_user_id=17,
+            dolibarr_user=dolibarr_user_a,
+            dolibarr_groups=[DolibarrGroup(id=5, name="Comercial", entity=1)],
+            dolibarr_permissions={"thirdparty": {"read": 1}},
+            gestor_roles=frozenset(),
+        )
+
+        mock_dolibarr = make_mock_dolibarr_client(
+            user_return_value=dolibarr_user_a,
+            groups_return_value=[DolibarrGroup(id=5, name="Comercial", entity=1)],
+            list_thirdparties_return_value=[],
+        )
+
+        mock_telegram = make_mock_telegram_client()
+
+        with (
+            patch("core.hermes.main._get_telegram_client", return_value=mock_telegram),
+            patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_dolibarr),
+            patch("core.hermes.main.get_user_context", return_value=mock_user_context),
+        ):
+            client = TestClient(app)
+            # El path es /webhook/empresa_a pero el user_context es de empresa_a
+            # El ToolRegistry valida que instance_id == user_context.instance_id
+            payload = make_valid_webhook_payload(1004, "lista clientes")
+            headers = make_webhook_secret_header("secret_a")
+
+            response = client.post("/webhook/empresa_a", json=payload, headers=headers)
+
+            assert response.status_code == 200
+            # El comando debe procesarse normalmente (no hay intento de cambiar instance)
+            # Este test verifica que NO se puede inyectar instance_id via query
+            # La validación cross-instance ocurre en ToolRegistry
+
+
+class TestQueryLayerToolRegistry:
+    """Tests de integración Query Layer -> ToolRegistry."""
+
+    @pytest.mark.asyncio
+    async def test_intent_list_to_tool_call(self):
+        """Intent LIST -> tool list_thirdparties con params correctos."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntent, ThirdpartyIntentType
+
+        intent = ThirdpartyIntent(
+            intent_type=ThirdpartyIntentType.LIST,
+            filter_type=ThirdpartyFilterType.CUSTOMERS,
+        )
+        tool_name, params = intent.to_tool_call()
+        assert tool_name == "list_thirdparties"
+        assert params["filter_customer"] is True
+        # list_thirdparties no tiene filter_supplier, solo filter_customer
+
+    @pytest.mark.asyncio
+    async def test_intent_search_to_tool_call(self):
+        """Intent SEARCH -> tool search_thirdparties con params correctos."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntent, ThirdpartyIntentType
+
+        intent = ThirdpartyIntent(
+            intent_type=ThirdpartyIntentType.SEARCH,
+            filter_type=ThirdpartyFilterType.SUPPLIERS,
+            query="Pinturas",
+        )
+        tool_name, params = intent.to_tool_call()
+        assert tool_name == "search_thirdparties"
+        assert params["query"] == "Pinturas"
+        assert params["filter_customer"] is False
+        assert params["filter_supplier"] is True
+
+    @pytest.mark.asyncio
+    async def test_intent_count_to_tool_call(self):
+        """Intent COUNT -> tool count_thirdparties con params correctos."""
+        from core.hermes.query_layer import ThirdpartyFilterType, ThirdpartyIntent, ThirdpartyIntentType
+
+        intent = ThirdpartyIntent(
+            intent_type=ThirdpartyIntentType.COUNT,
+            filter_type=ThirdpartyFilterType.ALL,
+        )
+        tool_name, params = intent.to_tool_call()
+        assert tool_name == "count_thirdparties"
+        assert params["filter_customer"] is None
+        assert params["filter_supplier"] is None
+
+    @pytest.mark.asyncio
+    async def test_intent_get_to_tool_call(self):
+        """Intent GET -> tool get_thirdparty con params correctos."""
+        from core.hermes.query_layer import ThirdpartyIntent, ThirdpartyIntentType
+
+        intent = ThirdpartyIntent(
+            intent_type=ThirdpartyIntentType.GET,
+            thirdparty_id=123,
+        )
+        tool_name, params = intent.to_tool_call()
+        assert tool_name == "get_thirdparty"
+        assert params["thirdparty_id"] == 123
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

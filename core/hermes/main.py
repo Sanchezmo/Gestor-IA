@@ -22,6 +22,13 @@ from core.hermes.extensions import extension_registry, load_extensions_from_conf
 from core.hermes.identity import UserContext
 from core.hermes.instance_config import list_instances, load_instance_config
 from core.hermes.policy import create_model_router_from_config
+from core.hermes.query_layer import (
+    ThirdpartyIntentType,
+    format_count_for_telegram,
+    format_thirdparties_for_telegram,
+    format_thirdparty_detail_for_telegram,
+    parse_natural_query,
+)
 from core.hermes.resolver import InstanceResolutionMiddleware, get_company_context, get_user_context
 from core.hermes.tools import tool_registry
 from core.hermes.tools.thirdparty_tools import register_core_thirdparty_tools
@@ -720,7 +727,120 @@ async def telegram_webhook(
                                 dolibarr_user_id=user_context.dolibarr_user_id,
                             )
         else:
-            response_text = f"Comando no reconocido: {text}\n\nUsa /help para ver comandos disponibles."
+            # =====================================================================
+            # QUERY LAYER: Procesar lenguaje natural
+            # =====================================================================
+            if not user_context:
+                response_text = "No tienes acceso autorizado a este asistente."
+                if _audit_logger:
+                    await _audit_logger.log_from_context(
+                        ctx,
+                        action=AuditActions.TELEGRAM_IDENTITY_UNKNOWN,
+                        resource_type="telegram_update",
+                        resource_id=str(update_id),
+                        status_code=403,
+                        success=False,
+                        error_code="UNAUTHORIZED",
+                        error_message="Telegram user not linked",
+                    )
+            else:
+                # Parsear consulta natural
+                intent = parse_natural_query(text)
+                if intent:
+                    # AUTORIZACIÓN ANTES DE EJECUTAR
+                    auth_service = AuthorizationService()
+                    try:
+                        auth_service.require(user_context, "thirdparty.read")
+                    except Exception as e:
+                        response_text = "No tienes permiso para consultar terceros."
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action=AuditActions.AUTHORIZATION_DENIED,
+                                resource_type="tool",
+                                resource_id=intent.to_tool_call()[0],
+                                status_code=403,
+                                success=False,
+                                error_code="PERMISSION_DENIED",
+                                error_message=str(e),
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
+                            )
+                    else:
+                        # EJECUTAR TOOL via Hermes
+                        tool_name, tool_params = intent.to_tool_call()
+                        tool_result = await tool_registry.execute_tool(
+                            instance_id=instance_id,
+                            name=tool_name,
+                            company_context=ctx,
+                            user_context=user_context,
+                            **tool_params,
+                        )
+
+                        if tool_result.success:
+                            # Formatear respuesta según tipo de intent
+                            if intent.intent_type == ThirdpartyIntentType.LIST:
+                                response_text = format_thirdparties_for_telegram(
+                                    tool_result.data["thirdparties"],
+                                    tool_result.data["limit"],
+                                    tool_result.data["offset"],
+                                )
+                            elif intent.intent_type == ThirdpartyIntentType.SEARCH:
+                                response_text = format_thirdparties_for_telegram(
+                                    tool_result.data["thirdparties"],
+                                    tool_result.data["limit"],
+                                    tool_result.data["offset"],
+                                )
+                            elif intent.intent_type == ThirdpartyIntentType.GET:
+                                response_text = format_thirdparty_detail_for_telegram(tool_result.data["thirdparty"])
+                            elif intent.intent_type == ThirdpartyIntentType.COUNT:
+                                response_text = format_count_for_telegram(
+                                    tool_result.data["count"],
+                                    intent.filter_type,
+                                )
+                            else:
+                                response_text = "Consulta procesada correctamente."
+
+                            if _audit_logger:
+                                await _audit_logger.log_from_context(
+                                    ctx,
+                                    action=f"thirdparty.{intent.intent_type.value}",
+                                    resource_type="thirdparty",
+                                    status_code=200,
+                                    success=True,
+                                    telegram_user_id=user_context.telegram_user_id,
+                                    dolibarr_user_id=user_context.dolibarr_user_id,
+                                    new_state={
+                                        "count": tool_result.data.get(
+                                            "count", len(tool_result.data.get("thirdparties", []))
+                                        )
+                                    },
+                                )
+                        else:
+                            response_text = (
+                                tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                            )
+                            if _audit_logger:
+                                await _audit_logger.log_from_context(
+                                    ctx,
+                                    action=f"thirdparty.{intent.intent_type.value}",
+                                    resource_type="thirdparty",
+                                    status_code=500,
+                                    success=False,
+                                    error_code=tool_result.error_code,
+                                    error_message=tool_result.error_message,
+                                    telegram_user_id=user_context.telegram_user_id,
+                                    dolibarr_user_id=user_context.dolibarr_user_id,
+                                )
+                else:
+                    response_text = (
+                        f"Comando no reconocido: {text}\n\n"
+                        f"Usa /help para ver comandos disponibles.\n\n"
+                        f"También puedes preguntar en lenguaje natural:\n"
+                        f'• "lista clientes"\n'
+                        f'• "busca cliente ACME"\n'
+                        f'• "cuántos proveedores hay"'
+                    )
 
         # Enviar respuesta
         if response_text:
