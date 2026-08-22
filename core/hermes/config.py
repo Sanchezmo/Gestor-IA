@@ -95,6 +95,11 @@ class GlobalSettings(BaseSettings):
     )
 
     # =========================================================================
+    # CORS (Environment-aware)
+    # =========================================================================
+    CORS_ALLOW_ORIGINS: str = ""  # Comma-separated list for production (e.g., "https://app.empresa.com,https://api.empresa.com")
+
+    # =========================================================================
     # RATE LIMITING GLOBAL
     # =========================================================================
     RATE_LIMIT_REQUESTS: int = 100

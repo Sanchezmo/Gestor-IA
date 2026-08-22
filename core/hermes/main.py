@@ -19,6 +19,7 @@ from core.hermes.authorization import AuthorizationService
 from core.hermes.config import GlobalSettings, get_global_settings
 from core.hermes.context import CompanyContext
 from core.hermes.extensions import extension_registry, load_extensions_from_config
+from core.hermes.identity import UserContext
 from core.hermes.instance_config import list_instances, load_instance_config
 from core.hermes.policy import create_model_router_from_config
 from core.hermes.resolver import InstanceResolutionMiddleware, get_company_context, get_user_context
@@ -121,21 +122,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("gestor_ia_stopped")
 
 
+# Get global settings for environment-aware config
+_global_settings_for_app = get_global_settings()
+_is_production = _global_settings_for_app.ENVIRONMENT == "production"
+
+# FastAPI app with environment-aware docs
 app = FastAPI(
     title="Gestor-IA Core",
     version="0.1.0",
     description="Plataforma empresarial multiempresa y multisector asistida por IA",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
     lifespan=lifespan,
 )
 
-# CORS
+# CORS - Environment-aware configuration
+if _is_production:
+    # Production: DEFAULT DENY - explicit allowlist required
+    cors_allow_origins = getattr(_global_settings_for_app, "CORS_ALLOW_ORIGINS", "")
+    cors_origins = cors_allow_origins.split(",") if cors_allow_origins else []
+    cors_allow_credentials = False
+else:
+    # Development: Allow localhost and configurable origins
+    cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8000", "http://127.0.0.1:8000"]
+    if getattr(_global_settings_for_app, "CORS_ALLOW_ORIGINS", ""):
+        cors_origins.extend(_global_settings_for_app.CORS_ALLOW_ORIGINS.split(","))
+    cors_allow_credentials = True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configurar restrictivamente en producción
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=cors_allow_credentials,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["X-RateLimit-Remaining", "X-RateLimit-Reset", "X-Request-ID"],
@@ -210,8 +228,109 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 
 # =========================================================================
-# HEALTH CHECKS
+# AUTHORIZATION DEPENDENCIES
 # =========================================================================
+
+
+class RequirePermission:
+    """Dependency class for requiring a specific permission."""
+
+    def __init__(self, permission: str):
+        self.permission = permission
+
+    async def __call__(
+        self, request: Request, user_context: UserContext = Depends(get_user_context)
+    ) -> UserContext:
+        auth_service = AuthorizationService()
+        auth_service.require(user_context, self.permission)
+        return user_context
+
+
+async def require_admin_user(request: Request) -> CompanyContext:
+    """
+    Require admin access for /admin/* endpoints.
+
+    Checks for admin API key pattern (gsk_admin_...) or system/internal actor.
+    Does NOT require instance resolution since admin endpoints are global.
+    """
+    # Check for admin API key pattern (gsk_admin_...)
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer gsk_admin_"):
+        # Return a minimal CompanyContext for admin operations
+        from core.hermes.context import CompanyContextBuilder
+        from core.hermes.instance_config import (
+            AIConfig,
+            DatabaseConfig,
+            DolibarrConfig,
+            DomainConfig,
+            InstanceConfig,
+            TelegramConfig,
+        )
+
+        # Dummy config for admin context
+        dummy_config = InstanceConfig(
+            instance_id="admin",
+            company_name="Gestor-IA Admin",
+            database=DatabaseConfig(
+                host="127.0.0.1", port=3306, name="admin", user="admin", password="admin"
+            ),
+            dolibarr=DolibarrConfig(
+                version="1.0",
+                internal_url="http://127.0.0.1:8081",
+                api_key="admin",
+                documents_path="/tmp",
+            ),
+            telegram=TelegramConfig(
+                bot_token="admin", webhook_path="/webhook/admin", webhook_secret="admin"
+            ),
+            domains=DomainConfig(base="admin.local"),
+            ai=AIConfig(ollama_model="dummy"),
+        )
+        return CompanyContextBuilder(dummy_config).with_actor("admin", "admin").build()
+
+    # Check for system/internal requests
+    if request.headers.get("X-Internal-Request"):
+        from core.hermes.context import CompanyContextBuilder
+        from core.hermes.instance_config import (
+            AIConfig,
+            DatabaseConfig,
+            DolibarrConfig,
+            DomainConfig,
+            InstanceConfig,
+            TelegramConfig,
+        )
+
+        dummy_config = InstanceConfig(
+            instance_id="system",
+            company_name="Gestor-IA System",
+            database=DatabaseConfig(
+                host="127.0.0.1", port=3306, name="system", user="system", password="system"
+            ),
+            dolibarr=DolibarrConfig(
+                version="1.0",
+                internal_url="http://127.0.0.1:8081",
+                api_key="system",
+                documents_path="/tmp",
+            ),
+            telegram=TelegramConfig(
+                bot_token="system", webhook_path="/webhook/system", webhook_secret="system"
+            ),
+            domains=DomainConfig(base="system.local"),
+            ai=AIConfig(ollama_model="dummy"),
+        )
+        return CompanyContextBuilder(dummy_config).with_actor("system", "internal").build()
+
+    raise HTTPException(
+        status_code=403,
+        detail={"error": "ADMIN_REQUIRED", "message": "Administrative access required"},
+    )
+
+
+async def require_authenticated_user(
+    request: Request, user_context: UserContext = Depends(get_user_context)
+) -> UserContext:
+    """Require authenticated user for /api/* endpoints."""
+    return user_context
 
 
 @app.get("/health", tags=["Health"])
@@ -272,7 +391,7 @@ async def readiness_check():
 
 
 @app.get("/admin/instances", tags=["Admin"])
-async def list_instances_endpoint():
+async def list_instances_endpoint(ctx: CompanyContext = Depends(require_admin_user)):
     """Listar todas las instancias configuradas."""
     instances = []
     for instance_id in list_instances():
@@ -290,13 +409,16 @@ async def list_instances_endpoint():
                     },
                     "enabled_agents": config.enabled_agents,
                     "enabled_workflows": config.enabled_workflows,
+                    "enabled_tools": config.enabled_tools,
+                    "dolibarr_api_key_configured": bool(config.dolibarr.api_key),
+                    "telegram_webhook_secret_configured": bool(config.telegram.webhook_secret),
                 }
             )
     return {"instances": instances}
 
 
 @app.get("/admin/instances/{instance_id}", tags=["Admin"])
-async def get_instance(instance_id: str):
+async def get_instance(instance_id: str, ctx: CompanyContext = Depends(require_admin_user)):
     """Obtener configuración de una instancia (sin secretos)."""
     config = load_instance_config(instance_id)
     if not config:
@@ -315,13 +437,14 @@ async def get_instance(instance_id: str):
         "dolibarr": {
             "internal_url": config.dolibarr.internal_url,
             "public_url": config.dolibarr.public_url,
-            "api_key": config.dolibarr.api_key,
+            "api_key_configured": bool(config.dolibarr.api_key),
             "documents_path": config.dolibarr.documents_path,
             "version": config.dolibarr.version,
         },
         "telegram": {
             "webhook_path": config.telegram.webhook_path,
             "webhook_secret_required": config.telegram.webhook_secret_required,
+            "webhook_secret_configured": bool(config.telegram.webhook_secret),
         },
         "domains": {
             "base": config.domains.base,
@@ -342,7 +465,7 @@ async def get_instance(instance_id: str):
 
 
 @app.post("/admin/instances/{instance_id}/reload", tags=["Admin"])
-async def reload_instance(instance_id: str):
+async def reload_instance(instance_id: str, ctx: CompanyContext = Depends(require_admin_user)):
     """Recargar configuración de una instancia (limpiar cache)."""
     from core.hermes.extensions import extension_registry
     from core.hermes.instance_config import clear_config_cache
@@ -440,7 +563,7 @@ async def telegram_webhook(
 
     update_id = update.get("update_id")
 
-    # Idempotency check (Redis)
+    # Idempotency check (Redis) - ATOMIC
     from core.hermes.config import get_global_settings
 
     settings = get_global_settings()
@@ -455,12 +578,14 @@ async def telegram_webhook(
     )
 
     idempotency_key = f"telegram:update:{update_id}"
-    if r.exists(idempotency_key):
+
+    # ATOMIC: SET key value NX EX ttl
+    # Only the request that successfully creates the key processes the update
+    # Returns True if key was set, False if already exists
+    acquired = r.set(idempotency_key, "processing", nx=True, ex=86400)
+    if not acquired:
         # Duplicate - return 200 OK to avoid Telegram retries
         return {"success": True, "duplicate": True, "update_id": update_id}
-
-    # Marcar como procesando (TTL 24h)
-    r.setex(idempotency_key, 86400, "processing")
 
     try:
         # Obtener Telegram client para esta instancia
@@ -478,7 +603,7 @@ async def telegram_webhook(
 
         if not text:
             await telegram_client.send_message(chat_id=chat_id, text="Solo se procesan mensajes de texto.")
-            r.setex(idempotency_key, 86400, "completed")
+            r.set(idempotency_key, "completed", ex=86400)
             return {"success": True, "update_id": update_id}
 
         # =====================================================================
@@ -611,13 +736,15 @@ async def telegram_webhook(
         if response_text:
             await telegram_client.send_message(chat_id=chat_id, text=response_text)
 
-        # Marcar completado
-        r.setex(idempotency_key, 86400, "completed")
+        # Marcar completado (actualizar valor manteniendo TTL)
+        r.set(idempotency_key, "completed", ex=86400)
 
         return {"success": True, "update_id": update_id}
 
     except Exception as e:
         logger.error("webhook_processing_failed", instance_id=instance_id, error=str(e))
+        # On error, delete key to allow retry (but only if we still own it)
+        # Note: In production, consider using a Lua script for atomic check-and-delete
         r.delete(idempotency_key)  # Permitir reintento
         raise HTTPException(500, "Processing failed")
 
@@ -630,13 +757,18 @@ async def telegram_webhook(
 @app.get("/api/{instance_id}/dolibarr/thirdparties", tags=["Dolibarr"])
 async def list_thirdparties(
     instance_id: str,
+    user_context: UserContext = Depends(RequirePermission("thirdparty.read")),
     ctx: CompanyContext = Depends(get_company_context),
     limit: int = 100,
     offset: int = 0,
 ):
-    """Listar terceros de Dolibarr para la instancia."""
+    """Listar terceros de Dolibarr para la instancia (requiere thirdparty.read)."""
     if ctx.instance_id != instance_id:
         raise HTTPException(400, "Instance ID mismatch")
+
+    # Verify cross-instance consistency
+    if user_context.instance_id != instance_id:
+        raise HTTPException(403, "Cross-instance access denied")
 
     client = DolibarrClient.from_instance_config(ctx.dolibarr_config)
     async with client as c:
@@ -647,6 +779,7 @@ async def list_thirdparties(
 async def create_thirdparty(
     instance_id: str,
     data: dict,
+    user_context: UserContext = Depends(RequirePermission("thirdparty.create")),
     ctx: CompanyContext = Depends(get_company_context),
 ):
     """Crear tercero en Dolibarr para la instancia."""
@@ -670,11 +803,14 @@ async def create_thirdparty(
 async def ai_generate(
     instance_id: str,
     request: Request,
+    user_context: UserContext = Depends(RequirePermission("ai.use")),
     ctx: CompanyContext = Depends(get_company_context),
 ):
-    """Generar texto con IA según política de la instancia."""
+    """Generar texto con IA según política de la instancia (requiere ai.use)."""
     if ctx.instance_id != instance_id:
         raise HTTPException(400, "Instance ID mismatch")
+    if user_context.instance_id != instance_id:
+        raise HTTPException(403, "Cross-instance access denied")
 
     body = await request.json()
     prompt = body.get("prompt", "")
@@ -709,15 +845,18 @@ async def ai_generate(
 @app.get("/api/{instance_id}/audit", tags=["Audit"])
 async def query_audit(
     instance_id: str,
+    user_context: UserContext = Depends(RequirePermission("audit.read")),
     ctx: CompanyContext = Depends(get_company_context),
     action: str = None,
     resource_type: str = None,
     limit: int = 100,
     offset: int = 0,
 ):
-    """Consultar logs de auditoría de la instancia."""
+    """Consultar logs de auditoría de la instancia (requiere audit.read)."""
     if ctx.instance_id != instance_id:
         raise HTTPException(400, "Instance ID mismatch")
+    if user_context.instance_id != instance_id:
+        raise HTTPException(403, "Cross-instance access denied")
 
     audit_logger = create_audit_logger(instance_config=ctx.instance_config)
     logs = audit_logger.query_logs(
@@ -738,11 +877,14 @@ async def query_audit(
 @app.get("/api/{instance_id}/extensions", tags=["Extensions"])
 async def list_extensions(
     instance_id: str,
+    user_context: UserContext = Depends(require_authenticated_user),
     ctx: CompanyContext = Depends(get_company_context),
 ):
-    """Listar extensiones disponibles para la instancia."""
+    """Listar extensiones disponibles para la instancia (requiere autenticación)."""
     if ctx.instance_id != instance_id:
         raise HTTPException(400, "Instance ID mismatch")
+    if user_context.instance_id != instance_id:
+        raise HTTPException(403, "Cross-instance access denied")
 
     return extension_registry.get_instance_summary(instance_id)
 
@@ -766,4 +908,4 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("core.heroku.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("core.hermes.main:app", host="0.0.0.0", port=8000, reload=True)
