@@ -1,5 +1,6 @@
 # systemd service para Hermes Core (FastAPI)
 # Instalar en: /etc/systemd/system/gestor-ia.service
+# Configurar GESTOR_IA_ROOT en /etc/default/gestor-ia o EnvironmentFile
 
 [Unit]
 Description=Gestor-IA Core API
@@ -11,10 +12,10 @@ Wants=mariadb.service redis.service ollama.service
 Type=exec
 User=gestor-ia
 Group=gestor-ia
-WorkingDirectory=/home/saulo/Gestor-IA
-Environment=PATH=/home/saulo/Gestor-IA/.venv/bin
-EnvironmentFile=-/home/saulo/Gestor-IA/.env
-ExecStart=/home/saulo/Gestor-IA/.venv/bin/python -m uvicorn core.hermes.main:app --host 0.0.0.0 --port 8000 --workers 1
+WorkingDirectory=${GESTOR_IA_ROOT}
+Environment=PATH=${GESTOR_IA_ROOT}/.venv/bin
+EnvironmentFile=-${GESTOR_IA_ROOT}/.env
+ExecStart=${GESTOR_IA_ROOT}/.venv/bin/python -m uvicorn core.hermes.main:app --host 127.0.0.1 --port 8000 --workers 1
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5

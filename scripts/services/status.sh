@@ -54,7 +54,7 @@ check_port() {
 
 check_dolibarr_instance() {
     local instance=$1
-    local instance_dir="/home/saulo/Gestor-IA/instances/$instance"
+    local instance_dir="${PROJECT_ROOT}/instances/$instance"
     local config_yml="$instance_dir/config.yml"
     
     if [[ ! -f "$config_yml" ]]; then
@@ -107,7 +107,7 @@ main() {
     check_port 8081 "Dolibarr (instancia 1)"
     
     # Verificar puertos Dolibarr por instancia
-    for instance_dir in /home/saulo/Gestor-IA/instances/*/; do
+    for instance_dir in "${PROJECT_ROOT}/instances"/*/; do
         if [[ -f "${instance_dir}config.yml" ]]; then
             instance=$(basename "$instance_dir")
             port=$("${PROJECT_ROOT}/.venv/bin/python" -c "
@@ -122,7 +122,7 @@ print(cfg['dolibarr_apache_port'])
     
     echo ""
     log_step "Instancias Dolibarr:"
-    for instance_dir in /home/saulo/Gestor-IA/instances/*/; do
+    for instance_dir in "${PROJECT_ROOT}/instances"/*/; do
         if [[ -f "${instance_dir}config.yml" ]]; then
             instance=$(basename "$instance_dir")
             check_dolibarr_instance "$instance"
