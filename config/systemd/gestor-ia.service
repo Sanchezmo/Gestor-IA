@@ -1,0 +1,39 @@
+# systemd service para Hermes Core (FastAPI)
+# Instalar en: /etc/systemd/system/gestor-ia.service
+
+[Unit]
+Description=Gestor-IA Core API
+Documentation=https://github.com/Sanchezmo/Gestor-IA
+After=network.target mariadb.service redis.service ollama.service
+Wants=mariadb.service redis.service ollama.service
+
+[Service]
+Type=exec
+User=gestor-ia
+Group=gestor-ia
+WorkingDirectory=/home/saulo/Gestor-IA
+Environment=PATH=/home/saulo/Gestor-IA/.venv/bin
+EnvironmentFile=-/home/saulo/Gestor-IA/.env
+ExecStart=/home/saulo/Gestor-IA/.venv/bin/python -m uvicorn core.hermes.main:app --host 0.0.0.0 --port 8000 --workers 1
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gestor-ia
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gestor-ia /var/log/gestor-ia /var/backups/gestor-ia
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,77 @@
+# InstanceConfig para Empresa Ejemplo
+# Generado automáticamente - Editar valores reales
+# NO commitear secretos reales - usar secrets_refs o instance.env
+
+instance_id: "ejemplo"
+company_name: "Empresa Ejemplo S.L."
+
+database:
+  version: "23.0.4"
+  internal_url: "http://127.0.0.1:8081"
+  public_url: "https://dolibarr.ejemplo.com"
+  api_key: "CHANGE_ME_DOLIBARR_API_KEY"
+  documents_path: "/var/lib/dolibarr/documents/ejemplo"
+  db_host: "127.0.0.1"
+  db_port: 3306
+  db_name: "dolibarr_ejemplo"
+  db_user: "db_ejemplo"
+  db_password: "CHANGE_ME_DB_PASSWORD"
+
+telegram:
+  bot_token: "CHANGE_ME_TELEGRAM_BOT_TOKEN"
+  webhook_path: "/webhook/ejemplo"
+  webhook_secret: "CHANGE_ME_WEBHOOK_SECRET"
+  webhook_secret_required: true
+  allowed_user_ids: []
+  max_file_size_mb: 10
+  update_idempotency_ttl_hours: 24
+
+domains:
+  base: "ejemplo.com"
+  dolibarr: "dolibarr.ejemplo.com"
+  hermes: "bot.ejemplo.com"
+  custom: {}
+
+ai:
+  default_policy: "LOCAL_ONLY"
+  ollama_endpoint: "http://127.0.0.1:11434"
+  ollama_model: "qwen3.5:4b"
+  ollama_vision_model: null
+  nvidia_api_key: null
+  nvidia_base_url: "https://integrate.api.nvidia.com/v1"
+  nvidia_text_model: "meta/llama-3.1-70b-instruct"
+  nvidia_vision_model: "meta/llama-3.2-90b-vision-instruct"
+  openai_api_key: null
+  openai_base_url: "https://api.openai.com/v1"
+  openai_text_model: "gpt-4o-mini"
+  openai_vision_model: "gpt-4o-mini"
+  task_policies:
+    invoice_processing: "LOCAL_ONLY"
+    content_generation: "CLOUD_ALLOWED"
+    general_chat: "CLOUD_ALLOWED"
+
+enabled_agents:
+  - "invoice_processing"
+  - "general_assistant"
+
+enabled_workflows:
+  - "invoice_approval"
+
+enabled_tools:
+  - "dolibarr_search"
+  - "pdf_extract"
+
+secrets_refs:
+  dolibarr_db_password: "env:DOLIBARR_DB_PASSWORD_EJEMPLO"
+  dolibarr_api_key: "env:DOLIBARR_API_KEY_EJEMPLO"
+  telegram_bot_token: "env:TELEGRAM_BOT_TOKEN_EJEMPLO"
+  telegram_webhook_secret: "env:TELEGRAM_WEBHOOK_SECRET_EJEMPLO"
+
+documents_path: "/var/lib/gestor-ia/ejemplo/documents"
+backups_path: "/var/backups/gestor-ia/ejemplo"
+runtime_path: "/var/lib/gestor-ia/ejemplo/runtime"
+dolibarr_apache_port: 8081
+
+created_at: ""
+updated_at: ""
+active: true
