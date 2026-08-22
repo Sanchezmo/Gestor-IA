@@ -16,8 +16,8 @@ from core.hermes.identity import (
     GestorPermissions,
     TelegramIdentity,
     UserContext,
-    _flatten_permissions,
-    _merge_permissions,
+    flatten_dolibarr_permissions,
+    merge_dolibarr_permissions,
 )
 from core.hermes.identity_store import IdentityStore
 
@@ -166,7 +166,7 @@ class TestDolibarrGroup:
 
 
 class TestFlattenPermissions:
-    """Tests for _flatten_permissions helper."""
+    """Tests for flatten_dolibarr_permissions helper."""
 
     def test_simple_permissions(self):
         rights = {
@@ -176,7 +176,7 @@ class TestFlattenPermissions:
                 "create": 1,
             }
         }
-        perms = _flatten_permissions(rights)
+        perms = flatten_dolibarr_permissions(rights)
         assert "thirdparty.read" in perms
         assert "thirdparty.create" in perms
         assert "thirdparty.write" not in perms  # level 0
@@ -193,23 +193,23 @@ class TestFlattenPermissions:
                 },
             }
         }
-        perms = _flatten_permissions(rights)
+        perms = flatten_dolibarr_permissions(rights)
         assert "invoice.customer.read" in perms
         assert "invoice.customer.create" in perms
         assert "invoice.supplier.read" in perms
 
     def test_empty_permissions(self):
-        perms = _flatten_permissions({})
+        perms = flatten_dolibarr_permissions({})
         assert perms == frozenset()
 
     def test_none_values_ignored(self):
         rights = {"module": {"perm": None}}
-        perms = _flatten_permissions(rights)
+        perms = flatten_dolibarr_permissions(rights)
         assert perms == frozenset()
 
 
 class TestMergePermissions:
-    """Tests for _merge_permissions helper."""
+    """Tests for merge_dolibarr_permissions helper."""
 
     def test_merge_user_and_group(self):
         user_rights = {
@@ -219,7 +219,7 @@ class TestMergePermissions:
             "thirdparty": {"write": 1, "create": 1},
             "invoice": {"read": 1},
         }
-        merged = _merge_permissions(user_rights, group_rights)
+        merged = merge_dolibarr_permissions(user_rights, group_rights)
         # Group permissions are additive (OR logic)
         assert merged["thirdparty"]["read"] == 1
         assert merged["thirdparty"]["write"] == 1  # max(0, 1)
@@ -229,7 +229,7 @@ class TestMergePermissions:
     def test_merge_no_conflict(self):
         user_rights = {"thirdparty": {"read": 1}}
         group_rights = {"invoice": {"read": 1}}
-        merged = _merge_permissions(user_rights, group_rights)
+        merged = merge_dolibarr_permissions(user_rights, group_rights)
         assert merged["thirdparty"]["read"] == 1
         assert merged["invoice"]["read"] == 1
 

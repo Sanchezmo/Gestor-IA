@@ -108,6 +108,21 @@ class AIConfig(BaseModel):
     # ej: {"invoice_processing": "LOCAL_ONLY", "content_generation": "CLOUD_ALLOWED"}
 
 
+def validate_instance_id(v: str) -> str:
+    """Validate instance_id format and reserved names."""
+    v = v.lower().strip()
+    if not v:
+        raise ValueError("instance_id no puede estar vacío")
+    # Solo alphanumérico, guiones y underscores
+    import re
+
+    if not re.match(r"^[a-z0-9_-]+$", v):
+        raise ValueError("instance_id solo puede contener letras minúsculas, números, guiones y underscores")
+    if v in ("global", "shared", "core", "instances", "companies", "scripts", "tests", "config", "infrastructure"):
+        raise ValueError(f"instance_id '{v}' está reservado")
+    return v
+
+
 class InstanceConfig(BaseModel):
     """
     Configuración completa de una instancia (empresa).
@@ -150,18 +165,8 @@ class InstanceConfig(BaseModel):
 
     @field_validator("instance_id")
     @classmethod
-    def validate_instance_id(cls, v: str) -> str:
-        v = v.lower().strip()
-        if not v:
-            raise ValueError("instance_id no puede estar vacío")
-        # Solo alphanumérico, guiones y underscores
-        import re
-
-        if not re.match(r"^[a-z0-9_-]+$", v):
-            raise ValueError("instance_id solo puede contener letras minúsculas, números, guiones y underscores")
-        if v in ("global", "shared", "core", "instances", "companies", "scripts", "tests", "config", "infrastructure"):
-            raise ValueError(f"instance_id '{v}' está reservado")
-        return v
+    def _validate_instance_id(cls, v: str) -> str:
+        return validate_instance_id(v)
 
     def resolve_paths(self) -> "InstanceConfig":
         """Resolver placeholders en paths con instance_id."""
@@ -170,6 +175,49 @@ class InstanceConfig(BaseModel):
         resolved.backups_path = self.backups_path.format(instance_id=self.instance_id)
         resolved.runtime_path = self.runtime_path.format(instance_id=self.instance_id)
         return resolved
+    """
+    Configuración completa de una instancia (empresa).
+
+    Este modelo es la fuente de verdad para todo lo específico de una empresa.
+    Se carga desde instances/{instance_id}/config.yml
+    """
+
+    instance_id: str  # slug único: "empresa_a", "transvega", "ejemplo"
+    company_name: str  # Nombre legal: "Empresa A S.L."
+
+    # Infraestructura específica - SEPARADA SEMÁNTICAMENTE
+    database: DatabaseConfig  # Configuración MariaDB (host, port, name, user, password)
+    dolibarr: DolibarrConfig  # Configuración Dolibarr ERP (urls, api_key, version, documents_path)
+    telegram: TelegramConfig
+    domains: DomainConfig
+    ai: AIConfig = Field(default_factory=AIConfig)
+
+    # Extensiones habilitadas (plugins/agents/tools/workflows)
+    enabled_agents: list[str] = Field(default_factory=list)
+    enabled_workflows: list[str] = Field(default_factory=list)
+    enabled_tools: list[str] = Field(default_factory=list)
+
+    # Referencias a secretos (NO valores reales - gitignored)
+    # Formato: {"nombre_secreto": "vault:path/o/env:VAR_NAME"}
+    secrets_refs: dict[str, str] = Field(default_factory=dict)
+
+    # Rutas de datos (runtime, no versionadas)
+    documents_path: str = "/var/lib/gestor-ia/{instance_id}/documents"
+    backups_path: str = "/var/backups/gestor-ia/{instance_id}"
+    runtime_path: str = "/var/lib/gestor-ia/{instance_id}/runtime"
+
+    # Configuración Dolibarr Apache (puerto único por instancia)
+    dolibarr_apache_port: int = 8081  # Se asigna dinámicamente
+
+    # Metadata
+    created_at: str = ""  # ISO format
+    updated_at: str = ""  # ISO format
+    active: bool = True
+
+    @field_validator("instance_id")
+    @classmethod
+    def _validate_instance_id(cls, v: str) -> str:
+        return validate_instance_id(v)
 
     def get_database_url(self) -> str:
         """URL de conexión MariaDB para esta instancia."""

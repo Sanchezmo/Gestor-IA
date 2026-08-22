@@ -18,6 +18,7 @@ from datetime import UTC
 from pathlib import Path
 
 from core.hermes.identity import TelegramIdentity
+from core.hermes.instance_config import validate_instance_id
 from core.hermes.utils import get_instances_root
 
 SCHEMA_VERSION = 1
@@ -50,6 +51,11 @@ CREATE INDEX IF NOT EXISTS idx_telegram_identities_dolibarr
 """
 
 
+class CrossInstanceError(ValueError):
+    """Raised when an identity from a different instance is used."""
+    pass
+
+
 class IdentityStore:
     """
     SQLite-backed store for TelegramIdentity.
@@ -59,10 +65,19 @@ class IdentityStore:
     """
 
     def __init__(self, instance_id: str, instances_root: Path | None = None):
+        # Validate instance_id to prevent path traversal
+        validate_instance_id(instance_id)
         self.instance_id = instance_id
         self.instances_root = instances_root or get_instances_root()
         self.db_path = self.instances_root / instance_id / "identities.db"
         self._init_db()
+
+    def _validate_identity_instance(self, identity: TelegramIdentity) -> None:
+        """Validate that the identity belongs to this store's instance."""
+        if identity.instance_id != self.instance_id:
+            raise CrossInstanceError(
+                f"Identity instance_id '{identity.instance_id}' does not match store instance_id '{self.instance_id}'"
+            )
 
     def _init_db(self) -> None:
         """Initialize database with schema and WAL mode."""
@@ -135,6 +150,7 @@ class IdentityStore:
 
     def create(self, identity: TelegramIdentity) -> None:
         """Create new identity. Raises IntegrityError if constraints violated."""
+        self._validate_identity_instance(identity)
         with self._connection() as conn:
             row = identity.to_row()
             conn.execute(
@@ -161,6 +177,7 @@ class IdentityStore:
 
     def update(self, identity: TelegramIdentity) -> None:
         """Update existing identity."""
+        self._validate_identity_instance(identity)
         with self._connection() as conn:
             row = identity.to_row()
             cursor = conn.execute(

@@ -5,11 +5,11 @@ Identity resolution pipeline: TelegramIdentity -> DolibarrUser -> UserContext.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 from core.hermes.context import CompanyContext
 from core.hermes.identity import UserContext
 from core.hermes.identity_store import IdentityStore
+from core.hermes.permissions import merge_dolibarr_permissions
 from core.integrations.dolibarr.client import DolibarrClient, DolibarrException
 
 # =========================================================================
@@ -172,7 +172,7 @@ class IdentityResolver:
             all_permissions = user.rights or {}
             for group in groups:
                 if group.rights:
-                    all_permissions = self._merge_permissions(all_permissions, group.rights)
+                    all_permissions = merge_dolibarr_permissions(all_permissions, group.rights)
 
         # 4. Build UserContext
         user_context = UserContext(
@@ -191,26 +191,3 @@ class IdentityResolver:
         self._store.update(updated_identity)
 
         return user_context
-
-    @staticmethod
-    def _merge_permissions(base: dict[str, Any], additional: dict[str, Any]) -> dict[str, Any]:
-        """
-        Merge two Dolibarr rights dicts (user + group permissions).
-        Group permissions are additive (OR logic).
-        """
-        import copy
-
-        result = copy.deepcopy(base)
-
-        def _merge_dict(target: dict[str, Any], source: dict[str, Any]) -> None:
-            for key, value in source.items():
-                if key not in target:
-                    target[key] = copy.deepcopy(value)
-                elif isinstance(target[key], dict) and isinstance(value, dict):
-                    _merge_dict(target[key], value)
-                elif isinstance(target[key], (int, float, bool)) and isinstance(value, (int, float, bool)):
-                    # Take max level (OR logic for permissions)
-                    target[key] = max(target[key], value)
-
-        _merge_dict(result, additional)
-        return result

@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from core.hermes.permissions import flatten_dolibarr_permissions, merge_dolibarr_permissions
+
 
 @dataclass(frozen=True, slots=True)
 class TelegramIdentity:
@@ -140,53 +142,6 @@ class DolibarrGroup:
     rights: dict[str, Any] | None = None  # loaded on demand
 
 
-def _flatten_permissions(rights: dict[str, Any]) -> frozenset[str]:
-    """
-    Convert Dolibarr rights dict to flat permission strings.
-
-    Dolibarr format: {module: {submodule: {permission: level}}}
-    Output format: "module.submodule.permission"
-    """
-    permissions: set[str] = set()
-
-    def _traverse(obj: Any, prefix: str = "") -> None:
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                new_prefix = f"{prefix}.{key}" if prefix else key
-                _traverse(value, new_prefix)
-        elif isinstance(obj, (int, float, bool)):
-            # Leaf node with permission level - include if truthy
-            if obj:
-                permissions.add(prefix)
-        # Ignore other types (lists, None, etc.)
-
-    _traverse(rights)
-    return frozenset(permissions)
-
-
-def _merge_permissions(base: dict[str, Any], additional: dict[str, Any]) -> dict[str, Any]:
-    """
-    Merge two Dolibarr rights dicts (user + group permissions).
-    Group permissions are additive (OR logic).
-    """
-    import copy
-
-    result = copy.deepcopy(base)
-
-    def _merge_dict(target: dict[str, Any], source: dict[str, Any]) -> None:
-        for key, value in source.items():
-            if key not in target:
-                target[key] = copy.deepcopy(value)
-            elif isinstance(target[key], dict) and isinstance(value, dict):
-                _merge_dict(target[key], value)
-            elif isinstance(target[key], (int, float, bool)) and isinstance(value, (int, float, bool)):
-                # Take max level (OR logic for permissions)
-                target[key] = max(target[key], value)
-
-    _merge_dict(result, additional)
-    return result
-
-
 @dataclass(frozen=True, slots=True)
 class UserContext:
     """
@@ -207,7 +162,7 @@ class UserContext:
 
     def __post_init__(self) -> None:
         # Flatten Dolibarr permissions
-        erp_perms = _flatten_permissions(self.dolibarr_permissions)
+        erp_perms = flatten_dolibarr_permissions(self.dolibarr_permissions)
         # Union with Gestor-IA roles
         object.__setattr__(self, "effective_permissions", erp_perms | self.gestor_roles)
 
@@ -263,3 +218,15 @@ def _parse_datetime(value: str | None) -> datetime | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt
+
+
+# Re-export for backward compatibility
+__all__ = [
+    "TelegramIdentity",
+    "DolibarrUser",
+    "DolibarrGroup",
+    "UserContext",
+    "GestorPermissions",
+    "flatten_dolibarr_permissions",
+    "merge_dolibarr_permissions",
+]
