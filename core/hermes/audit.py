@@ -505,9 +505,7 @@ class AuditLogger:
 # =========================================================================
 
 
-def create_audit_logger(
-    instance_config: InstanceConfig | None = None, database_url: str | None = None
-) -> AuditLogger:
+def create_audit_logger(instance_config: InstanceConfig | None = None, database_url: str | None = None) -> AuditLogger:
     """Crear AuditLogger para una instancia o global."""
     if database_url:
         return AuditLogger(database_url)

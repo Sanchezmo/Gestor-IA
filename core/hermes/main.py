@@ -448,11 +448,7 @@ async def telegram_webhook(
                 )
             elif text == "/status":
                 agents_text = ", ".join(ctx.enabled_agents) or "ninguno"
-                status_text = (
-                    f"Instancia: {ctx.instance_id}\n"
-                    f"Empresa: {ctx.company_name}\n"
-                    f"Agentes: {agents_text}"
-                )
+                status_text = f"Instancia: {ctx.instance_id}\nEmpresa: {ctx.company_name}\nAgentes: {agents_text}"
                 await telegram_client.send_message(chat_id=chat_id, text=status_text)
             else:
                 await telegram_client.send_message(
