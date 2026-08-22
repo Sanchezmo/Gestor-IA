@@ -177,7 +177,7 @@ class ToolRegistry:
         **params: Any,
     ) -> ToolResult:
         """
-        Ejecutar tool con verificación de permisos.
+        Ejecutar tool con verificación de permisos y validación cross-instance.
 
         Args:
             instance_id: ID de la instancia
@@ -189,6 +189,34 @@ class ToolRegistry:
         Returns:
             ToolResult (success/error)
         """
+        # Cross-instance validation: instance_id must match both contexts
+        if company_context.instance_id != instance_id:
+            msg = (
+                f"Instance ID mismatch: tool called with instance_id='{instance_id}' "
+                f"but company_context has '{company_context.instance_id}'"
+            )
+            return ToolResult.error(
+                error_code="CROSS_INSTANCE_ERROR",
+                error_message=msg,
+                metadata={
+                    "provided_instance_id": instance_id,
+                    "company_context_instance_id": company_context.instance_id,
+                },
+            )
+        if user_context.instance_id != instance_id:
+            msg = (
+                f"Instance ID mismatch: tool called with instance_id='{instance_id}' "
+                f"but user_context has '{user_context.instance_id}'"
+            )
+            return ToolResult.error(
+                error_code="CROSS_INSTANCE_ERROR",
+                error_message=msg,
+                metadata={
+                    "provided_instance_id": instance_id,
+                    "user_context_instance_id": user_context.instance_id,
+                },
+            )
+
         tool = self.get_tool(instance_id, name)
         if not tool:
             return ToolResult.error(

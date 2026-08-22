@@ -380,6 +380,7 @@ class InstanceResolutionMiddleware(BaseHTTPMiddleware):
             "/docs",
             "/redoc",
             "/openapi.json",
+            "/admin",
         }
 
         if any(path.startswith(p) for p in skip_paths):
