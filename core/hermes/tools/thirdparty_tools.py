@@ -7,12 +7,32 @@ Core tools disponibles para todas las instancias.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from core.hermes.context import CompanyContext
 from core.hermes.identity import UserContext
 from core.hermes.tools import Tool, ToolDefinition, ToolResult, tool_registry
 from core.integrations.dolibarr.client import DolibarrException
+
+# =========================================================================
+# ALLOWLISTS FOR DOLIBARR PARAMETERS
+# =========================================================================
+
+# Dolibarr thirdparty sortable fields (confirmed from Dolibarr API)
+ALLOWED_THIRDPARTY_SORT_FIELDS: frozenset[str] = frozenset({
+    "rowid",       # ID interno
+    "name",        # Nombre
+    "ref",         # Referencia
+    "date_creation",  # Fecha creación
+    "date_modification",  # Fecha modificación
+    "email",       # Email
+    "phone",       # Teléfono
+    "client",      # Es cliente (0/1)
+    "fournisseur", # Es proveedor (0/1)
+    "status",      # Estado
+})
+
+ALLOWED_SORT_ORDERS: frozenset[str] = frozenset({"ASC", "DESC"})
 
 # =========================================================================
 # LIST THIRDPARTIES TOOL
@@ -27,8 +47,25 @@ class ListThirdpartiesParams:
     offset: int = 0
     filter_customer: bool | None = None  # True=clientes, False=proveedores, None=todos
     filter_status: int | None = None  # 0=borrador, 1=activo, etc.
-    sort_field: str = "name"
-    sort_order: str = "ASC"
+    sort_field: Literal[
+        "rowid", "name", "ref", "date_creation", "date_modification",
+        "email", "phone", "client", "fournisseur", "status"
+    ] = "name"
+    sort_order: Literal["ASC", "DESC"] = "ASC"
+
+    def __post_init__(self) -> None:
+        # Validate sort_field against allowlist
+        if self.sort_field not in ALLOWED_THIRDPARTY_SORT_FIELDS:
+            raise ValueError(
+                f"sort_field '{self.sort_field}' no permitido. "
+                f"Valores permitidos: {', '.join(sorted(ALLOWED_THIRDPARTY_SORT_FIELDS))}"
+            )
+        # Validate sort_order against allowlist
+        if self.sort_order not in ALLOWED_SORT_ORDERS:
+            raise ValueError(
+                f"sort_order '{self.sort_order}' no permitido. "
+                f"Valores permitidos: {', '.join(sorted(ALLOWED_SORT_ORDERS))}"
+            )
 
     def to_dolibarr_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -79,8 +116,12 @@ class ListThirdpartiesTool(Tool):
                     "offset": {"type": "integer", "minimum": 0, "default": 0},
                     "filter_customer": {"type": "boolean", "description": "True=solo clientes, False=solo proveedores"},
                     "filter_status": {"type": "integer", "description": "Filtrar por status (0=borrador, 1=activo)"},
-                    "sort_field": {"type": "string", "default": "name"},
-                    "sort_order": {"type": "string", "enum": ["ASC", "DESC"], "default": "ASC"},
+                    "sort_field": {
+                        "type": "string",
+                        "enum": sorted(ALLOWED_THIRDPARTY_SORT_FIELDS),
+                        "default": "name",
+                    },
+                    "sort_order": {"type": "string", "enum": sorted(ALLOWED_SORT_ORDERS), "default": "ASC"},
                 },
                 "additionalProperties": False,
             },
