@@ -5,12 +5,19 @@ Principio crítico: NO usar variables globales mutables para cambiar de empresa.
 Cada request resuelve su CompanyContext y lo propaga explícitamente.
 """
 
+from __future__ import annotations
+
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from core.hermes.instance_config import InstanceConfig
+
+if TYPE_CHECKING:
+    from core.hermes.instance_config import AIPolicyScope
+    from core.integrations.dolibarr.client import DolibarrClient
+    from core.integrations.telegram.client import TelegramClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,8 +60,14 @@ class CompanyContext:
         return self.instance_config.company_name
 
     @property
-    def dolibarr_config(self):
+    def database_config(self):
+        """Configuración de base de datos (MariaDB)."""
         return self.instance_config.database
+
+    @property
+    def dolibarr_config(self):
+        """Configuración de Dolibarr ERP."""
+        return self.instance_config.dolibarr
 
     @property
     def telegram_config(self):
@@ -84,24 +97,24 @@ class CompanyContext:
     # MÉTODOS DE CONVENIENCIA
     # =========================================================================
 
-    def create_dolibarr_client(self) -> "DolibarrClient":
+    def create_dolibarr_client(self) -> DolibarrClient:
         """Crear cliente Dolibarr configurado para esta instancia."""
         from core.integrations.dolibarr.client import DolibarrClient
 
-        db = self.instance_config.database
+        db = self.instance_config.dolibarr
         return DolibarrClient(
             base_url=db.internal_url,
             api_key=db.api_key,
             timeout=30,
         )
 
-    def create_telegram_client(self) -> "TelegramClient":
+    def create_telegram_client(self) -> TelegramClient:
         """Crear cliente Telegram configurado para esta instancia."""
         from core.integrations.telegram.client import TelegramClient
 
         return TelegramClient(bot_token=self.instance_config.telegram.bot_token)
 
-    def get_ai_policy_for_task(self, task: str) -> "AIPolicyScope":
+    def get_ai_policy_for_task(self, task: str) -> AIPolicyScope:
         """Obtener política de IA para una tarea específica."""
         return self.instance_config.ai.task_policies.get(task, self.instance_config.ai.default_policy)
 
@@ -158,16 +171,16 @@ class CompanyContextBuilder:
         self._endpoint: str | None = None
         self._method: str | None = None
 
-    def with_actor(self, actor_type: str, actor_id: str) -> "CompanyContextBuilder":
+    def with_actor(self, actor_type: str, actor_id: str) -> CompanyContextBuilder:
         self._actor_type = actor_type
         self._actor_id = str(actor_id)
         return self
 
-    def with_request_id(self, request_id: str) -> "CompanyContextBuilder":
+    def with_request_id(self, request_id: str) -> CompanyContextBuilder:
         self._request_id = request_id
         return self
 
-    def with_correlation_id(self, correlation_id: str) -> "CompanyContextBuilder":
+    def with_correlation_id(self, correlation_id: str) -> CompanyContextBuilder:
         self._correlation_id = correlation_id
         return self
 
@@ -177,7 +190,7 @@ class CompanyContextBuilder:
         user_agent: str | None = None,
         endpoint: str | None = None,
         method: str | None = None,
-    ) -> "CompanyContextBuilder":
+    ) -> CompanyContextBuilder:
         self._ip_address = ip
         self._user_agent = user_agent
         self._endpoint = endpoint

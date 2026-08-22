@@ -25,21 +25,28 @@ class AIPolicyScope(StrEnum):
     CLOUD_ALLOWED = "CLOUD_ALLOWED"  # Puede usar proveedores cloud (tareas públicas)
 
 
-class DolibarrConfig(BaseModel):
-    """Configuración de Dolibarr para esta instancia."""
+class DatabaseConfig(BaseModel):
+    """Configuración de base de datos MariaDB para esta instancia."""
 
-    version: str = "23.0.4"
+    host: str = "127.0.0.1"
+    port: int = 3306
+    name: str  # ej: dolibarr_empresa_a
+    user: str  # ej: db_empresa_a
+    password: str  # Generar único por instancia
+
+
+class DolibarrConfig(BaseModel):
+    """Configuración de Dolibarr (ERP) para esta instancia.
+
+    Contiene SOLO información relacionada con la instancia ERP.
+    La configuración de base de datos está en DatabaseConfig por separado.
+    """
+
+    version: str  # ej: "23.0.4" - requerido, no hay default en Core
     internal_url: str  # ej: http://127.0.0.1:8081
     public_url: str | None = None  # ej: https://dolibarr.empresa.com
     api_key: str
     documents_path: str  # ej: /var/lib/dolibarr/documents/empresa_a
-
-    # Base de datos (MariaDB - propia por instancia)
-    db_host: str = "127.0.0.1"
-    db_port: int = 3306
-    db_name: str  # ej: dolibarr_empresa_a
-    db_user: str  # ej: db_empresa_a
-    db_password: str  # Generar único por instancia
 
 
 class TelegramConfig(BaseModel):
@@ -71,26 +78,30 @@ class DomainConfig(BaseModel):
 
 
 class AIConfig(BaseModel):
-    """Configuración de IA para esta instancia."""
+    """Configuración de IA para esta instancia.
+
+    NOTA: Los modelos concretos NO tienen defaults en el Core.
+    Deben configurarse explícitamente por instancia o en templates.
+    """
 
     default_policy: AIPolicyScope = AIPolicyScope.LOCAL_ONLY
 
     # Ollama (local - compartido)
     ollama_endpoint: str = "http://127.0.0.1:11434"
-    ollama_model: str = "qwen3.5:4b"
+    ollama_model: str  # Requerido - ej: "qwen3.5:4b", "llama3.1:8b", etc.
     ollama_vision_model: str | None = None
 
     # NVIDIA (cloud)
     nvidia_api_key: str | None = None
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nvidia_text_model: str = "meta/llama-3.1-70b-instruct"
-    nvidia_vision_model: str = "meta/llama-3.2-90b-vision-instruct"
+    nvidia_text_model: str | None = None
+    nvidia_vision_model: str | None = None
 
     # OpenAI (cloud)
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
-    openai_text_model: str = "gpt-4o-mini"
-    openai_vision_model: str = "gpt-4o-mini"
+    openai_text_model: str | None = None
+    openai_vision_model: str | None = None
 
     # Configuración de routing por tarea
     task_policies: dict[str, AIPolicyScope] = Field(default_factory=dict)
@@ -108,8 +119,9 @@ class InstanceConfig(BaseModel):
     instance_id: str  # slug único: "empresa_a", "transvega", "ejemplo"
     company_name: str  # Nombre legal: "Empresa A S.L."
 
-    # Infraestructura específica
-    database: DolibarrConfig
+    # Infraestructura específica - SEPARADA SEMÁNTICAMENTE
+    database: DatabaseConfig  # Configuración MariaDB (host, port, name, user, password)
+    dolibarr: DolibarrConfig  # Configuración Dolibarr ERP (urls, api_key, version, documents_path)
     telegram: TelegramConfig
     domains: DomainConfig
     ai: AIConfig = Field(default_factory=AIConfig)
@@ -159,13 +171,24 @@ class InstanceConfig(BaseModel):
         resolved.runtime_path = self.runtime_path.format(instance_id=self.instance_id)
         return resolved
 
-    def get_dolibarr_db_url(self) -> str:
-        """URL de conexión MariaDB para Dolibarr de esta instancia."""
+    def get_database_url(self) -> str:
+        """URL de conexión MariaDB para esta instancia."""
         db = self.database
-        return f"mysql://{db.db_user}:{db.db_password}@{db.db_host}:{db.db_port}/{db.db_name}"
+        return f"mysql://{db.user}:{db.password}@{db.host}:{db.port}/{db.name}"
+
+    def get_dolibarr_db_url(self) -> str:
+        """URL de conexión MariaDB para Dolibarr de esta instancia (alias compatibilidad)."""
+        return self.get_database_url()
 
     def get_redis_db(self) -> int:
-        """Número de base de datos Redis para esta instancia (hash del instance_id)."""
+        """Número de base de datos Redis para esta instancia (hash del instance_id).
+
+        NOTA: Redis DB number (0-15) NO es una frontera de seguridad real.
+        Es solo aislamiento lógico de claves. Para aislamiento real usar:
+        - namespace/prefix por instancia
+        - credenciales/ACL cuando proceda
+        - o instancias Redis separadas cuando la sensibilidad lo requiera.
+        """
         import hashlib
 
         return int(hashlib.md5(self.instance_id.encode()).hexdigest(), 16) % 16
@@ -224,7 +247,7 @@ def load_instance_config(instance_id: str, instances_root: Path | None = None) -
     if not config_path.exists():
         return None
 
-    with open(config_path, encoding="utf-8") as f:
+    with config_path.open(encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     if not data:
@@ -241,7 +264,7 @@ def load_instance_config(instance_id: str, instances_root: Path | None = None) -
 def list_instances(instances_root: Path | None = None) -> list[str]:
     """Listar IDs de instancias disponibles."""
     if instances_root is None:
-        from core.heroku.config import get_global_settings
+        from core.hermes.config import get_global_settings
 
         instances_root = get_global_settings().PROJECT_ROOT / "instances"
 
@@ -270,16 +293,18 @@ instance_id: "{instance_id}"
 company_name: "{company_name}"
 
 database:
+  host: "127.0.0.1"
+  port: 3306
+  name: "dolibarr_{instance_id}"
+  user: "db_{instance_id}"
+  password: "CHANGE_ME_DB_PASSWORD"
+
+dolibarr:
   version: "23.0.4"
   internal_url: "http://127.0.0.1:{dolibarr_port}"
   public_url: "https://{dolibarr_domain}"
   api_key: "CHANGE_ME_DOLIBARR_API_KEY"
   documents_path: "/var/lib/dolibarr/documents/{instance_id}"
-  db_host: "127.0.0.1"
-  db_port: 3306
-  db_name: "dolibarr_{instance_id}"
-  db_user: "db_{instance_id}"
-  db_password: "CHANGE_ME_DB_PASSWORD"
 
 telegram:
   bot_token: "CHANGE_ME_TELEGRAM_BOT_TOKEN"
@@ -299,16 +324,16 @@ domains:
 ai:
   default_policy: "LOCAL_ONLY"
   ollama_endpoint: "http://127.0.0.1:11434"
-  ollama_model: "qwen3.5:4b"
+  ollama_model: "qwen3.5:4b"  # EJEMPLO - cambiar según modelo disponible
   ollama_vision_model: null
   nvidia_api_key: null
   nvidia_base_url: "https://integrate.api.nvidia.com/v1"
-  nvidia_text_model: "meta/llama-3.1-70b-instruct"
-  nvidia_vision_model: "meta/llama-3.2-90b-vision-instruct"
+  nvidia_text_model: null
+  nvidia_vision_model: null
   openai_api_key: null
   openai_base_url: "https://api.openai.com/v1"
-  openai_text_model: "gpt-4o-mini"
-  openai_vision_model: "gpt-4o-mini"
+  openai_text_model: null
+  openai_vision_model: null
   task_policies: {{}}
 
 enabled_agents: []

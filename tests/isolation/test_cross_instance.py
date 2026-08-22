@@ -15,6 +15,7 @@ from core.hermes.extensions import extension_registry
 from core.hermes.instance_config import (
     AIConfig,
     AIPolicyScope,
+    DatabaseConfig,
     DolibarrConfig,
     DomainConfig,
     InstanceConfig,
@@ -38,13 +39,18 @@ def instance_a_config():
     return InstanceConfig(
         instance_id="empresa_a",
         company_name="Empresa A S.L.",
-        database=DolibarrConfig(
+        database=DatabaseConfig(
+            host="127.0.0.1",
+            port=3306,
+            name="dolibarr_empresa_a",
+            user="db_empresa_a",
+            password="pass_a",
+        ),
+        dolibarr=DolibarrConfig(
+            version="23.0.4",
             internal_url="http://127.0.0.1:8081",
             api_key="dolibarr_key_a",
             documents_path="/var/lib/dolibarr/documents/empresa_a",
-            db_name="dolibarr_empresa_a",
-            db_user="db_empresa_a",
-            db_password="pass_a",
         ),
         telegram=TelegramConfig(
             bot_token="telegram_token_a",
@@ -56,7 +62,10 @@ def instance_a_config():
             dolibarr="dolibarr.empresa-a.com",
             hermes="bot.empresa-a.com",
         ),
-        ai=AIConfig(default_policy=AIPolicyScope.LOCAL_ONLY),
+        ai=AIConfig(
+            default_policy=AIPolicyScope.LOCAL_ONLY,
+            ollama_model="qwen3.5:4b",
+        ),
         enabled_agents=["invoice_processing"],
         enabled_workflows=["invoice_approval"],
     ).resolve_paths()
@@ -68,13 +77,18 @@ def instance_b_config():
     return InstanceConfig(
         instance_id="empresa_b",
         company_name="Empresa B S.L.",
-        database=DolibarrConfig(
+        database=DatabaseConfig(
+            host="127.0.0.1",
+            port=3306,
+            name="dolibarr_empresa_b",
+            user="db_empresa_b",
+            password="pass_b",
+        ),
+        dolibarr=DolibarrConfig(
+            version="23.0.4",
             internal_url="http://127.0.0.1:8082",
             api_key="dolibarr_key_b",
             documents_path="/var/lib/dolibarr/documents/empresa_b",
-            db_name="dolibarr_empresa_b",
-            db_user="db_empresa_b",
-            db_password="pass_b",
         ),
         telegram=TelegramConfig(
             bot_token="telegram_token_b",
@@ -86,7 +100,10 @@ def instance_b_config():
             dolibarr="dolibarr.empresa-b.es",
             hermes="bot.empresa-b.es",
         ),
-        ai=AIConfig(default_policy=AIPolicyScope.CLOUD_ALLOWED),
+        ai=AIConfig(
+            default_policy=AIPolicyScope.CLOUD_ALLOWED,
+            ollama_model="llama3.1:8b",
+        ),
         enabled_agents=["dog_intake", "publishing"],
         enabled_workflows=["dog_publishing"],
         dolibarr_apache_port=8082,
@@ -128,17 +145,23 @@ class TestInstanceConfigIsolation:
         db_a = instance_a_config.database
         db_b = instance_b_config.database
 
-        assert db_a.db_name == "dolibarr_empresa_a"
-        assert db_b.db_name == "dolibarr_empresa_b"
-        assert db_a.db_name != db_b.db_name
+        assert db_a.name == "dolibarr_empresa_a"
+        assert db_b.name == "dolibarr_empresa_b"
+        assert db_a.name != db_b.name
 
-        assert db_a.db_user == "db_empresa_a"
-        assert db_b.db_user == "db_empresa_b"
-        assert db_a.db_user != db_b.db_user
+        assert db_a.user == "db_empresa_a"
+        assert db_b.user == "db_empresa_b"
+        assert db_a.user != db_b.user
 
-        assert db_a.db_password != db_b.db_password
-        assert db_a.api_key != db_b.api_key
-        assert db_a.internal_url != db_b.internal_url
+        assert db_a.password != db_b.password
+
+    def test_dolibarr_configs_independent(self, instance_a_config, instance_b_config):
+        dol_a = instance_a_config.dolibarr
+        dol_b = instance_b_config.dolibarr
+
+        assert dol_a.api_key != dol_b.api_key
+        assert dol_a.internal_url != dol_b.internal_url
+        assert dol_a.documents_path != dol_b.documents_path
 
     def test_telegram_configs_independent(self, instance_a_config, instance_b_config):
         tg_a = instance_a_config.telegram
@@ -175,9 +198,9 @@ class TestInstanceConfigIsolation:
         db_b = instance_b_config.get_redis_db()
         assert db_a != db_b
 
-    def test_dolibarr_db_urls_different(self, instance_a_config, instance_b_config):
-        url_a = instance_a_config.get_dolibarr_db_url()
-        url_b = instance_b_config.get_dolibarr_db_url()
+    def test_database_urls_different(self, instance_a_config, instance_b_config):
+        url_a = instance_a_config.get_database_url()
+        url_b = instance_b_config.get_database_url()
         assert url_a != url_b
         assert "dolibarr_empresa_a" in url_a
         assert "dolibarr_empresa_b" in url_b
@@ -194,6 +217,10 @@ class TestCompanyContextIsolation:
     def test_context_carries_correct_instance_id(self, context_a, context_b):
         assert context_a.instance_id == "empresa_a"
         assert context_b.instance_id == "empresa_b"
+
+    def test_context_carry_correct_database_config(self, context_a, context_b):
+        assert context_a.database_config.name == "dolibarr_empresa_a"
+        assert context_b.database_config.name == "dolibarr_empresa_b"
 
     def test_context_carry_correct_dolibarr_config(self, context_a, context_b):
         assert context_a.dolibarr_config.internal_url == "http://127.0.0.1:8081"
@@ -361,7 +388,7 @@ class TestDolibarrClientIsolation:
     @pytest.mark.asyncio
     async def test_client_a_cannot_use_config_b(self, context_a, context_b):
         """Cliente de A no puede recibir config de B accidentalmente."""
-        client = DolibarrClient.from_instance_config(context_a.instance_config.database)
+        client = DolibarrClient.from_instance_config(context_a.instance_config.dolibarr)
         assert client.base_url == context_a.dolibarr_config.internal_url
         assert client.base_url != context_b.dolibarr_config.internal_url
 
@@ -640,8 +667,17 @@ class TestInstanceConfigValidation:
             InstanceConfig(
                 instance_id="Empresa A",  # Mayúsculas y espacio
                 company_name="Test",
-                database=DolibarrConfig(
-                    internal_url="http://x", api_key="k", documents_path="/d", db_name="d", db_user="u", db_password="p"
+                database=DatabaseConfig(
+                    host="127.0.0.1",
+                    port=3306,
+                    name="d",
+                    user="u",
+                    password="p",
+                ),
+                dolibarr=DolibarrConfig(
+                    internal_url="http://x",
+                    api_key="k",
+                    documents_path="/d",
                 ),
                 telegram=TelegramConfig(bot_token="t", webhook_path="/w", webhook_secret="s"),
                 domains=DomainConfig(base="test.com"),
@@ -663,13 +699,17 @@ class TestInstanceConfigValidation:
                 InstanceConfig(
                     instance_id=reserved,
                     company_name="Test",
-                    database=DolibarrConfig(
+                    database=DatabaseConfig(
+                        host="127.0.0.1",
+                        port=3306,
+                        name="d",
+                        user="u",
+                        password="p",
+                    ),
+                    dolibarr=DolibarrConfig(
                         internal_url="http://x",
                         api_key="k",
                         documents_path="/d",
-                        db_name="d",
-                        db_user="u",
-                        db_password="p",
                     ),
                     telegram=TelegramConfig(bot_token="t", webhook_path="/w", webhook_secret="s"),
                     domains=DomainConfig(base="test.com"),
@@ -680,8 +720,17 @@ class TestInstanceConfigValidation:
             InstanceConfig(
                 instance_id="test",
                 company_name="Test",
-                database=DolibarrConfig(
-                    internal_url="http://x", api_key="k", documents_path="/d", db_name="d", db_user="u", db_password="p"
+                database=DatabaseConfig(
+                    host="127.0.0.1",
+                    port=3306,
+                    name="d",
+                    user="u",
+                    password="p",
+                ),
+                dolibarr=DolibarrConfig(
+                    internal_url="http://x",
+                    api_key="k",
+                    documents_path="/d",
                 ),
                 telegram=TelegramConfig(bot_token="t", webhook_path="/w", webhook_secret="s"),
                 domains=DomainConfig(base="invalid"),  # No es dominio válido

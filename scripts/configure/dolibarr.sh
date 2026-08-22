@@ -50,13 +50,14 @@ import yaml, sys
 with open('$CONFIG_YML') as f:
     cfg = yaml.safe_load(f)
 db = cfg['database']
+dol = cfg['dolibarr']
 tg = cfg['telegram']
-print(f'DB_NAME={db[\"db_name\"]}')
-print(f'DB_USER={db[\"db_user\"]}')
-print(f'DB_HOST={db[\"db_host\"]}')
-print(f'DB_PORT={db[\"db_port\"]}')
-print(f'DOLIBARR_INTERNAL_URL={db[\"internal_url\"]}')
-print(f'DOLIBARR_DOCUMENTS={db[\"documents_path\"]}')
+print(f'DB_NAME={db[\"name\"]}')
+print(f'DB_USER={db[\"user\"]}')
+print(f'DB_HOST={db[\"host\"]}')
+print(f'DB_PORT={db[\"port\"]}')
+print(f'DOLIBARR_INTERNAL_URL={dol[\"internal_url\"]}')
+print(f'DOLIBARR_DOCUMENTS={dol[\"documents_path\"]}')
 print(f'DOLIBARR_APACHE_PORT={cfg[\"dolibarr_apache_port\"]}')
 print(f'TELEGRAM_WEBHOOK_PATH={tg[\"webhook_path\"]}')
 ")

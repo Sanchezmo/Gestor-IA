@@ -85,7 +85,7 @@ class DolibarrClient:
 
     @classmethod
     def from_instance_config(cls, config: DolibarrConfig) -> "DolibarrClient":
-        """Crear cliente desde InstanceConfig.database."""
+        """Crear cliente desde InstanceConfig.dolibarr."""
         return cls(
             base_url=config.internal_url,
             api_key=config.api_key,
@@ -420,7 +420,6 @@ async def get_dolibarr_client(
             return await client.list_thirdparties()
     """
     if ctx is None:
-
         # Esto requiere que el endpoint use Depends(get_company_context) también
         raise RuntimeError(
             "get_dolibarr_client requiere CompanyContext. Usa Depends(get_company_context) en el endpoint."
