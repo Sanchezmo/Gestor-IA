@@ -328,9 +328,12 @@ def create_ai_provider(
 ) -> AIProvider:
     """Factory para crear proveedor de IA."""
     if provider_type == "ollama":
+        # El modelo es obligatorio - no hay fallback silencioso
+        if "model" not in config or not config["model"]:
+            raise ValueError("El modelo Ollama es obligatorio. Configúrelo en InstanceConfig.ai.ollama_model")
         return OllamaProvider(
             endpoint=config.get("endpoint", "http://127.0.0.1:11434"),
-            model=config.get("model", "qwen3.5:4b"),
+            model=config["model"],
             vision_model=config.get("vision_model"),
             default_timeout=config.get("timeout", 600.0),
         )

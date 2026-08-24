@@ -29,9 +29,20 @@ from core.hermes.query import (
     format_thirdparty_detail_for_telegram,
     structured_intent_to_tool_call,
 )
-from core.hermes.query.models import InterpretationStatus, ThirdpartyAction
+from core.hermes.query.models import (
+    InterpretationStatus,
+    InvoiceAction,
+    InvoicePartyType,
+    ThirdpartyAction,
+    format_customer_invoice_detail_for_telegram,
+    format_customer_invoices_for_telegram,
+    format_invoice_count_for_telegram,
+    format_supplier_invoice_detail_for_telegram,
+    format_supplier_invoices_for_telegram,
+)
 from core.hermes.resolver import InstanceResolutionMiddleware, get_company_context, get_user_context
 from core.hermes.tools import tool_registry
+from core.hermes.tools.invoice_tools import register_core_invoice_tools
 from core.hermes.tools.thirdparty_tools import register_core_thirdparty_tools
 from core.integrations.cloudflare.manager import create_cloudflare_manager
 from core.integrations.dolibarr.client import DolibarrClient
@@ -104,6 +115,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Registrar core tools de Hermes
     register_core_thirdparty_tools()
+    register_core_invoice_tools()
 
     # Crear intérprete de intención compuesto (parser-first + Ollama fallback)
     # Usamos una config dummy para el intérprete global; se creará uno por request con CompanyContext
@@ -645,7 +657,9 @@ async def telegram_webhook(
             response_text = (
                 f"🤖 Gestor-IA - {ctx.company_name}\n\n"
                 f"Instancia: {ctx.instance_id}\n\n"
-                "Comandos:\n/start - Este mensaje\n/help - Ayuda\n/status - Estado\n/terceros - Listar terceros"
+                "Comandos:\n/start - Este mensaje\n/help - Ayuda\n"
+                "/status - Estado\n/terceros - Listar terceros\n"
+                "/facturas - Facturas de cliente\n/facturas_proveedor - Facturas de proveedor"
             )
 
         elif text == "/help":
@@ -654,7 +668,9 @@ async def telegram_webhook(
                 "/start - Inicio\n"
                 "/help - Esta ayuda\n"
                 "/status - Estado de la instancia\n"
-                "/terceros - Listar terceros (clientes/proveedores)"
+                "/terceros - Listar terceros (clientes/proveedores)\n"
+                "/facturas - Listar facturas de cliente\n"
+                "/facturas_proveedor - Listar facturas de proveedor"
             )
 
         elif text == "/status":
@@ -704,7 +720,7 @@ async def telegram_webhook(
                         name="list_thirdparties",
                         company_context=ctx,
                         user_context=user_context,
-                        limit=10,  # Pequeño para Telegram
+                        limit=10,
                         offset=0,
                     )
 
@@ -742,10 +758,161 @@ async def telegram_webhook(
                                 telegram_user_id=user_context.telegram_user_id,
                                 dolibarr_user_id=user_context.dolibarr_user_id,
                             )
+
+        elif text == "/facturas":
+            if not user_context:
+                response_text = "No tienes acceso autorizado a este asistente."
+                if _audit_logger:
+                    await _audit_logger.log_from_context(
+                        ctx,
+                        action=AuditActions.TELEGRAM_IDENTITY_UNKNOWN,
+                        resource_type="telegram_update",
+                        resource_id=str(update_id),
+                        status_code=403,
+                        success=False,
+                        error_code="UNAUTHORIZED",
+                        error_message="Telegram user not linked",
+                    )
+            else:
+                auth_service = AuthorizationService()
+                try:
+                    auth_service.require(user_context, "customer_invoice.read")
+                except Exception as e:
+                    response_text = "No tienes permiso para consultar facturas de cliente."
+                    if _audit_logger:
+                        await _audit_logger.log_from_context(
+                            ctx,
+                            action=AuditActions.AUTHORIZATION_DENIED,
+                            resource_type="tool",
+                            resource_id="list_customer_invoices",
+                            status_code=403,
+                            success=False,
+                            error_code="PERMISSION_DENIED",
+                            error_message=str(e),
+                            telegram_user_id=user_context.telegram_user_id,
+                            dolibarr_user_id=user_context.dolibarr_user_id,
+                        )
+                else:
+                    tool_result = await tool_registry.execute_tool(
+                        instance_id=instance_id,
+                        name="list_customer_invoices",
+                        company_context=ctx,
+                        user_context=user_context,
+                        limit=10,
+                        offset=0,
+                    )
+
+                    if tool_result.success:
+                        response_text = format_customer_invoices_for_telegram(
+                            tool_result.data["invoices"],
+                            tool_result.data["limit"],
+                            tool_result.data["offset"],
+                        )
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action="customer_invoice.list",
+                                resource_type="customer_invoice",
+                                status_code=200,
+                                success=True,
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
+                                new_state={"count": tool_result.data["count"]},
+                            )
+                    else:
+                        response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action="customer_invoice.list",
+                                resource_type="customer_invoice",
+                                status_code=500,
+                                success=False,
+                                error_code=tool_result.error_code,
+                                error_message=tool_result.error_message,
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
+                            )
+
+        elif text == "/facturas_proveedor":
+            if not user_context:
+                response_text = "No tienes acceso autorizado a este asistente."
+                if _audit_logger:
+                    await _audit_logger.log_from_context(
+                        ctx,
+                        action=AuditActions.TELEGRAM_IDENTITY_UNKNOWN,
+                        resource_type="telegram_update",
+                        resource_id=str(update_id),
+                        status_code=403,
+                        success=False,
+                        error_code="UNAUTHORIZED",
+                        error_message="Telegram user not linked",
+                    )
+            else:
+                auth_service = AuthorizationService()
+                try:
+                    auth_service.require(user_context, "supplier_invoice.read")
+                except Exception as e:
+                    response_text = "No tienes permiso para consultar facturas de proveedor."
+                    if _audit_logger:
+                        await _audit_logger.log_from_context(
+                            ctx,
+                            action=AuditActions.AUTHORIZATION_DENIED,
+                            resource_type="tool",
+                            resource_id="list_supplier_invoices",
+                            status_code=403,
+                            success=False,
+                            error_code="PERMISSION_DENIED",
+                            error_message=str(e),
+                            telegram_user_id=user_context.telegram_user_id,
+                            dolibarr_user_id=user_context.dolibarr_user_id,
+                        )
+                else:
+                    tool_result = await tool_registry.execute_tool(
+                        instance_id=instance_id,
+                        name="list_supplier_invoices",
+                        company_context=ctx,
+                        user_context=user_context,
+                        limit=10,
+                        offset=0,
+                    )
+
+                    if tool_result.success:
+                        response_text = format_supplier_invoices_for_telegram(
+                            tool_result.data["invoices"],
+                            tool_result.data["limit"],
+                            tool_result.data["offset"],
+                        )
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action="supplier_invoice.list",
+                                resource_type="supplier_invoice",
+                                status_code=200,
+                                success=True,
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
+                                new_state={"count": tool_result.data["count"]},
+                            )
+                    else:
+                        response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action="supplier_invoice.list",
+                                resource_type="supplier_invoice",
+                                status_code=500,
+                                success=False,
+                                error_code=tool_result.error_code,
+                                error_message=tool_result.error_message,
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
+                            )
+
+        # =====================================================================
+        # QUERY LAYER V2: Procesar lenguaje natural con IntentInterpreter
+        # =====================================================================
         else:
-            # =====================================================================
-            # QUERY LAYER V2: Procesar lenguaje natural con IntentInterpreter
-            # =====================================================================
             if not user_context:
                 response_text = "No tienes acceso autorizado a este asistente."
                 if _audit_logger:
@@ -824,6 +991,50 @@ async def telegram_webhook(
                                     response_text = format_count_for_telegram(
                                         tool_result.data["count"],
                                         party_type,
+                                    )
+                                # Customer Invoice actions
+                                elif action == InvoiceAction.LIST_CUSTOMER_INVOICES:
+                                    response_text = format_customer_invoices_for_telegram(
+                                        tool_result.data["invoices"],
+                                        tool_result.data["limit"],
+                                        tool_result.data["offset"],
+                                    )
+                                elif action == InvoiceAction.SEARCH_CUSTOMER_INVOICES:
+                                    response_text = format_customer_invoices_for_telegram(
+                                        tool_result.data["invoices"],
+                                        tool_result.data["limit"],
+                                        tool_result.data["offset"],
+                                    )
+                                elif action == InvoiceAction.GET_CUSTOMER_INVOICE:
+                                    response_text = format_customer_invoice_detail_for_telegram(
+                                        tool_result.data["invoice"]
+                                    )
+                                elif action == InvoiceAction.COUNT_CUSTOMER_INVOICES:
+                                    response_text = format_invoice_count_for_telegram(
+                                        tool_result.data["count"],
+                                        InvoicePartyType.CUSTOMER,
+                                    )
+                                # Supplier Invoice actions
+                                elif action == InvoiceAction.LIST_SUPPLIER_INVOICES:
+                                    response_text = format_supplier_invoices_for_telegram(
+                                        tool_result.data["invoices"],
+                                        tool_result.data["limit"],
+                                        tool_result.data["offset"],
+                                    )
+                                elif action == InvoiceAction.SEARCH_SUPPLIER_INVOICES:
+                                    response_text = format_supplier_invoices_for_telegram(
+                                        tool_result.data["invoices"],
+                                        tool_result.data["limit"],
+                                        tool_result.data["offset"],
+                                    )
+                                elif action == InvoiceAction.GET_SUPPLIER_INVOICE:
+                                    response_text = format_supplier_invoice_detail_for_telegram(
+                                        tool_result.data["invoice"]
+                                    )
+                                elif action == InvoiceAction.COUNT_SUPPLIER_INVOICES:
+                                    response_text = format_invoice_count_for_telegram(
+                                        tool_result.data["count"],
+                                        InvoicePartyType.SUPPLIER,
                                     )
                                 else:
                                     response_text = "Consulta procesada correctamente."
