@@ -285,72 +285,64 @@ async def require_admin_user(request: Request) -> CompanyContext:
     """
     Require admin access for /admin/* endpoints.
 
-    Checks for admin API key pattern (gsk_admin_...) or system/internal actor.
+    Validates GESTOR_IA_ADMIN_TOKEN from environment.
     Does NOT require instance resolution since admin endpoints are global.
     """
-    # Check for admin API key pattern (gsk_admin_...)
+    import hmac
+
+    from core.hermes.config import get_global_settings
+
+    settings = get_global_settings()
+    admin_token = settings.GESTOR_IA_ADMIN_TOKEN
+
+    if not admin_token:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "ADMIN_NOT_CONFIGURED", "message": "Admin token not configured"},
+        )
+
     auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer gsk_admin_"):
-        # Return a minimal CompanyContext for admin operations
-        from core.hermes.context import CompanyContextBuilder
-        from core.hermes.instance_config import (
-            AIConfig,
-            DatabaseConfig,
-            DolibarrConfig,
-            DomainConfig,
-            InstanceConfig,
-            TelegramConfig,
+    if not auth.startswith("Bearer "):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "ADMIN_REQUIRED", "message": "Administrative access required"},
         )
 
-        # Dummy config for admin context
-        dummy_config = InstanceConfig(
-            instance_id="admin",
-            company_name="Gestor-IA Admin",
-            database=DatabaseConfig(host="127.0.0.1", port=3306, name="admin", user="admin", password="admin"),
-            dolibarr=DolibarrConfig(
-                version="1.0",
-                internal_url="http://127.0.0.1:8081",
-                api_key="admin",
-                documents_path="/tmp",
-            ),
-            telegram=TelegramConfig(bot_token="admin", webhook_path="/webhook/admin", webhook_secret="admin"),
-            domains=DomainConfig(base="admin.local"),
-            ai=AIConfig(ollama_model="dummy"),
-        )
-        return CompanyContextBuilder(dummy_config).with_actor("admin", "admin").build()
+    provided_token = auth[7:]  # Remove "Bearer " prefix
 
-    # Check for system/internal requests
-    if request.headers.get("X-Internal-Request"):
-        from core.hermes.context import CompanyContextBuilder
-        from core.hermes.instance_config import (
-            AIConfig,
-            DatabaseConfig,
-            DolibarrConfig,
-            DomainConfig,
-            InstanceConfig,
-            TelegramConfig,
+    # Secure comparison using hmac.compare_digest
+    if not hmac.compare_digest(provided_token, admin_token):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "ADMIN_REQUIRED", "message": "Administrative access required"},
         )
 
-        dummy_config = InstanceConfig(
-            instance_id="system",
-            company_name="Gestor-IA System",
-            database=DatabaseConfig(host="127.0.0.1", port=3306, name="system", user="system", password="system"),
-            dolibarr=DolibarrConfig(
-                version="1.0",
-                internal_url="http://127.0.0.1:8081",
-                api_key="system",
-                documents_path="/tmp",
-            ),
-            telegram=TelegramConfig(bot_token="system", webhook_path="/webhook/system", webhook_secret="system"),
-            domains=DomainConfig(base="system.local"),
-            ai=AIConfig(ollama_model="dummy"),
-        )
-        return CompanyContextBuilder(dummy_config).with_actor("system", "internal").build()
-
-    raise HTTPException(
-        status_code=403,
-        detail={"error": "ADMIN_REQUIRED", "message": "Administrative access required"},
+    # Return a minimal CompanyContext for admin operations
+    from core.hermes.context import CompanyContextBuilder
+    from core.hermes.instance_config import (
+        AIConfig,
+        DatabaseConfig,
+        DolibarrConfig,
+        DomainConfig,
+        InstanceConfig,
+        TelegramConfig,
     )
+
+    dummy_config = InstanceConfig(
+        instance_id="admin",
+        company_name="Gestor-IA Admin",
+        database=DatabaseConfig(host="127.0.0.1", port=3306, name="admin", user="admin", password="admin"),
+        dolibarr=DolibarrConfig(
+            version="1.0",
+            internal_url="http://127.0.0.1:8081",
+            api_key="admin",
+            documents_path="/tmp",
+        ),
+        telegram=TelegramConfig(bot_token="admin", webhook_path="/webhook/admin", webhook_secret="admin"),
+        domains=DomainConfig(base="admin.local"),
+        ai=AIConfig(ollama_model="dummy"),
+    )
+    return CompanyContextBuilder(dummy_config).with_actor("admin", "admin").build()
 
 
 async def require_authenticated_user(

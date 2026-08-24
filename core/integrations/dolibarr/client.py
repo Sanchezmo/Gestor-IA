@@ -374,7 +374,7 @@ class DolibarrClient:
     async def list_invoices(
         self,
         limit: int = 100,
-        offset: int = 0,
+        page: int = 1,
         status: int | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
@@ -384,13 +384,14 @@ class DolibarrClient:
         sortfield: str = "date",
         sortorder: str = "DESC",
         sqlfilters: str | None = None,
-    ) -> list[dict[str, Any]]:
+        pagination_data: bool = False,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         """
         Listar facturas de cliente con filtros opcionales.
 
         Args:
-            limit: Número máximo de resultados (default 100, max 100)
-            offset: Offset para paginación (default 0)
+            limit: Número máximo de resultados por página (default 100, max 100)
+            page: Número de página 1-based (default 1)
             status: Filtrar por estado (0=borrador, 1=validada, 2=pagada, 3=anulada)
             date_from: Fecha factura desde (inclusive)
             date_to: Fecha factura hasta (inclusive)
@@ -400,8 +401,17 @@ class DolibarrClient:
             sortfield: Campo de ordenación (date, ref, total_ttc, date_lim_reglement)
             sortorder: Orden (ASC, DESC)
             sqlfilters: Filtros SQL avanzados de Dolibarr
+            pagination_data: Si true, devuelve metadata de paginación (total, page, etc.)
+
+        Returns:
+            Lista de facturas, o dict con 'data' y 'pagination' si pagination_data=True
         """
-        params: dict[str, Any] = {"limit": limit, "offset": offset, "sortfield": sortfield, "sortorder": sortorder}
+        if page < 1:
+            page = 1
+        if limit < 1 or limit > 100:
+            limit = 100
+
+        params: dict[str, Any] = {"limit": limit, "page": page, "sortfield": sortfield, "sortorder": sortorder}
 
         if status is not None:
             params["status"] = status
@@ -418,9 +428,23 @@ class DolibarrClient:
             params["date_lim_reglement_to"] = int(datetime.combine(due_to, datetime.max.time()).timestamp())
         if sqlfilters is not None:
             params["sqlfilters"] = sqlfilters
+        if pagination_data:
+            params["pagination_data"] = "1"
 
         result = await self._request("GET", "invoices", params=params)
-        return result.get("data", []) if isinstance(result, dict) else result
+        if isinstance(result, dict):
+            if pagination_data:
+                return {
+                    "data": result.get("data", []),
+                    "pagination": {
+                        "total": result.get("pagination", {}).get("total", 0),
+                        "page": result.get("pagination", {}).get("page", page),
+                        "limit": result.get("pagination", {}).get("limit", limit),
+                        "pages": result.get("pagination", {}).get("pages", 0),
+                    }
+                }
+            return result.get("data", [])
+        return result
 
     async def get_invoice(self, invoice_id: int) -> dict[str, Any]:
         return await self._request("GET", f"invoices/{invoice_id}")
@@ -446,7 +470,7 @@ class DolibarrClient:
     async def list_supplier_invoices(
         self,
         limit: int = 100,
-        offset: int = 0,
+        page: int = 1,
         status: int | None = None,
         thirdparty_id: int | None = None,
         date_from: date | None = None,
@@ -456,13 +480,14 @@ class DolibarrClient:
         sortfield: str = "date",
         sortorder: str = "DESC",
         sqlfilters: str | None = None,
-    ) -> list[dict[str, Any]]:
+        pagination_data: bool = False,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         """
         Listar facturas de proveedor con filtros opcionales.
 
         Args:
-            limit: Número máximo de resultados (default 100, max 100)
-            offset: Offset para paginación (default 0)
+            limit: Número máximo de resultados por página (default 100, max 100)
+            page: Número de página 1-based (default 1)
             status: Filtrar por estado (0=borrador, 1=validada, 2=pagada, 3=anulada)
             thirdparty_id: Filtrar por ID de proveedor (socid)
             date_from: Fecha factura desde (inclusive)
@@ -472,8 +497,17 @@ class DolibarrClient:
             sortfield: Campo de ordenación (date, ref, total_ttc, date_lim_reglement)
             sortorder: Orden (ASC, DESC)
             sqlfilters: Filtros SQL avanzados de Dolibarr
+            pagination_data: Si true, devuelve metadata de paginación (total, page, etc.)
+
+        Returns:
+            Lista de facturas, o dict con 'data' y 'pagination' si pagination_data=True
         """
-        params: dict[str, Any] = {"limit": limit, "offset": offset, "sortfield": sortfield, "sortorder": sortorder}
+        if page < 1:
+            page = 1
+        if limit < 1 or limit > 100:
+            limit = 100
+
+        params: dict[str, Any] = {"limit": limit, "page": page, "sortfield": sortfield, "sortorder": sortorder}
 
         if status is not None:
             params["status"] = status
@@ -490,9 +524,23 @@ class DolibarrClient:
             params["date_lim_reglement_to"] = int(datetime.combine(due_to, datetime.max.time()).timestamp())
         if sqlfilters is not None:
             params["sqlfilters"] = sqlfilters
+        if pagination_data:
+            params["pagination_data"] = "1"
 
         result = await self._request("GET", "supplierinvoices", params=params)
-        return result.get("data", []) if isinstance(result, dict) else result
+        if isinstance(result, dict):
+            if pagination_data:
+                return {
+                    "data": result.get("data", []),
+                    "pagination": {
+                        "total": result.get("pagination", {}).get("total", 0),
+                        "page": result.get("pagination", {}).get("page", page),
+                        "limit": result.get("pagination", {}).get("limit", limit),
+                        "pages": result.get("pagination", {}).get("pages", 0),
+                    }
+                }
+            return result.get("data", [])
+        return result
 
     async def get_supplier_invoice(self, invoice_id: int) -> dict[str, Any]:
         return await self._request("GET", f"supplierinvoices/{invoice_id}")

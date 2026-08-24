@@ -22,8 +22,6 @@ from .common import (
     date_to_timestamp,
     escape_sql_like,
     map_invoice_status_to_dolibarr,
-    validate_pagination,
-    validate_sort,
 )
 
 # =========================================================================
@@ -36,7 +34,7 @@ class ListCustomerInvoicesParams:
     """Parámetros para list_customer_invoices."""
 
     limit: int = 20
-    offset: int = 0
+    page: int = 1
     status: InvoiceStatus | None = None
     thirdparty_id: int | None = None
     thirdparty_name: str | None = None
@@ -48,13 +46,19 @@ class ListCustomerInvoicesParams:
     sort_order: SortOrder = SortOrder.DESC
 
     def __post_init__(self) -> None:
-        validate_pagination(self.limit, self.offset)
-        validate_sort(self.sort_field.value, self.sort_order.value)
+        if self.limit < 1 or self.limit > 100:
+            raise ValueError("El parámetro 'limit' debe estar entre 1 y 100")
+        if self.page < 1:
+            raise ValueError("El parámetro 'page' debe ser >= 1")
+        if self.sort_order not in ALLOWED_INVOICE_SORT_ORDERS:
+            raise ValueError(f"sort_order debe ser ASC o DESC, recibido: {self.sort_order}")
+        if self.sort_field.value not in ALLOWED_INVOICE_SORT_FIELDS:
+            raise ValueError(f"sort_field no permitido: {self.sort_field.value}")
 
     def to_dolibarr_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {
             "limit": self.limit,
-            "offset": self.offset,
+            "page": self.page,
             "sortfield": self.sort_field.value,
             "sortorder": self.sort_order.value,
         }
@@ -74,11 +78,9 @@ class ListCustomerInvoicesParams:
         # Build sqlfilters for thirdparty_name search
         if self.thirdparty_name:
             escaped = escape_sql_like(self.thirdparty_name)
-            sqlfilters = f"t.soc_name:like:'%{escaped}%' AND t.client:=1"
+            sqlfilters = f"t.soc_name:like:'%{escaped}%'"
             params["sqlfilters"] = sqlfilters
-        else:
-            # Always filter for customer invoices (client=1)
-            params["sqlfilters"] = "t.client:=1"
+        # No need for t.client:=1 filter - /invoices endpoint already returns only customer invoices
 
         return params
 
@@ -89,7 +91,7 @@ class SearchCustomerInvoicesParams:
 
     query: str
     limit: int = 20
-    offset: int = 0
+    page: int = 1
     status: InvoiceStatus | None = None
     thirdparty_id: int | None = None
     date_from: date | None = None
@@ -104,13 +106,19 @@ class SearchCustomerInvoicesParams:
             raise ValueError("El parámetro 'query' no puede estar vacío")
         if len(self.query) > 200:
             raise ValueError("El parámetro 'query' es demasiado largo (máx 200 caracteres)")
-        validate_pagination(self.limit, self.offset)
-        validate_sort(self.sort_field.value, self.sort_order.value)
+        if self.limit < 1 or self.limit > 100:
+            raise ValueError("El parámetro 'limit' debe estar entre 1 y 100")
+        if self.page < 1:
+            raise ValueError("El parámetro 'page' debe ser >= 1")
+        if self.sort_order not in ALLOWED_INVOICE_SORT_ORDERS:
+            raise ValueError(f"sort_order debe ser ASC o DESC, recibido: {self.sort_order}")
+        if self.sort_field.value not in ALLOWED_INVOICE_SORT_FIELDS:
+            raise ValueError(f"sort_field no permitido: {self.sort_field.value}")
 
     def to_dolibarr_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {
             "limit": self.limit,
-            "offset": self.offset,
+            "page": self.page,
             "sortfield": self.sort_field.value,
             "sortorder": self.sort_order.value,
         }
@@ -127,8 +135,7 @@ class SearchCustomerInvoicesParams:
         ]
         sqlfilters_parts.append(f"({' OR '.join(search_conditions)})")
 
-        # Always filter for customer invoices
-        sqlfilters_parts.append("t.client:=1")
+        # No need for t.client:=1 filter - /invoices endpoint already returns only customer invoices
 
         if self.status is not None:
             sqlfilters_parts.append(f"t.status:={map_invoice_status_to_dolibarr(self.status.value)}")
@@ -173,7 +180,7 @@ class CountCustomerInvoicesParams:
         pass  # Validations in tool execute
 
     def to_dolibarr_params(self) -> dict[str, Any]:
-        params: dict[str, Any] = {"limit": 1}
+        params: dict[str, Any] = {"limit": 1, "pagination_data": True}
         sqlfilters_parts: list[str] = ["t.client:=1"]
 
         if self.status is not None:
@@ -446,26 +453,30 @@ class CountCustomerInvoicesTool(Tool):
 
         try:
             async with dolibarr as client:
-                # First try with limit=1 to check if there are results
-                raw_invoices = await client.list_invoices(**count_params.to_dolibarr_params())
-                total_count = len(raw_invoices)
+                # Use pagination_data to get total count efficiently
+                result = await client.list_invoices(**count_params.to_dolibarr_params())
 
-                # If more results than limit=1, paginate to count all
-                if total_count == 1:
-                    total_count = 0
-                    offset = 0
-                    page_size = 100
-                    while True:
-                        dolibarr_params = count_params.to_dolibarr_params()
-                        dolibarr_params["limit"] = page_size
-                        dolibarr_params["offset"] = offset
-                        invoices = await client.list_invoices(**dolibarr_params)
-                        if not invoices:
-                            break
-                        total_count += len(invoices)
-                        if len(invoices) < page_size:
-                            break
-                        offset += page_size
+                if isinstance(result, dict) and "pagination" in result:
+                    total_count = result["pagination"].get("total", 0)
+                else:
+                    # Fallback if pagination_data not supported
+                    raw_invoices = result if isinstance(result, list) else result.get("data", [])
+                    total_count = len(raw_invoices)
+                    if total_count == 1:  # limit=1 was used
+                        total_count = 0
+                        page = 1
+                        page_size = 100
+                        while True:
+                            dolibarr_params = count_params.to_dolibarr_params()
+                            dolibarr_params["limit"] = page_size
+                            dolibarr_params["page"] = page
+                            invoices = await client.list_invoices(**dolibarr_params)
+                            if not invoices:
+                                break
+                            total_count += len(invoices)
+                            if len(invoices) < page_size:
+                                break
+                            page += 1
 
                 return ToolResult.ok(
                     data={"count": total_count},

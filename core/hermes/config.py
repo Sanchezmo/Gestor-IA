@@ -112,6 +112,11 @@ class GlobalSettings(BaseSettings):
     IDEMPOTENCY_TTL_HOURS: int = 24
 
     # =========================================================================
+    # ADMIN AUTENTICACIÓN (Infraestructura - no por instancia)
+    # =========================================================================
+    GESTOR_IA_ADMIN_TOKEN: str = ""  # Generar: openssl rand -base64 48
+
+    # =========================================================================
     # BACKUPS
     # =========================================================================
     BACKUP_SCHEDULE: str = "0 2 * * *"  # Diario 02:00

@@ -346,7 +346,7 @@ def _map_invoice_status(status_code: int) -> str:
         2: "paid",
         3: "cancelled",
     }
-    return mapping.get(status_code, "draft")
+    return mapping.get(status_code, "unknown")
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -400,11 +400,16 @@ def dolibarr_to_customer_invoice(data: dict[str, Any]) -> dict[str, Any]:
     total_ht = _to_decimal(data.get("total_ht") or data.get("total_ht"))
     total_ttc = _to_decimal(data.get("total_ttc") or data.get("total_ttc"))
     paid_amount = _to_decimal(data.get("total_paid") or data.get("paid_amount") or data.get("amount_paid"))
-    remaining_amount = _to_decimal(data.get("total_remain") or data.get("remaining_amount") or data.get("total_to_pay"))
 
-    # Si no viene remaining_amount, calcularlo
-    if remaining_amount == 0 and total_ttc > 0:
+    # remaining_amount: distinguir entre campo ausente y valor 0 explícito
+    remaining_amount_raw = data.get("total_remain") or data.get("remaining_amount") or data.get("total_to_pay")
+    if remaining_amount_raw is not None:
+        remaining_amount = _to_decimal(remaining_amount_raw)
+    elif total_ttc > 0:
+        # Solo calcular si el campo no viene en la respuesta
         remaining_amount = total_ttc - paid_amount
+    else:
+        remaining_amount = Decimal("0")
 
     return {
         "id": data.get("id") or data.get("rowid"),
@@ -440,11 +445,16 @@ def dolibarr_to_supplier_invoice_summary(data: dict[str, Any]) -> dict[str, Any]
     total_ht = _to_decimal(data.get("total_ht") or data.get("total_ht"))
     total_ttc = _to_decimal(data.get("total_ttc") or data.get("total_ttc"))
     paid_amount = _to_decimal(data.get("total_paid") or data.get("paid_amount") or data.get("amount_paid"))
-    remaining_amount = _to_decimal(data.get("total_remain") or data.get("remaining_amount") or data.get("total_to_pay"))
 
-    # Si no viene remaining_amount, calcularlo
-    if remaining_amount == 0 and total_ttc > 0:
+    # remaining_amount: distinguir entre campo ausente y valor 0 explícito
+    remaining_amount_raw = data.get("total_remain") or data.get("remaining_amount") or data.get("total_to_pay")
+    if remaining_amount_raw is not None:
+        remaining_amount = _to_decimal(remaining_amount_raw)
+    elif total_ttc > 0:
+        # Solo calcular si el campo no viene en la respuesta
         remaining_amount = total_ttc - paid_amount
+    else:
+        remaining_amount = Decimal("0")
 
     return {
         "id": data.get("id") or data.get("rowid"),
