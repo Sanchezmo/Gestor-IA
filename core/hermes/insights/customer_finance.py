@@ -51,7 +51,7 @@ class CustomerFinanceInsightService:
         tool_name: str,
         **params: Any,
     ) -> Any:
-        """Ejecutar una tool y devolver su resultado."""
+        """Ejecutar una tool y devolver su resultado (ToolResult)."""
         result = await tool_registry.execute_tool(
             instance_id=company_context.instance_id,
             name=tool_name,
@@ -59,9 +59,8 @@ class CustomerFinanceInsightService:
             user_context=user_context,
             **params,
         )
-        if not result.success:
-            raise RuntimeError(f"Error ejecutando {tool_name}: {result.error_message}")
-        return result.data
+        # Return the full ToolResult so caller can check success/error
+        return result
 
     def _resolve_period(
         self,
@@ -101,6 +100,8 @@ class CustomerFinanceInsightService:
         elif period == "custom":
             if not date_from or not date_to:
                 raise ValueError("CUSTOM period requiere date_from y date_to")
+            if date_from > date_to:
+                raise ValueError("date_from debe ser anterior o igual a date_to")
             return date_from, date_to
         else:
             raise ValueError(f"Período financiero desconocido: {period}")
@@ -139,9 +140,11 @@ class CustomerFinanceInsightService:
             tool_name="list_customer_invoices",
             **list_params,
         )
+        if not result.success:
+            raise RuntimeError(f"Error ejecutando list_customer_invoices: {result.error_message}")
 
-        invoices = result.get("invoices", [])
-        total_count = result.get("pagination", {}).get("total", len(invoices))
+        invoices = result.data.get("invoices", [])
+        total_count = result.data.get("pagination", {}).get("total", len(invoices))
 
         # Si hay más páginas, necesitamos iterar para obtener todos los datos
         if total_count > len(invoices):
@@ -159,11 +162,15 @@ class CustomerFinanceInsightService:
                     tool_name="list_customer_invoices",
                     **page_params,
                 )
-                page_invoices = page_result if isinstance(page_result, list) else page_result.get("invoices", [])
+                if not page_result.success:
+                    raise RuntimeError(f"Error ejecutando list_customer_invoices: {page_result.error_message}")
+                page_invoices = page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
                 if not page_invoices:
                     break
                 all_invoices.extend(page_invoices)
-                if len(page_invoices) < page_size:
+                # Use pagination metadata from result to determine if more pages exist
+                page_pagination = page_result.data.get("pagination", {}) if isinstance(page_result.data, dict) else {}
+                if not page_pagination.get("has_more", len(page_invoices) >= page_size):
                     break
                 page += 1
             invoices = all_invoices
@@ -236,9 +243,11 @@ class CustomerFinanceInsightService:
             tool_name="list_customer_invoices",
             **list_params,
         )
+        if not result.success:
+            raise RuntimeError(f"Error ejecutando list_customer_invoices: {result.error_message}")
 
-        invoices = result.get("invoices", [])
-        total_count = result.get("pagination", {}).get("total", len(invoices))
+        invoices = result.data.get("invoices", [])
+        total_count = result.data.get("pagination", {}).get("total", len(invoices))
 
         if total_count > len(invoices):
             all_invoices = list(invoices)
@@ -260,11 +269,15 @@ class CustomerFinanceInsightService:
                     tool_name="list_customer_invoices",
                     **page_params,
                 )
-                page_invoices = page_result if isinstance(page_result, list) else page_result.get("invoices", [])
+                if not page_result.success:
+                    raise RuntimeError(f"Error ejecutando list_customer_invoices: {page_result.error_message}")
+                page_invoices = page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
                 if not page_invoices:
                     break
                 all_invoices.extend(page_invoices)
-                if len(page_invoices) < page_size:
+                # Use pagination metadata from result to determine if more pages exist
+                page_pagination = page_result.data.get("pagination", {}) if isinstance(page_result.data, dict) else {}
+                if not page_pagination.get("has_more", len(page_invoices) >= page_size):
                     break
                 page += 1
             invoices = all_invoices
@@ -311,6 +324,7 @@ class CustomerFinanceInsightService:
         """
         args = CustomerOutstandingSummaryArgs(**args)
         company_today = company_context.get_company_today()
+
         date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to, company_today)
 
         list_params = {
@@ -329,9 +343,11 @@ class CustomerFinanceInsightService:
             tool_name="list_customer_invoices",
             **list_params,
         )
+        if not result.success:
+            raise RuntimeError(f"Error ejecutando list_customer_invoices: {result.error_message}")
 
-        invoices = result.get("invoices", [])
-        total_count = result.get("pagination", {}).get("total", len(invoices))
+        invoices = result.data.get("invoices", [])
+        total_count = result.data.get("pagination", {}).get("total", len(invoices))
 
         if total_count > len(invoices):
             all_invoices = list(invoices)
@@ -352,11 +368,15 @@ class CustomerFinanceInsightService:
                     tool_name="list_customer_invoices",
                     **page_params,
                 )
-                page_invoices = page_result if isinstance(page_result, list) else page_result.get("invoices", [])
+                if not page_result.success:
+                    raise RuntimeError(f"Error ejecutando list_customer_invoices: {page_result.error_message}")
+                page_invoices = page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
                 if not page_invoices:
                     break
                 all_invoices.extend(page_invoices)
-                if len(page_invoices) < page_size:
+                # Use pagination metadata from result to determine if more pages exist
+                page_pagination = page_result.data.get("pagination", {}) if isinstance(page_result.data, dict) else {}
+                if not page_pagination.get("has_more", len(page_invoices) >= page_size):
                     break
                 page += 1
             invoices = all_invoices
@@ -370,12 +390,15 @@ class CustomerFinanceInsightService:
         subtotal = sum((inv.get("total_ht", Decimal("0")) for inv in invoices), Decimal("0"))
         tax = sum(
             (
-                inv.get("total_tva", Decimal("0"))
-                if "total_tva" in inv
-                else (inv.get("total_ttc", Decimal("0")) - inv.get("total_ht", Decimal("0")))
-            )
-            for inv in invoices
-        ), Decimal("0")
+                (
+                    inv.get("total_tva", Decimal("0"))
+                    if "total_tva" in inv
+                    else (inv.get("total_ttc", Decimal("0")) - inv.get("total_ht", Decimal("0")))
+                )
+                for inv in invoices
+            ),
+            Decimal("0"),
+        )
 
         if tax == Decimal("0") and total_ttc > Decimal("0") and subtotal > Decimal("0"):
             tax = total_ttc - subtotal
@@ -426,9 +449,11 @@ class CustomerFinanceInsightService:
             tool_name="list_customer_invoices",
             **list_params,
         )
+        if not result.success:
+            raise RuntimeError(f"Error ejecutando list_customer_invoices: {result.error_message}")
 
-        invoices = result.get("invoices", [])
-        total_count = result.get("pagination", {}).get("total", len(invoices))
+        invoices = result.data.get("invoices", [])
+        total_count = result.data.get("pagination", {}).get("total", len(invoices))
 
         if total_count > len(invoices):
             all_invoices = list(invoices)
@@ -449,11 +474,15 @@ class CustomerFinanceInsightService:
                     tool_name="list_customer_invoices",
                     **page_params,
                 )
-                page_invoices = page_result if isinstance(page_result, list) else page_result.get("invoices", [])
+                if not page_result.success:
+                    raise RuntimeError(f"Error ejecutando list_customer_invoices: {page_result.error_message}")
+                page_invoices = page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
                 if not page_invoices:
                     break
                 all_invoices.extend(page_invoices)
-                if len(page_invoices) < page_size:
+                # Use pagination metadata from result to determine if more pages exist
+                page_pagination = page_result.data.get("pagination", {}) if isinstance(page_result.data, dict) else {}
+                if not page_pagination.get("has_more", len(page_invoices) >= page_size):
                     break
                 page += 1
             invoices = all_invoices

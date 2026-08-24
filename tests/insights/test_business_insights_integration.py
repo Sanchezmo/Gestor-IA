@@ -374,14 +374,14 @@ class TestPaginationIntegration:
     async def test_pagination_multiple_pages(self, context_a, user_context):
         """Verificar que la paginación recorre todas las páginas."""
         from core.hermes.insights import execute_customer_insight
-        from core.hermes.tools import tool_registry
+        from core.hermes.tools import tool_registry, ToolResult
         from unittest.mock import patch, MagicMock
         from decimal import Decimal
         
         pages = [
             [{"id": i, "ref": f"FAC-{i}", "total_ttc": Decimal("100.00"), "remaining_amount": Decimal("100.00")} for i in range(1, 51)],
             [{"id": i, "ref": f"FAC-{i}", "total_ttc": Decimal("100.00"), "remaining_amount": Decimal("100.00")} for i in range(51, 101)],
-            [{"id": i, "ref": f"FAC-{i}", "total_ttc": Decimal("100.00"), "remaining_amount": Decimal("100.00")} for i in range(101, 120)],
+            [{"id": i, "ref": f"FAC-{i}", "total_ttc": Decimal("100.00"), "remaining_amount": Decimal("100.00")} for i in range(101, 121)],
         ]
         
         call_count = 0
@@ -391,20 +391,24 @@ class TestPaginationIntegration:
             call_count += 1
             page = params.get("page", 1)
             if page <= len(pages):
-                return {
-                    "invoices": pages[page - 1],
-                    "count": len(pages[page - 1]),
-                    "limit": 50,
-                    "page": page,
-                    "has_more": page < len(pages),
-                    "pagination": {
-                        "total": sum(len(p) for p in pages),
-                        "page": page,
+                return ToolResult.ok(
+                    data={
+                        "invoices": pages[page - 1],
+                        "count": len(pages[page - 1]),
                         "limit": 50,
-                        "pages": len(pages),
+                        "page": page,
+                        "pagination": {
+                            "total": sum(len(p) for p in pages),
+                            "page": page,
+                            "limit": 50,
+                            "pages": len(pages),
+                            "has_more": page < len(pages),
+                        }
                     }
-                }
-            return {"invoices": [], "count": 0, "limit": 50, "page": page, "has_more": False, "pagination": {"total": 0, "page": 1, "limit": 50, "pages": 0}}
+                )
+            return ToolResult.ok(
+                data={"invoices": [], "count": 0, "limit": 50, "page": page, "pagination": {"total": 0, "page": 1, "limit": 50, "pages": 0, "has_more": False}}
+            )
         
         from core.hermes.insights import execute_customer_insight
         from core.hermes.insights.customer_finance import CustomerFinanceInsightService
@@ -478,14 +482,15 @@ class TestPartialPayment:
         )
         
         with patch.object(tool_registry, 'execute_tool', new_callable=AsyncMock) as mock:
-            mock.return_value = MagicMock(
-                success=True,
+            from core.hermes.tools import ToolResult
+            mock.return_value = ToolResult.ok(
                 data={
                     "invoices": [{
                         "id": 1,
                         "ref": "FAC-001",
                         "total_ttc": Decimal("1000.00"),
                         "total_paid": Decimal("750.00"),
+                        "paid_amount": Decimal("750.00"),
                         "remaining_amount": Decimal("250.00"),
                         "status": "validated",
                     }],
@@ -493,6 +498,7 @@ class TestPartialPayment:
                     "limit": 20,
                     "page": 1,
                     "has_more": False,
+                    "pagination": {"total": 1, "page": 1, "limit": 20, "pages": 1, "has_more": False},
                 },
                 metadata={"instance_id": "test", "dolibarr_user_id": 1}
             )
@@ -557,9 +563,9 @@ class TestIsolation:
             call_log.append({"instance_id": instance_id, "tool": name, "params": params})
             # Simular que cada instancia tiene sus propios datos
             if instance_id == "empresa_a":
-                return MagicMock(success=True, data={"invoices": [{"id": 1, "ref": "FAC-A-1", "total_ttc": Decimal("100")]}, "count": 1, "limit": 20, "page": 1, "has_more": False}, metadata={"instance_id": "empresa_a", "dolibarr_user_id": 17})
+                return MagicMock(success=True, data={"invoices": [{"id": 1, "ref": "FAC-A-1", "total_ttc": Decimal("100")}], "count": 1, "limit": 20, "page": 1, "has_more": False}, metadata={"instance_id": "empresa_a", "dolibarr_user_id": 17})
             else:
-                return MagicMock(success=True, data={"invoices": [{"id": 2, "ref": "FAC-B-1", "total_ttc": Decimal("200")]}, "count": 1, "limit": 20, "page": 1, "has_more": False}, metadata={"instance_id": "empresa_b", "dolibarr_user_id": 18})
+                return MagicMock(success=True, data={"invoices": [{"id": 2, "ref": "FAC-B-1", "total_ttc": Decimal("200")}], "count": 1, "limit": 20, "page": 1, "has_more": False}, metadata={"instance_id": "empresa_b", "dolibarr_user_id": 18})
         
         from core.hermes.insights import execute_customer_insight
         from core.hermes.tools import tool_registry
@@ -680,14 +686,14 @@ class TestPaginationReal:
         """Verificar que la paginación recorre todas las páginas."""
         from core.hermes.insights import execute_customer_insight
         from core.hermes.insights.customer_finance import CustomerFinanceInsightService
-        from core.hermes.tools import tool_registry
+        from core.hermes.tools import tool_registry, ToolResult
         from unittest.mock import patch
         from decimal import Decimal
         
         pages = [
             [{"id": i, "ref": f"FAC-{i}", "total_ttc": Decimal("100.00"), "remaining_amount": Decimal("100.00")} for i in range(1, 51)],
             [{"id": i, "ref": f"FAC-{i}", "total_ttc": Decimal("100.00"), "remaining_amount": Decimal("100.00")} for i in range(51, 101)],
-            [{"id": i, "ref": f"FAC-{i}", "total_ttc": Decimal("100.00"), "remaining_amount": Decimal("100.00")} for i in range(101, 120)],
+            [{"id": i, "ref": f"FAC-{i}", "total_ttc": Decimal("100.00"), "remaining_amount": Decimal("100.00")} for i in range(101, 121)],
         ]
         
         call_count = 0
@@ -697,20 +703,24 @@ class TestPaginationReal:
             call_count += 1
             page = params.get("page", 1)
             if page <= len(pages):
-                return {
-                    "invoices": pages[page - 1],
-                    "count": len(pages[page - 1]),
-                    "limit": 50,
-                    "page": page,
-                    "has_more": page < len(pages),
-                    "pagination": {
-                        "total": sum(len(p) for p in pages),
-                        "page": page,
+                return ToolResult.ok(
+                    data={
+                        "invoices": pages[page - 1],
+                        "count": len(pages[page - 1]),
                         "limit": 50,
-                        "pages": len(pages),
+                        "page": page,
+                        "pagination": {
+                            "total": sum(len(p) for p in pages),
+                            "page": page,
+                            "limit": 50,
+                            "pages": len(pages),
+                            "has_more": page < len(pages),
+                        }
                     }
-                }
-            return {"invoices": [], "count": 0, "limit": 50, "page": page, "has_more": False, "pagination": {"total": 0, "page": 1, "limit": 50, "pages": 0}}
+                )
+            return ToolResult.ok(
+                data={"invoices": [], "count": 0, "limit": 50, "page": page, "pagination": {"total": 0, "page": 1, "limit": 50, "pages": 0, "has_more": False}}
+            )
         
         from core.hermes.insights import execute_customer_insight
         from core.hermes.insights.customer_finance import CustomerFinanceInsightService

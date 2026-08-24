@@ -9,7 +9,7 @@ Tests that verify:
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -170,12 +170,18 @@ class TestTimezoneHandling:
         Este test verifica que el cálculo de 'today' usa la timezone de la instancia
         y no la timezone del sistema.
         """
+        # UTC: 2024-01-15 23:00:00 UTC
+        utc_now = datetime(2024, 1, 15, 23, 0, 0, tzinfo=timezone.utc)
+        
+        def mock_datetime_now(tz=None):
+            # Convert UTC time to the requested timezone
+            if tz is None:
+                return utc_now.replace(tzinfo=None)
+            return utc_now.astimezone(tz)
+        
         with patch("core.hermes.context.datetime") as mock_datetime:
-            # Mockear datetime.now() para retornar una fecha específica
-            # en UTC: 2024-01-15 23:00:00 UTC
-            mock_now = datetime(2024, 1, 15, 23, 0, 0)
-            mock_datetime.now.return_value = mock_now
-            mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)
+            mock_datetime.now.side_effect = mock_datetime_now
+            mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw) if args else mock_datetime_now(*args, **kw)
             
             # En Europe/Madrid (UTC+1 en invierno): 2024-01-16 00:00:00
             today_a = context_a.get_company_today()

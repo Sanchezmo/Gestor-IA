@@ -5,6 +5,7 @@ Cada empresa tiene su InstanceConfig independiente.
 
 from enum import StrEnum
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -49,6 +50,16 @@ class DolibarrConfig(BaseModel):
     documents_path: str  # ej: /var/lib/dolibarr/documents/empresa_a
     currency: str = "EUR"  # Moneda de la instancia (ej: EUR, USD, MXN)
     timezone: str = "Europe/Madrid"  # Timezone de la instancia (ej: Europe/Madrid, America/New_York)
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, v: str) -> str:
+        """Validate that the timezone is a valid IANA timezone name."""
+        try:
+            ZoneInfo(v)
+        except Exception as e:
+            raise ValueError(f"Timezone inválida: {v}") from e
+        return v
 
 
 class TelegramConfig(BaseModel):

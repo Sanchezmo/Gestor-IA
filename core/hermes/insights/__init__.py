@@ -79,6 +79,8 @@ async def execute_customer_insight(
     args: dict,
 ) -> Any:
     """Ejecutar un insight de cliente."""
+    from core.hermes.tools import ToolResult
+    
     service = get_customer_finance_service()
     method_map = {
         "customer_invoice_summary": service.customer_invoice_summary,
@@ -88,7 +90,20 @@ async def execute_customer_insight(
     }
     if action not in method_map:
         raise ValueError(f"Acción de cliente no soportada: {action}")
-    return await method_map[action](company_context, user_context, args)
+    try:
+        return await method_map[action](company_context, user_context, args)
+    except RuntimeError as e:
+        # Tool execution error (permission denied, Dolibarr error, etc.)
+        error_msg = str(e)
+        if "Permiso requerido" in error_msg:
+            return ToolResult.error(
+                error_code="PERMISSION_DENIED",
+                error_message=error_msg,
+            )
+        return ToolResult.error(
+            error_code="TOOL_EXECUTION_ERROR",
+            error_message=error_msg,
+        )
 
 
 async def execute_supplier_insight(
@@ -98,6 +113,8 @@ async def execute_supplier_insight(
     args: dict,
 ) -> Any:
     """Ejecutar un insight de proveedor."""
+    from core.hermes.tools import ToolResult
+    
     service = get_supplier_finance_service()
     method_map = {
         "supplier_invoice_summary": service.supplier_invoice_summary,
@@ -107,7 +124,20 @@ async def execute_supplier_insight(
     }
     if action not in method_map:
         raise ValueError(f"Acción de proveedor no soportada: {action}")
-    return await method_map[action](company_context, user_context, args)
+    try:
+        return await method_map[action](company_context, user_context, args)
+    except RuntimeError as e:
+        # Tool execution error (permission denied, Dolibarr error, etc.)
+        error_msg = str(e)
+        if "Permiso requerido" in error_msg:
+            return ToolResult.error(
+                error_code="PERMISSION_DENIED",
+                error_message=error_msg,
+            )
+        return ToolResult.error(
+            error_code="TOOL_EXECUTION_ERROR",
+            error_message=error_msg,
+        )
 
 
 __all__ = [
