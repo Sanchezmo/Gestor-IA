@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from core.hermes.context import CompanyContext
 from core.hermes.identity import UserContext
-from core.hermes.tools import Tool, ToolDefinition, ToolResult, tool_registry
+from core.hermes.tools.base import Tool, ToolDefinition, ToolResult, tool_registry
 from core.integrations.dolibarr.client import DolibarrException
 
 # =========================================================================

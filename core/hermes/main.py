@@ -58,6 +58,12 @@ from core.hermes.tools.invoices.formatters import (
     format_supplier_invoice_detail_for_telegram,
     format_supplier_invoices_for_telegram,
 )
+from core.hermes.tools.product_formatters import (
+    format_product_count_for_telegram,
+    format_product_detail_for_telegram,
+    format_products_for_telegram,
+)
+from core.hermes.tools.product_tools import register_core_product_tools
 from core.hermes.tools.thirdparty_tools import register_core_thirdparty_tools
 from core.integrations.cloudflare.manager import create_cloudflare_manager
 from core.integrations.dolibarr.client import DolibarrClient
@@ -131,6 +137,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Registrar core tools de Hermes
     register_core_thirdparty_tools()
     register_core_invoice_tools()
+    register_core_product_tools()
 
     # Crear intérprete de intención compuesto (parser-first + Ollama fallback)
     # Usamos una config dummy para el intérprete global; se creará uno por request con CompanyContext
@@ -908,6 +915,160 @@ async def telegram_webhook(
                                 ctx,
                                 action="supplier_invoice.list",
                                 resource_type="supplier_invoice",
+                                status_code=500,
+                                success=False,
+                                error_code=tool_result.error_code,
+                                error_message=tool_result.error_message,
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
+                            )
+
+        elif text == "/productos":
+            if not user_context:
+                response_text = "No tienes acceso autorizado a este asistente."
+                if _audit_logger:
+                    await _audit_logger.log_from_context(
+                        ctx,
+                        action=AuditActions.TELEGRAM_IDENTITY_UNKNOWN,
+                        resource_type="telegram_update",
+                        resource_id=str(update_id),
+                        status_code=403,
+                        success=False,
+                        error_code="UNAUTHORIZED",
+                        error_message="Telegram user not linked",
+                    )
+            else:
+                auth_service = AuthorizationService()
+                try:
+                    auth_service.require(user_context, "product.read")
+                except Exception as e:
+                    response_text = "No tienes permiso para consultar productos."
+                    if _audit_logger:
+                        await _audit_logger.log_from_context(
+                            ctx,
+                            action=AuditActions.AUTHORIZATION_DENIED,
+                            resource_type="tool",
+                            resource_id="list_products",
+                            status_code=403,
+                            success=False,
+                            error_code="PERMISSION_DENIED",
+                            error_message=str(e),
+                            telegram_user_id=user_context.telegram_user_id,
+                            dolibarr_user_id=user_context.dolibarr_user_id,
+                        )
+                else:
+                    tool_result = await tool_registry.execute_tool(
+                        instance_id=instance_id,
+                        name="list_products",
+                        company_context=ctx,
+                        user_context=user_context,
+                        limit=10,
+                        page=1,
+                        product_type="PRODUCT",
+                    )
+
+                    if tool_result.success:
+                        response_text = format_products_for_telegram(
+                            tool_result.data["products"],
+                            tool_result.data["limit"],
+                            tool_result.data["page"],
+                            ctx.currency if hasattr(ctx, "currency") else "EUR",
+                        )
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action="product.list",
+                                resource_type="product",
+                                status_code=200,
+                                success=True,
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
+                                new_state={"count": tool_result.data["count"]},
+                            )
+                    else:
+                        response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action="product.list",
+                                resource_type="product",
+                                status_code=500,
+                                success=False,
+                                error_code=tool_result.error_code,
+                                error_message=tool_result.error_message,
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
+                            )
+
+        elif text == "/servicios":
+            if not user_context:
+                response_text = "No tienes acceso autorizado a este asistente."
+                if _audit_logger:
+                    await _audit_logger.log_from_context(
+                        ctx,
+                        action=AuditActions.TELEGRAM_IDENTITY_UNKNOWN,
+                        resource_type="telegram_update",
+                        resource_id=str(update_id),
+                        status_code=403,
+                        success=False,
+                        error_code="UNAUTHORIZED",
+                        error_message="Telegram user not linked",
+                    )
+            else:
+                auth_service = AuthorizationService()
+                try:
+                    auth_service.require(user_context, "product.read")
+                except Exception as e:
+                    response_text = "No tienes permiso para consultar servicios."
+                    if _audit_logger:
+                        await _audit_logger.log_from_context(
+                            ctx,
+                            action=AuditActions.AUTHORIZATION_DENIED,
+                            resource_type="tool",
+                            resource_id="list_products",
+                            status_code=403,
+                            success=False,
+                            error_code="PERMISSION_DENIED",
+                            error_message=str(e),
+                            telegram_user_id=user_context.telegram_user_id,
+                            dolibarr_user_id=user_context.dolibarr_user_id,
+                        )
+                else:
+                    tool_result = await tool_registry.execute_tool(
+                        instance_id=instance_id,
+                        name="list_products",
+                        company_context=ctx,
+                        user_context=user_context,
+                        limit=10,
+                        page=1,
+                        product_type="SERVICE",
+                    )
+
+                    if tool_result.success:
+                        response_text = format_products_for_telegram(
+                            tool_result.data["products"],
+                            tool_result.data["limit"],
+                            tool_result.data["page"],
+                            ctx.currency if hasattr(ctx, "currency") else "EUR",
+                        )
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action="product.list",
+                                resource_type="service",
+                                status_code=200,
+                                success=True,
+                                telegram_user_id=user_context.telegram_user_id,
+                                dolibarr_user_id=user_context.dolibarr_user_id,
+                                new_state={"count": tool_result.data["count"]},
+                            )
+                    else:
+                        response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                        if _audit_logger:
+                            await _audit_logger.log_from_context(
+                                ctx,
+                                action="product.list",
+                                resource_type="service",
                                 status_code=500,
                                 success=False,
                                 error_code=tool_result.error_code,

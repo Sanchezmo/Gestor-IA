@@ -323,6 +323,7 @@ class TestGestorPermissions:
             "instance.manage",
             "content.generate",
             "admin",
+            "product.read",
         }
         assert GestorPermissions.ALL == expected
 

@@ -193,6 +193,7 @@ class GestorPermissions:
     INSTANCE_MANAGE = "instance.manage"
     CONTENT_GENERATE = "content.generate"
     ADMIN = "admin"
+    PRODUCT_READ = "product.read"
 
     # All Gestor-IA permissions
     ALL: frozenset[str] = frozenset(
@@ -204,6 +205,7 @@ class GestorPermissions:
             INSTANCE_MANAGE,
             CONTENT_GENERATE,
             ADMIN,
+            PRODUCT_READ,
         ]
     )
 
