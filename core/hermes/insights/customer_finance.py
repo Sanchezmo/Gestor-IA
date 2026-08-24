@@ -102,9 +102,7 @@ class CustomerFinanceInsightService:
                 raise ValueError("CUSTOM period requiere date_from y date_to")
             return date_from, date_to
         else:
-            # Default a mes actual
-            start = today.replace(day=1)
-            return start, today
+            raise ValueError(f"Período financiero desconocido: {period}")
 
     async def customer_invoice_summary(
         self,
@@ -192,6 +190,9 @@ class CustomerFinanceInsightService:
 
         period_info = {"from": date_from, "to": date_to, "period": "custom"}
 
+        # Obtener moneda de la instancia
+        currency = company_context.dolibarr_config.currency
+
         return CustomerInvoiceSummaryResult(
             period=period_info,
             invoice_count=len(invoices),
@@ -200,7 +201,7 @@ class CustomerFinanceInsightService:
             total=total,
             paid=paid,
             outstanding=outstanding,
-            currency="EUR",
+            currency=currency,
         )
 
     async def customer_invoice_summary_by_thirdparty(
@@ -281,6 +282,9 @@ class CustomerFinanceInsightService:
         if tax == Decimal("0") and total > Decimal("0") and subtotal > Decimal("0"):
             tax = total - subtotal
 
+        # Obtener moneda de la instancia
+        currency = company_context.dolibarr_config.currency
+
         return CustomerInvoiceSummaryByThirdpartyResult(
             thirdparty_id=args.thirdparty_id,
             thirdparty_name=invoices[0].get("thirdparty_name", "Sin nombre") if invoices else "Sin nombre",
@@ -290,7 +294,7 @@ class CustomerFinanceInsightService:
             total=total,
             paid=paid,
             outstanding=outstanding,
-            currency="EUR",
+            currency=currency,
         )
 
     async def customer_outstanding_summary(
@@ -375,6 +379,9 @@ class CustomerFinanceInsightService:
 
         period_info = {"from": date_from, "to": date_to, "period": "custom"}
 
+        # Obtener moneda de la instancia
+        currency = company_context.dolibarr_config.currency
+
         return CustomerOutstandingSummaryResult(
             period=period_info,
             invoice_count=len(invoices),
@@ -383,7 +390,7 @@ class CustomerFinanceInsightService:
             total=total_ttc,
             paid=paid,
             outstanding=outstanding,
-            currency="EUR",
+            currency=currency,
         )
 
     async def customer_outstanding_by_thirdparty(
@@ -480,10 +487,13 @@ class CustomerFinanceInsightService:
 
         total_outstanding = sum((item.outstanding for item in items), Decimal("0"))
 
+        # Obtener moneda de la instancia
+        currency = company_context.dolibarr_config.currency
+
         return CustomerOutstandingByThirdpartyResult(
             items=items,
             total_outstanding=total_outstanding,
-            currency="EUR",
+            currency=currency,
         )
 
 

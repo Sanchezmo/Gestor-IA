@@ -12,8 +12,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # =========================================================================
 # ENUMS
@@ -63,10 +62,14 @@ class FinancialPeriodArgs(BaseModel):
     date_from: date | None = None
     date_to: date | None = None
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def validate_period(self) -> FinancialPeriodArgs:
         if self.period == FinancialPeriod.CUSTOM:
             if not self.date_from or not self.date_to:
                 raise ValueError("CUSTOM period requiere date_from y date_to")
+            if self.date_from > self.date_to:
+                raise ValueError("date_from debe ser anterior o igual a date_to")
+        return self
 
 
 class CustomerInvoiceSummaryArgs(FinancialPeriodArgs):

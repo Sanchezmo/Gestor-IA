@@ -109,24 +109,8 @@ class InvoiceSortField(StrEnum):
 
 
 # =========================================================================
-# ENUMS PARA BUSINESS INSIGHTS
+# ENUMS PARA BUSINESS INSIGHTS (importados de insights.models)
 # =========================================================================
-
-
-class InsightAction(StrEnum):
-    """Acciones de Business Insights (Financial Read-Only)."""
-
-    # Customer financial insights
-    CUSTOMER_INVOICE_SUMMARY = "customer_invoice_summary"
-    CUSTOMER_OUTSTANDING_SUMMARY = "customer_outstanding_summary"
-    CUSTOMER_OUTSTANDING_BY_THIRDPARTY = "customer_outstanding_by_thirdparty"
-    CUSTOMER_INVOICE_SUMMARY_BY_THIRDPARTY = "customer_invoice_summary_by_thirdparty"
-
-    # Supplier financial insights
-    SUPPLIER_INVOICE_SUMMARY = "supplier_invoice_summary"
-    SUPPLIER_OUTSTANDING_SUMMARY = "supplier_outstanding_summary"
-    SUPPLIER_OUTSTANDING_BY_THIRDPARTY = "supplier_outstanding_by_thirdparty"
-    SUPPLIER_INVOICE_SUMMARY_BY_THIRDPARTY = "supplier_invoice_summary_by_thirdparty"
 
 
 # =========================================================================
@@ -294,8 +278,18 @@ class CountSupplierInvoicesArgs(BaseModel):
     due_to: date | None = None
 
 
-from core.hermes.insights.models import InsightArgs
-
+from core.hermes.insights.models import (
+    CustomerInvoiceSummaryArgs,
+    CustomerInvoiceSummaryByThirdpartyArgs,
+    CustomerOutstandingByThirdpartyArgs,
+    CustomerOutstandingSummaryArgs,
+    InsightAction,
+    InsightArgs,
+    SupplierInvoiceSummaryArgs,
+    SupplierInvoiceSummaryByThirdpartyArgs,
+    SupplierOutstandingByThirdpartyArgs,
+    SupplierOutstandingSummaryArgs,
+)
 
 # =========================================================================
 # UNION DE ARGUMENTOS

@@ -20,6 +20,18 @@ from core.hermes.config import GlobalSettings, get_global_settings
 from core.hermes.context import CompanyContext
 from core.hermes.extensions import extension_registry, load_extensions_from_config
 from core.hermes.identity import UserContext
+from core.hermes.insights import (
+    execute_customer_insight,
+    execute_supplier_insight,
+    format_customer_invoice_summary_by_thirdparty_for_telegram,
+    format_customer_invoice_summary_for_telegram,
+    format_customer_outstanding_by_thirdparty_for_telegram,
+    format_customer_outstanding_summary_for_telegram,
+    format_supplier_invoice_summary_by_thirdparty_for_telegram,
+    format_supplier_invoice_summary_for_telegram,
+    format_supplier_outstanding_by_thirdparty_for_telegram,
+    format_supplier_outstanding_summary_for_telegram,
+)
 from core.hermes.instance_config import list_instances, load_instance_config
 from core.hermes.policy import create_model_router_from_config
 from core.hermes.query import (
@@ -30,11 +42,11 @@ from core.hermes.query import (
     structured_intent_to_tool_call,
 )
 from core.hermes.query.models import (
+    InsightAction,
     InterpretationStatus,
     InvoiceAction,
     InvoicePartyType,
     ThirdpartyAction,
-    InsightAction,
 )
 from core.hermes.resolver import InstanceResolutionMiddleware, get_company_context, get_user_context
 from core.hermes.tools import tool_registry
@@ -45,19 +57,6 @@ from core.hermes.tools.invoices.formatters import (
     format_invoice_count_for_telegram,
     format_supplier_invoice_detail_for_telegram,
     format_supplier_invoices_for_telegram,
-)
-from core.hermes.insights import (
-    execute_customer_insight,
-    execute_supplier_insight,
-    format_customer_invoice_summary_for_telegram,
-    format_customer_outstanding_summary_for_telegram,
-    format_customer_outstanding_by_thirdparty_for_telegram,
-    format_customer_invoice_summary_by_thirdparty_for_telegram,
-    format_supplier_invoice_summary_for_telegram,
-    format_supplier_outstanding_summary_for_telegram,
-    format_supplier_outstanding_by_thirdparty_for_telegram,
-    format_customer_invoice_summary_by_thirdparty_for_telegram,
-    format_supplier_invoice_summary_by_thirdparty_for_telegram,
 )
 from core.hermes.tools.thirdparty_tools import register_core_thirdparty_tools
 from core.integrations.cloudflare.manager import create_cloudflare_manager

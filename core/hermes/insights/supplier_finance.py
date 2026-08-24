@@ -100,8 +100,7 @@ class SupplierFinanceInsightService:
                 raise ValueError("CUSTOM period requiere date_from y date_to")
             return date_from, date_to
         else:
-            start = today.replace(day=1)
-            return start, today
+            raise ValueError(f"Período financiero desconocido: {period}")
 
     async def supplier_invoice_summary(
         self,
@@ -192,6 +191,9 @@ class SupplierFinanceInsightService:
 
         period_info = {"from": date_from, "to": date_to, "period": "custom"}
 
+        # Obtener moneda de la instancia
+        currency = company_context.dolibarr_config.currency
+
         return SupplierInvoiceSummaryResult(
             period=period_info,
             invoice_count=len(invoices),
@@ -200,7 +202,7 @@ class SupplierFinanceInsightService:
             total=total,
             paid=paid,
             outstanding=outstanding,
-            currency="EUR",
+            currency=currency,
         )
 
     async def supplier_invoice_summary_by_thirdparty(
@@ -282,6 +284,9 @@ class SupplierFinanceInsightService:
         if tax == Decimal("0") and total > Decimal("0") and subtotal > Decimal("0"):
             tax = total - subtotal
 
+        # Obtener moneda de la instancia
+        currency = company_context.dolibarr_config.currency
+
         return SupplierInvoiceSummaryByThirdpartyResult(
             thirdparty_id=args.thirdparty_id,
             thirdparty_name=invoices[0].get("thirdparty_name", "Sin nombre") if invoices else "Sin nombre",
@@ -291,7 +296,7 @@ class SupplierFinanceInsightService:
             total=total,
             paid=paid,
             outstanding=outstanding,
-            currency="EUR",
+            currency=currency,
         )
 
     async def supplier_outstanding_summary(
@@ -376,6 +381,9 @@ class SupplierFinanceInsightService:
 
         period_info = {"from": date_from, "to": date_to, "period": "custom"}
 
+        # Obtener moneda de la instancia
+        currency = company_context.dolibarr_config.currency
+
         return SupplierOutstandingSummaryResult(
             period=period_info,
             invoice_count=len(invoices),
@@ -384,7 +392,7 @@ class SupplierFinanceInsightService:
             total=total_ttc,
             paid=paid,
             outstanding=outstanding,
-            currency="EUR",
+            currency=currency,
         )
 
     async def supplier_outstanding_by_thirdparty(
@@ -483,10 +491,13 @@ class SupplierFinanceInsightService:
 
         total_outstanding = sum((item.outstanding for item in items), Decimal("0"))
 
+        # Obtener moneda de la instancia
+        currency = company_context.dolibarr_config.currency
+
         return SupplierOutstandingByThirdpartyResult(
             items=items,
             total_outstanding=total_outstanding,
-            currency="EUR",
+            currency=currency,
         )
 
 

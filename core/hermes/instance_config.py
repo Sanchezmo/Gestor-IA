@@ -47,6 +47,7 @@ class DolibarrConfig(BaseModel):
     public_url: str | None = None  # ej: https://dolibarr.empresa.com
     api_key: str
     documents_path: str  # ej: /var/lib/dolibarr/documents/empresa_a
+    currency: str = "EUR"  # Moneda de la instancia (ej: EUR, USD, MXN)
 
 
 class TelegramConfig(BaseModel):
