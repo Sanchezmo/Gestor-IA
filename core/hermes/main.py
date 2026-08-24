@@ -34,15 +34,17 @@ from core.hermes.query.models import (
     InvoiceAction,
     InvoicePartyType,
     ThirdpartyAction,
+)
+from core.hermes.resolver import InstanceResolutionMiddleware, get_company_context, get_user_context
+from core.hermes.tools import tool_registry
+from core.hermes.tools.invoices import register_core_invoice_tools
+from core.hermes.tools.invoices.formatters import (
     format_customer_invoice_detail_for_telegram,
     format_customer_invoices_for_telegram,
     format_invoice_count_for_telegram,
     format_supplier_invoice_detail_for_telegram,
     format_supplier_invoices_for_telegram,
 )
-from core.hermes.resolver import InstanceResolutionMiddleware, get_company_context, get_user_context
-from core.hermes.tools import tool_registry
-from core.hermes.tools.invoice_tools import register_core_invoice_tools
 from core.hermes.tools.thirdparty_tools import register_core_thirdparty_tools
 from core.integrations.cloudflare.manager import create_cloudflare_manager
 from core.integrations.dolibarr.client import DolibarrClient
