@@ -43,12 +43,15 @@ def create_ollama_interpreter(
     if not ai_config.ollama_model:
         return None
 
-    # Verificar política LOCAL_ONLY para consultas de terceros
-    # (por defecto LOCAL_ONLY, pero se puede verificar explícitamente)
+    # Verificar política de IA para consultas de terceros
+    if ai_config.default_policy.value == "AI_DISABLED":
+        # IA deshabilitada explícitamente - no usar Ollama
+        return None
+
     if ai_config.default_policy.value != "LOCAL_ONLY":
-        # Si la política permite cloud, podríamos usar proveedor externo
-        # Pero para esta fase, solo Ollama local
-        pass
+        # Política no LOCAL_ONLY - para thirdparty queries solo permitimos LOCAL_ONLY
+        # En el futuro se podrían añadir proveedores externos aquí
+        return None
 
     # Crear provider Ollama
     provider = create_ai_provider(
