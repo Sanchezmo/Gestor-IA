@@ -6,6 +6,7 @@ Adaptado para recibir config explícita por instancia (NO settings globales).
 """
 
 from collections.abc import AsyncGenerator
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -375,10 +376,49 @@ class DolibarrClient:
         limit: int = 100,
         offset: int = 0,
         status: int | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        due_from: date | None = None,
+        due_to: date | None = None,
+        thirdparty_id: int | None = None,
+        sortfield: str = "date",
+        sortorder: str = "DESC",
+        sqlfilters: str | None = None,
     ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        """
+        Listar facturas de cliente con filtros opcionales.
+
+        Args:
+            limit: Número máximo de resultados (default 100, max 100)
+            offset: Offset para paginación (default 0)
+            status: Filtrar por estado (0=borrador, 1=validada, 2=pagada, 3=anulada)
+            date_from: Fecha factura desde (inclusive)
+            date_to: Fecha factura hasta (inclusive)
+            due_from: Fecha vencimiento desde (inclusive)
+            due_to: Fecha vencimiento hasta (inclusive)
+            thirdparty_id: Filtrar por ID de tercero
+            sortfield: Campo de ordenación (date, ref, total_ttc, date_lim_reglement)
+            sortorder: Orden (ASC, DESC)
+            sqlfilters: Filtros SQL avanzados de Dolibarr
+        """
+        params: dict[str, Any] = {"limit": limit, "offset": offset, "sortfield": sortfield, "sortorder": sortorder}
+
         if status is not None:
             params["status"] = status
+        if thirdparty_id is not None:
+            params["thirdparty_ids"] = str(thirdparty_id)
+        if date_from is not None:
+            # Dolibarr espera timestamp para date
+            params["date_from"] = int(datetime.combine(date_from, datetime.min.time()).timestamp())
+        if date_to is not None:
+            params["date_to"] = int(datetime.combine(date_to, datetime.max.time()).timestamp())
+        if due_from is not None:
+            params["date_lim_reglement_from"] = int(datetime.combine(due_from, datetime.min.time()).timestamp())
+        if due_to is not None:
+            params["date_lim_reglement_to"] = int(datetime.combine(due_to, datetime.max.time()).timestamp())
+        if sqlfilters is not None:
+            params["sqlfilters"] = sqlfilters
+
         result = await self._request("GET", "invoices", params=params)
         return result.get("data", []) if isinstance(result, dict) else result
 
@@ -409,12 +449,48 @@ class DolibarrClient:
         offset: int = 0,
         status: int | None = None,
         thirdparty_id: int | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        due_from: date | None = None,
+        due_to: date | None = None,
+        sortfield: str = "date",
+        sortorder: str = "DESC",
+        sqlfilters: str | None = None,
     ) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        """
+        Listar facturas de proveedor con filtros opcionales.
+
+        Args:
+            limit: Número máximo de resultados (default 100, max 100)
+            offset: Offset para paginación (default 0)
+            status: Filtrar por estado (0=borrador, 1=validada, 2=pagada, 3=anulada)
+            thirdparty_id: Filtrar por ID de proveedor (socid)
+            date_from: Fecha factura desde (inclusive)
+            date_to: Fecha factura hasta (inclusive)
+            due_from: Fecha vencimiento desde (inclusive)
+            due_to: Fecha vencimiento hasta (inclusive)
+            sortfield: Campo de ordenación (date, ref, total_ttc, date_lim_reglement)
+            sortorder: Orden (ASC, DESC)
+            sqlfilters: Filtros SQL avanzados de Dolibarr
+        """
+        params: dict[str, Any] = {"limit": limit, "offset": offset, "sortfield": sortfield, "sortorder": sortorder}
+
         if status is not None:
             params["status"] = status
         if thirdparty_id is not None:
             params["thirdparty_ids"] = str(thirdparty_id)
+        if date_from is not None:
+            # Dolibarr espera timestamp para date
+            params["date_from"] = int(datetime.combine(date_from, datetime.min.time()).timestamp())
+        if date_to is not None:
+            params["date_to"] = int(datetime.combine(date_to, datetime.max.time()).timestamp())
+        if due_from is not None:
+            params["date_lim_reglement_from"] = int(datetime.combine(due_from, datetime.min.time()).timestamp())
+        if due_to is not None:
+            params["date_lim_reglement_to"] = int(datetime.combine(due_to, datetime.max.time()).timestamp())
+        if sqlfilters is not None:
+            params["sqlfilters"] = sqlfilters
+
         result = await self._request("GET", "supplierinvoices", params=params)
         return result.get("data", []) if isinstance(result, dict) else result
 

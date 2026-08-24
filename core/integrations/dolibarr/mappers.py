@@ -5,7 +5,8 @@ ADAPTADO desde Transvega Animal - adapters/dolibarr/mappers.py
 Genérico para terceros, productos, facturas.
 """
 
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 # Mapeo de códigos de país ISO -> Dolibarr country_id
@@ -330,3 +331,131 @@ def dolibarr_to_supplier_invoice(data: dict[str, Any]) -> dict[str, Any]:
             result[our_key] = value
 
     return result
+
+
+# =========================================================================
+# MAPPERS PARA FACTURAS CLIENTE
+# =========================================================================
+
+
+def _map_invoice_status(status_code: int) -> str:
+    """Mapear código de estado Dolibarr a string normalizado."""
+    mapping = {
+        0: "draft",
+        1: "validated",
+        2: "paid",
+        3: "cancelled",
+    }
+    return mapping.get(status_code, "draft")
+
+
+def _to_decimal(value: Any) -> Decimal:
+    """Convertir valor a Decimal de forma segura."""
+    if value is None:
+        return Decimal("0")
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, (int, float)):
+        return Decimal(str(value))
+    if isinstance(value, str):
+        try:
+            return Decimal(value)
+        except Exception:
+            return Decimal("0")
+    return Decimal("0")
+
+
+def _timestamp_to_date(value: Any) -> date | None:
+    """Convertir timestamp a date."""
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value).date()
+    if isinstance(value, str):
+        try:
+            return datetime.fromtimestamp(int(value)).date()
+        except Exception:
+            return None
+    return None
+
+
+def dolibarr_to_customer_invoice(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Convertir factura cliente Dolibarr a dict normalizado para CustomerInvoiceSummary.
+
+    Args:
+        data: Respuesta de Dolibarr API para factura cliente
+
+    Returns:
+        Dict con campos: id, ref, thirdparty_id, thirdparty_name, date, due_date,
+        status, total_ht, total_ttc, paid_amount, remaining_amount
+    """
+    # Extraer thirdparty info
+    thirdparty_id = data.get("fk_soc") or data.get("socid")
+    thirdparty_name = data.get("soc_name") or data.get("thirdparty_name") or "Sin nombre"
+
+    # Montos
+    total_ht = _to_decimal(data.get("total_ht") or data.get("total_ht"))
+    total_ttc = _to_decimal(data.get("total_ttc") or data.get("total_ttc"))
+    paid_amount = _to_decimal(data.get("total_paid") or data.get("paid_amount") or data.get("amount_paid"))
+    remaining_amount = _to_decimal(data.get("total_remain") or data.get("remaining_amount") or data.get("total_to_pay"))
+
+    # Si no viene remaining_amount, calcularlo
+    if remaining_amount == 0 and total_ttc > 0:
+        remaining_amount = total_ttc - paid_amount
+
+    return {
+        "id": data.get("id") or data.get("rowid"),
+        "ref": data.get("ref"),
+        "thirdparty_id": thirdparty_id,
+        "thirdparty_name": thirdparty_name,
+        "date": _timestamp_to_date(data.get("date") or data.get("datec")),
+        "due_date": _timestamp_to_date(data.get("date_lim_reglement")),
+        "status": _map_invoice_status(data.get("status", 0)),
+        "total_ht": total_ht,
+        "total_ttc": total_ttc,
+        "paid_amount": paid_amount,
+        "remaining_amount": remaining_amount,
+    }
+
+
+def dolibarr_to_supplier_invoice_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Convertir factura proveedor Dolibarr a dict normalizado para SupplierInvoiceSummary.
+
+    Args:
+        data: Respuesta de Dolibarr API para factura proveedor
+
+    Returns:
+        Dict con campos: id, ref, thirdparty_id, thirdparty_name, date, due_date,
+        status, total_ht, total_ttc, paid_amount, remaining_amount
+    """
+    # Extraer thirdparty info (proveedor usa socid)
+    thirdparty_id = data.get("socid") or data.get("fk_soc")
+    thirdparty_name = data.get("soc_name") or data.get("thirdparty_name") or "Sin nombre"
+
+    # Montos
+    total_ht = _to_decimal(data.get("total_ht") or data.get("total_ht"))
+    total_ttc = _to_decimal(data.get("total_ttc") or data.get("total_ttc"))
+    paid_amount = _to_decimal(data.get("total_paid") or data.get("paid_amount") or data.get("amount_paid"))
+    remaining_amount = _to_decimal(data.get("total_remain") or data.get("remaining_amount") or data.get("total_to_pay"))
+
+    # Si no viene remaining_amount, calcularlo
+    if remaining_amount == 0 and total_ttc > 0:
+        remaining_amount = total_ttc - paid_amount
+
+    return {
+        "id": data.get("id") or data.get("rowid"),
+        "ref": data.get("ref"),
+        "thirdparty_id": thirdparty_id,
+        "thirdparty_name": thirdparty_name,
+        "date": _timestamp_to_date(data.get("date") or data.get("datec")),
+        "due_date": _timestamp_to_date(data.get("date_lim_reglement")),
+        "status": _map_invoice_status(data.get("status", 0)),
+        "total_ht": total_ht,
+        "total_ttc": total_ttc,
+        "paid_amount": paid_amount,
+        "remaining_amount": remaining_amount,
+    }
