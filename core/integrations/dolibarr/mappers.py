@@ -269,6 +269,111 @@ def dolibarr_to_product(data: dict[str, Any]) -> dict[str, Any]:
 
 
 # =========================================================================
+# MAPPERS PARA PRODUCTOS V4 (Query Layer Read-Only)
+# =========================================================================
+
+
+DOLIBARR_TYPE_TO_LABEL = {0: "PRODUCT", 1: "SERVICE", "0": "PRODUCT", "1": "SERVICE"}
+
+
+def _extract_supplier_info(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract supplier information if present in Dolibarr response."""
+    supplier_fields = ["fk_soc", "soc_name", "supplier_ref", "supplier_price"]
+    supplier_data = {k: data.get(k) for k in supplier_fields if k in data and data.get(k) is not None}
+    return supplier_data if supplier_data else None
+
+
+def _has_supplier_info(data: dict[str, Any]) -> bool:
+    return any(k in data and data.get(k) is not None for k in ["fk_soc", "soc_name", "supplier_ref"])
+
+
+def _extract_extrafields(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract extrafields (keys starting with 'extrafield_' or similar)."""
+    extrafields = {k: v for k, v in data.items() if k.startswith("extrafield_") or k.startswith("options_")}
+    return extrafields if extrafields else None
+
+
+def _has_extrafields(data: dict[str, Any]) -> bool:
+    return any(k.startswith("extrafield_") or k.startswith("options_") for k in data.keys())
+
+
+def dolibarr_to_product_summary(data: dict[str, Any], currency: str = "EUR") -> dict[str, Any]:
+    """
+    Convert Dolibarr product to ProductSummary dict.
+
+    Args:
+        data: Dolibarr product response
+        currency: ISO 4217 currency code from CompanyContext
+
+    Returns:
+        Dict with ProductSummary fields
+    """
+    # Type mapping
+    product_type = DOLIBARR_TYPE_TO_LABEL.get(data.get("type", 0), "PRODUCT")
+
+    # Money fields - use Decimal
+    price = _to_decimal(data.get("price"))
+    price_ttc = _to_decimal(data.get("price_ttc"))
+    price_min = _to_decimal(data.get("price_min")) if data.get("price_min") is not None else None
+    vat_rate = _to_decimal(data.get("tva_tx"))
+
+    # Stock fields (may not be present for services)
+    stock_reel = _to_decimal(data.get("stock_reel")) if data.get("stock_reel") is not None else None
+    desiredstock = _to_decimal(data.get("desiredstock")) if data.get("desiredstock") is not None else None
+    seuil_stock_alerte = _to_decimal(data.get("seuil_stock_alerte")) if data.get("seuil_stock_alerte") is not None else None
+
+    return {
+        "id": data.get("id") or data.get("rowid"),
+        "ref": data.get("ref"),
+        "label": data.get("label"),
+        "type": product_type,
+        "status": int(data.get("status", 0)),
+        "price": price,
+        "price_ttc": price_ttc,
+        "vat_rate": vat_rate,
+        "currency": currency,
+        "stock_reel": stock_reel,
+        "desiredstock": desiredstock,
+        "seuil_stock_alerte": seuil_stock_alerte,
+        "default_warehouse": data.get("fk_default_warehouse"),
+        "barcode": data.get("barcode"),
+    }
+
+
+def dolibarr_to_product_detail(data: dict[str, Any], currency: str = "EUR") -> dict[str, Any]:
+    """
+    Convert Dolibarr product to ProductDetail dict (extends summary).
+
+    Args:
+        data: Dolibarr product response
+        currency: ISO 4217 currency code from CompanyContext
+
+    Returns:
+        Dict with ProductDetail fields
+    """
+    summary = dolibarr_to_product_summary(data, currency)
+
+    # Additional fields
+    summary.update({
+        "description": data.get("description"),
+        "price_min": _to_decimal(data.get("price_min")) if data.get("price_min") is not None else None,
+        "price_base_type": data.get("price_base_type"),  # "HT" or "TTC"
+        "weight": _to_decimal(data.get("weight")) if data.get("weight") is not None else None,
+        "weight_units": data.get("weight_units"),
+        "length": _to_decimal(data.get("length")) if data.get("length") is not None else None,
+        "surface": _to_decimal(data.get("surface")) if data.get("surface") is not None else None,
+        "volume": _to_decimal(data.get("volume")) if data.get("volume") is not None else None,
+        "units": data.get("units"),
+        # Supplier info if present
+        "supplier_info": _extract_supplier_info(data) if _has_supplier_info(data) else None,
+        # Extrafields
+        "extrafields": _extract_extrafields(data) if _has_extrafields(data) else None,
+    })
+
+    return summary
+
+
+# =========================================================================
 # MAPPERS PARA FACTURAS PROVEEDOR
 # =========================================================================
 

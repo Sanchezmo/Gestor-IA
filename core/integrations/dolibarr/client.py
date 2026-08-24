@@ -352,13 +352,151 @@ class DolibarrClient:
     async def list_products(
         self,
         limit: int = 100,
-        offset: int = 0,
+        page: int = 1,
         sortfield: str = "rowid",
         sortorder: str = "ASC",
+        type: int | None = None,
+        status: int | None = None,
+        sqlfilters: str | None = None,
+        pagination_data: bool = False,
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """
+        Listar productos/servicios con paginación page-based y filtros opcionales.
+
+        Args:
+            limit: Número máximo de resultados por página (default 100, max 100)
+            page: Número de página 1-based (default 1)
+            sortfield: Campo de ordenación (rowid, ref, label, type, status, price, etc.)
+            sortorder: Orden (ASC, DESC)
+            type: Filtrar por tipo (0=PRODUCT, 1=SERVICE)
+            status: Filtrar por estado (0=borrador, 1=activo, etc.)
+            sqlfilters: Filtros SQL avanzados de Dolibarr
+            pagination_data: Si true, devuelve metadata de paginación (total, page, etc.)
+
+        Returns:
+            Lista de productos, o dict con 'data' y 'pagination' si pagination_data=True
+        """
+        if page < 1:
+            page = 1
+        if limit < 1 or limit > 100:
+            limit = 100
+
+        params: dict[str, Any] = {
+            "limit": limit,
+            "page": page,
+            "sortfield": sortfield,
+            "sortorder": sortorder,
+        }
+
+        # Build sqlfilters
+        sqlfilters_parts: list[str] = []
+        if sqlfilters:
+            sqlfilters_parts.append(sqlfilters)
+        if type is not None:
+            if type not in (0, 1):
+                raise ValueError("type must be 0 (PRODUCT) or 1 (SERVICE)")
+            sqlfilters_parts.append(f"t.type:={type}")
+        if status is not None:
+            if status < 0:
+                raise ValueError("status must be >= 0")
+            sqlfilters_parts.append(f"t.status:={status}")
+
+        if sqlfilters_parts:
+            params["sqlfilters"] = " AND ".join(sqlfilters_parts)
+
+        if pagination_data:
+            params["pagination_data"] = "1"
+
+        result = await self._request("GET", "products", params=params)
+
+        if isinstance(result, dict):
+            if pagination_data:
+                return {
+                    "data": result.get("data", []),
+                    "pagination": {
+                        "total": result.get("pagination", {}).get("total", 0),
+                        "page": result.get("pagination", {}).get("page", page),
+                        "limit": result.get("pagination", {}).get("limit", limit),
+                        "pages": result.get("pagination", {}).get("pages", 0),
+                    }
+                }
+            return result.get("data", [])
+        return result
+
+    async def search_products(
+        self,
+        query: str,
+        limit: int = 20,
+        page: int = 1,
+        type: int | None = None,
+        status: int | None = None,
+        sortfield: str = "label",
+        sortorder: str = "ASC",
     ) -> list[dict[str, Any]]:
-        params = {"limit": limit, "offset": offset, "sortfield": sortfield, "sortorder": sortorder}
+        """
+        Buscar productos/servicios por texto en ref, label, description.
+        Usa sqlfilters con condiciones OR.
+        """
+        if not query or not query.strip():
+            return []
+        if page < 1:
+            page = 1
+        if limit < 1 or limit > 100:
+            limit = 100
+
+        # Escape for Dolibarr LIKE
+        escaped = query.strip().replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+
+        search_conditions = [
+            f"t.ref:like:'%{escaped}%'",
+            f"t.label:like:'%{escaped}%'",
+            f"t.description:like:'%{escaped}%'",
+        ]
+
+        sqlfilters_parts = [f"({' OR '.join(search_conditions)})"]
+
+        if type is not None:
+            if type not in (0, 1):
+                raise ValueError("type must be 0 (PRODUCT) or 1 (SERVICE)")
+            sqlfilters_parts.append(f"t.type:={type}")
+        if status is not None:
+            if status < 0:
+                raise ValueError("status must be >= 0")
+            sqlfilters_parts.append(f"t.status:={status}")
+
+        params = {
+            "limit": limit,
+            "page": page,
+            "sortfield": sortfield,
+            "sortorder": sortorder,
+            "sqlfilters": " AND ".join(sqlfilters_parts),
+        }
+
         result = await self._request("GET", "products", params=params)
         return result.get("data", []) if isinstance(result, dict) else result
+
+    async def get_product_by_ref(self, ref: str) -> dict[str, Any] | None:
+        """
+        Obtener producto por referencia exacta (campo ref).
+        Usa list_products con sqlfilters para coincidencia exacta.
+        """
+        if not ref or not ref.strip():
+            return None
+
+        escaped = ref.strip().replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+
+        result = await self.list_products(
+            limit=1,
+            page=1,
+            sqlfilters=f"t.ref:='{escaped}'",
+        )
+
+        if isinstance(result, dict) and "data" in result:
+            data = result["data"]
+        else:
+            data = result
+
+        return data[0] if data else None
 
     async def get_product(self, product_id: int) -> dict[str, Any]:
         return await self._request("GET", f"products/{product_id}")
