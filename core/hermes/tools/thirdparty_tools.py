@@ -60,7 +60,7 @@ class ListThirdpartiesParams:
     """Parámetros para list_thirdparties."""
 
     limit: int = 20
-    offset: int = 0
+    page: int = 1
     filter_customer: bool | None = None  # True=clientes, False=proveedores, None=todos
     filter_status: int | None = None  # 0=borrador, 1=activo, etc.
     sort_field: Literal[
@@ -90,11 +90,13 @@ class ListThirdpartiesParams:
                 f"sort_order '{self.sort_order}' no permitido. "
                 f"Valores permitidos: {', '.join(sorted(ALLOWED_SORT_ORDERS))}"
             )
+        if self.page < 1:
+            raise ValueError("El parámetro 'page' debe ser >= 1")
 
     def to_dolibarr_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {
             "limit": self.limit,
-            "offset": self.offset,
+            "page": self.page,
             "sortfield": self.sort_field,
             "sortorder": self.sort_order,
         }
@@ -149,7 +151,7 @@ class SearchThirdpartiesParams:
     filter_customer: bool | None = None  # True=clientes, False=proveedores, None=todos
     filter_supplier: bool | None = None  # True=proveedores, False=no proveedores, None=todos
     limit: int = 20
-    offset: int = 0
+    page: int = 1
     sort_field: Literal[
         "rowid",
         "name",
@@ -185,14 +187,14 @@ class SearchThirdpartiesParams:
         # Validate limit
         if self.limit < 1 or self.limit > 100:
             raise ValueError("El parámetro 'limit' debe estar entre 1 y 100")
-        if self.offset < 0:
-            raise ValueError("El parámetro 'offset' debe ser >= 0")
+        if self.page < 1:
+            raise ValueError("El parámetro 'page' debe ser >= 1")
 
     def to_dolibarr_params(self) -> dict[str, Any]:
         """Convertir a parámetros Dolibarr con sqlfilters para búsqueda."""
         params: dict[str, Any] = {
             "limit": self.limit,
-            "offset": self.offset,
+            "page": self.page,
             "sortfield": self.sort_field,
             "sortorder": self.sort_order,
         }
@@ -252,7 +254,7 @@ class CountThirdpartiesParams:
 
     def to_dolibarr_params(self) -> dict[str, Any]:
         """Convertir a parámetros Dolibarr para conteo."""
-        params: dict[str, Any] = {"limit": 1}  # Solo necesitamos 1 para verificar existencia
+        params: dict[str, Any] = {"limit": 1, "page": 1}  # Solo necesitamos 1 para verificar existencia
         sqlfilters_parts: list[str] = []
 
         if self.filter_customer is not None:
@@ -322,10 +324,10 @@ class ListThirdpartiesTool(Tool):
                 error_code="INVALID_PARAMS",
                 error_message="El parámetro 'limit' debe estar entre 1 y 100",
             )
-        if list_params.offset < 0:
+        if list_params.page < 1:
             return ToolResult.error(
                 error_code="INVALID_PARAMS",
-                error_message="El parámetro 'offset' debe ser >= 0",
+                error_message="El parámetro 'page' debe ser >= 1",
             )
         if list_params.sort_order not in ("ASC", "DESC"):
             return ToolResult.error(
@@ -371,7 +373,7 @@ class ListThirdpartiesTool(Tool):
                         ],
                         "count": len(parties),
                         "limit": list_params.limit,
-                        "offset": list_params.offset,
+                        "page": list_params.page,
                         "has_more": len(parties) == list_params.limit,
                     },
                     metadata={
@@ -499,7 +501,7 @@ class SearchThirdpartiesTool(Tool):
                         ],
                         "count": len(parties),
                         "limit": search_params.limit,
-                        "offset": search_params.offset,
+                        "page": search_params.page,
                         "has_more": len(parties) == search_params.limit,
                     },
                     metadata={

@@ -520,7 +520,7 @@ async def _get_telegram_client(instance_id: str, bot_token: str) -> TelegramClie
     return client
 
 
-async def _format_thirdparties_response(parties: list[dict], limit: int, offset: int) -> str:
+async def _format_thirdparties_response(parties: list[dict], limit: int, page: int) -> str:
     """Formatear lista de terceros para Telegram."""
     if not parties:
         return "No se han encontrado terceros."
@@ -537,7 +537,7 @@ async def _format_thirdparties_response(parties: list[dict], limit: int, offset:
         lines.append(f"{i}. {p['name']}{tipo_str}{email_str}")
 
     if len(parties) >= limit:
-        lines.append(f"\nMostrando los primeros {limit} resultados (offset {offset}).")
+        lines.append(f"\nMostrando los primeros {limit} resultados (página {page}).")
 
     return "\n".join(lines)
 

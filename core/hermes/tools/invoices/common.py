@@ -50,11 +50,16 @@ def validate_sort(sort_field: str, sort_order: str) -> None:
 
 
 def map_invoice_status_to_dolibarr(status: str | None) -> int | None:
-    """Mapear InvoiceStatus a código numérico Dolibarr."""
+    """Mapear InvoiceStatus a código numérico Dolibarr.
+
+    Falla si el estado no es válido (FAIL CLOSED).
+    """
     if status is None:
         return None
     status_map = {"draft": 0, "validated": 1, "paid": 2, "cancelled": 3}
-    return status_map.get(status, 0)
+    if status not in status_map:
+        raise ValueError(f"Estado de factura inválido: '{status}'. Valores permitidos: {list(status_map.keys())}")
+    return status_map[status]
 
 
 def date_to_timestamp(dt: date | None, end_of_day: bool = False) -> int | None:

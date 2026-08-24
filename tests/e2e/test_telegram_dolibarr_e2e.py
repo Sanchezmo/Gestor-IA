@@ -273,10 +273,10 @@ class TestTelegramToDolibarrHappyPath:
             _resolver = IdentityResolver(store, mock_factory)
             user_context = await _resolver.resolve(context_a, 123456)
 
-            # Patch DolibarrClient.from_instance_config to return our mock
+# Patch DolibarrClient.from_instance_config to return our mock
             with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
-                result = await tool.execute(context_a, user_context, limit=10, offset=0)
+                result = await tool.execute(context_a, user_context, limit=10, page=1)
 
             # Verify
             assert result.success is True
@@ -284,13 +284,14 @@ class TestTelegramToDolibarrHappyPath:
             assert len(result.data["thirdparties"]) == 3
             assert result.data["thirdparties"][0]["name"] == "Cliente Uno"
             assert result.data["thirdparties"][0]["is_customer"] is True
+            assert result.data["thirdparties"][0]["is_customer"] is True
             assert result.data["thirdparties"][1]["is_supplier"] is True
 
             # Verify Dolibarr was called with correct params
             mock_client.list_thirdparties.assert_called_once()
             call_args = mock_client.list_thirdparties.call_args
             assert call_args.kwargs["limit"] == 10
-            assert call_args.kwargs["offset"] == 0
+            assert call_args.kwargs["page"] == 1
 
 
 # =========================================================================
@@ -511,7 +512,7 @@ class TestNoPermission:
                     company_context=context_a,
                     user_context=user_context,
                     limit=10,
-                    offset=0,
+                    page=1,
                 )
 
             assert result.success is False
@@ -583,7 +584,7 @@ class TestCrossInstanceIsolation:
                 return_value=make_mock_client("8081"),
             ):
                 tool = ListThirdpartiesTool()
-                result = await tool.execute(context_a, user_context, limit=10, offset=0)
+                result = await tool.execute(context_a, user_context, limit=10, page=1)
 
             assert result.success is True
             # The patch above uses URL to determine which mock to return
@@ -689,7 +690,7 @@ class TestDolibarrErrors:
 
             with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
-                result = await tool.execute(context_a, user_context, limit=10, offset=0)
+                result = await tool.execute(context_a, user_context, limit=10, page=1)
 
             assert result.success is False
             assert result.error_code == "DOLIBARR_ERROR"
@@ -731,7 +732,7 @@ class TestDolibarrErrors:
 
             with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
-                result = await tool.execute(context_a, user_context, limit=10, offset=0)
+                result = await tool.execute(context_a, user_context, limit=10, page=1)
 
             assert result.success is False
             assert result.error_code == "DOLIBARR_ERROR"
@@ -769,7 +770,7 @@ class TestDolibarrErrors:
 
             with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
-                result = await tool.execute(context_a, user_context, limit=10, offset=0)
+                result = await tool.execute(context_a, user_context, limit=10, page=1)
 
             assert result.success is False
             assert result.error_code == "DOLIBARR_ERROR"
@@ -817,7 +818,7 @@ class TestAuditLogging:
 
             with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
-                result = await tool.execute(context_a, user_context, limit=10, offset=0)
+                result = await tool.execute(context_a, user_context, limit=10, page=1)
 
             assert result.success is True
             # Verify metadata for audit
@@ -858,7 +859,7 @@ class TestAuditLogging:
                     company_context=context_a,
                     user_context=user_context,
                     limit=10,
-                    offset=0,
+                    page=1,
                 )
 
             assert result.success is False
@@ -876,8 +877,8 @@ class TestPaginationAndFormatting:
     """Tests de paginación y formato de respuesta."""
 
     @pytest.mark.asyncio
-    async def test_list_thirdparties_respects_limit_offset(self, context_a, telegram_identity_a, dolibarr_user_a):
-        """Tool respeta limit y offset en llamada a Dolibarr."""
+    async def test_list_thirdparties_respects_limit_page(self, context_a, telegram_identity_a, dolibarr_user_a):
+        """Tool respeta limit y page en llamada a Dolibarr."""
         import tempfile
         from pathlib import Path
 
@@ -903,12 +904,12 @@ class TestPaginationAndFormatting:
 
             with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
-                await tool.execute(context_a, user_context, limit=5, offset=10)
+                await tool.execute(context_a, user_context, limit=5, page=3)
 
             call_args = mock_client.list_thirdparties.call_args
             assert call_args is not None
             assert call_args.kwargs["limit"] == 5
-            assert call_args.kwargs["offset"] == 10
+            assert call_args.kwargs["page"] == 3
 
     @pytest.mark.asyncio
     async def test_empty_results_returns_no_thirdparties_message(self, context_a, telegram_identity_a, dolibarr_user_a):
@@ -938,7 +939,7 @@ class TestPaginationAndFormatting:
 
             with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
-                result = await tool.execute(context_a, user_context, limit=10, offset=0)
+                result = await tool.execute(context_a, user_context, limit=10, page=1)
 
             assert result.success is True
             assert result.data["count"] == 0
@@ -1014,7 +1015,7 @@ class TestToolRegistry:
                     company_context=context_a,
                     user_context=user_context,
                     limit=10,
-                    offset=0,
+                    page=1,
                 )
 
             assert result.success is True
@@ -1092,7 +1093,7 @@ class TestParametersValidation:
             with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
                 # Invalid param: limit negative
-                result = await tool.execute(context_a, user_context, limit=-5, offset=0)
+                result = await tool.execute(context_a, user_context, limit=-5, page=1)
 
             assert result.success is False
             assert result.error_code == "INVALID_PARAMS"
@@ -1124,7 +1125,7 @@ class TestNoResultsFormat:
         """Cero terceros -> respuesta formateada correcta."""
         from core.hermes.main import _format_thirdparties_response
 
-        formatted = await _format_thirdparties_response([], limit=10, offset=0)
+        formatted = await _format_thirdparties_response([], limit=10, page=1)
         assert "No se han encontrado terceros" in formatted
 
     @pytest.mark.asyncio
@@ -1138,7 +1139,7 @@ class TestNoResultsFormat:
             {"id": 3, "name": "Ambos Tres", "is_customer": True, "is_supplier": True, "email": "tres@test.com"},
         ]
 
-        formatted = await _format_thirdparties_response(parties, limit=10, offset=0)
+        formatted = await _format_thirdparties_response(parties, limit=10, page=1)
 
         assert "Terceros encontrados:" in formatted
         assert "1. Cliente Uno (Cliente) - uno@test.com" in formatted

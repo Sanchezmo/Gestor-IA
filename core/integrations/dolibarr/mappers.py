@@ -402,7 +402,12 @@ def dolibarr_to_customer_invoice(data: dict[str, Any]) -> dict[str, Any]:
     paid_amount = _to_decimal(data.get("total_paid") or data.get("paid_amount") or data.get("amount_paid"))
 
     # remaining_amount: distinguir entre campo ausente y valor 0 explícito
-    remaining_amount_raw = data.get("total_remain") or data.get("remaining_amount") or data.get("total_to_pay")
+    remaining_amount_raw = None
+    for field in ("total_remain", "remaining_amount", "total_to_pay"):
+        if field in data and data[field] is not None:
+            remaining_amount_raw = data[field]
+            break
+
     if remaining_amount_raw is not None:
         remaining_amount = _to_decimal(remaining_amount_raw)
     elif total_ttc > 0:
@@ -447,7 +452,12 @@ def dolibarr_to_supplier_invoice_summary(data: dict[str, Any]) -> dict[str, Any]
     paid_amount = _to_decimal(data.get("total_paid") or data.get("paid_amount") or data.get("amount_paid"))
 
     # remaining_amount: distinguir entre campo ausente y valor 0 explícito
-    remaining_amount_raw = data.get("total_remain") or data.get("remaining_amount") or data.get("total_to_pay")
+    remaining_amount_raw = None
+    for field in ("total_remain", "remaining_amount", "total_to_pay"):
+        if field in data and data[field] is not None:
+            remaining_amount_raw = data[field]
+            break
+
     if remaining_amount_raw is not None:
         remaining_amount = _to_decimal(remaining_amount_raw)
     elif total_ttc > 0:

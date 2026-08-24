@@ -268,14 +268,19 @@ class DolibarrClient:
     async def list_thirdparties(
         self,
         limit: int = 100,
-        offset: int = 0,
+        page: int = 1,
         sortfield: str = "rowid",
         sortorder: str = "ASC",
         sqlfilters: str | None = None,
     ) -> list[dict[str, Any]]:
+        if page < 1:
+            page = 1
+        if limit < 1 or limit > 100:
+            limit = 100
+
         params = {
             "limit": limit,
-            "offset": offset,
+            "page": page,
             "sortfield": sortfield,
             "sortorder": sortorder,
         }
@@ -296,12 +301,12 @@ class DolibarrClient:
             return None
         normalized_search = self._normalize_tax_id(tax_id)
 
-        offset = 0
+        page = 1
         pages_checked = 0
         while pages_checked < max_pages:
             parties = await self.list_thirdparties(
                 limit=page_size,
-                offset=offset,
+                page=page,
             )
             if not parties:
                 break
@@ -313,7 +318,7 @@ class DolibarrClient:
 
             if len(parties) < page_size:
                 break
-            offset += page_size
+            page += 1
             pages_checked += 1
 
         return None
