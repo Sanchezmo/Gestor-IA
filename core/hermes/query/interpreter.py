@@ -475,6 +475,126 @@ Usuario: "facturas de ACME"
   "error_message": null,
   "fallback_used": false,
   "interpreter_used": "ollama"
+}}
+
+Usuario: "lista productos"
+{{
+  "status": "matched",
+  "intent": {{ "action": "list_products", "arguments": {{ "product_type": "product", "limit": 20, "page": 1 }} }},
+  "clarification_message": null,
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
+}}
+
+Usuario: "lista servicios"
+{{
+  "status": "matched",
+  "intent": {{ "action": "list_products", "arguments": {{ "product_type": "service", "limit": 20, "page": 1 }} }},
+  "clarification_message": null,
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
+}}
+
+Usuario: "busca pintura blanca"
+{{
+  "status": "matched",
+  "intent": {{ "action": "search_products", "arguments": {{ "query": "pintura blanca", "limit": 20 }} }},
+  "clarification_message": null,
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
+}}
+
+Usuario: "busca producto PINT-001"
+{{
+  "status": "matched",
+  "intent": {{ "action": "search_products", "arguments": {{ "query": "PINT-001", "product_type": "product", "limit": 20 }} }},
+  "clarification_message": null,
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
+}}
+
+Usuario: "busca servicio instalación"
+{{
+  "status": "matched",
+  "intent": {{ "action": "search_products", "arguments": {{ "query": "instalación", "product_type": "service", "limit": 20 }} }},
+  "clarification_message": null,
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
+}}
+
+Usuario: "qué precio tiene PINT-001"
+{{
+  "status": "matched",
+  "intent": {{ "action": "get_product", "arguments": {{ "ref": "PINT-001" }} }},
+  "clarification_message": null,
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
+}}
+
+Usuario: "producto PINT-001"
+{{
+  "status": "matched",
+  "intent": {{ "action": "get_product", "arguments": {{ "ref": "PINT-001" }} }},
+  "clarification_message": null,
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
+}}
+
+Usuario: "cuántos productos tenemos"
+{{
+  "status": "matched",
+  "intent": {{ "action": "count_products", "arguments": {{ "product_type": "product" }} }},
+  "clarification_message": null,
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
+}}
+
+Usuario: "cuántos servicios hay"
+{{
+  "status": "matched",
+  "intent": {{ "action": "count_products", "arguments": {{ "product_type": "service" }} }},
+  "clarification_message": null,
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
+}}
+
+Usuario: "crea un producto"
+{{
+  "status": "no_match",
+  "intent": null,
+  "clarification_message": null,
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
+}}
+
+Usuario: "borra producto 123"
+{{
+  "status": "no_match",
+  "intent": null,
+  "clarification_message": null,
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
+}}
+
+Usuario: "productos de ACME"
+{{
+  "status": "needs_clarification",
+  "intent": null,
+  "clarification_message": "¿Quieres buscar productos o servicios? Especifica 'busca producto ACME' o 'busca servicio ACME'.",
+  "error_message": null,
+  "fallback_used": false,
+  "interpreter_used": "ollama"
 }}"""
 
     async def interpret(self, text: str, context: dict[str, Any] | None = None) -> IntentInterpretation:

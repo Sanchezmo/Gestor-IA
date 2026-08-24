@@ -109,6 +109,43 @@ class InvoiceSortField(StrEnum):
 
 
 # =========================================================================
+# ENUMS PARA PRODUCTOS (PRODUCTS V4)
+# =========================================================================
+
+
+class ProductAction(StrEnum):
+    """Acciones soportadas para productos/servicios."""
+
+    LIST = "list_products"
+    SEARCH = "search_products"
+    GET = "get_product"
+    COUNT = "count_products"
+
+
+class ProductTypeFilter(StrEnum):
+    """Tipo de producto/servicio a filtrar."""
+
+    ALL = "all"
+    PRODUCT = "product"
+    SERVICE = "service"
+
+
+class ProductSortField(StrEnum):
+    """Campos ordenables permitidos para productos (allowlist)."""
+
+    ROWID = "rowid"
+    REF = "ref"
+    LABEL = "label"
+    DESCRIPTION = "description"
+    TYPE = "type"
+    STATUS = "status"
+    PRICE = "price"
+    PRICE_TTC = "price_ttc"
+    VAT_RATE = "tva_tx"
+    STOCK_REEL = "stock_reel"
+
+
+# =========================================================================
 # ENUMS PARA BUSINESS INSIGHTS (importados de insights.models)
 # =========================================================================
 
@@ -278,6 +315,62 @@ class CountSupplierInvoicesArgs(BaseModel):
     due_to: date | None = None
 
 
+# =========================================================================
+# MODELOS DE ARGUMENTOS POR ACCIÓN - PRODUCTOS
+# =========================================================================
+
+
+class ListProductsArgs(BaseModel):
+    """Argumentos para list_products."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(default=20, ge=1, le=100)
+    page: int = Field(default=1, ge=1)
+    product_type: ProductTypeFilter = ProductTypeFilter.ALL
+    status: int | None = Field(default=None, ge=0)
+    sort_field: ProductSortField = ProductSortField.LABEL
+    sort_order: SortOrder = SortOrder.ASC
+
+
+class SearchProductsArgs(BaseModel):
+    """Argumentos para search_products."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(..., min_length=1, max_length=200)
+    limit: int = Field(default=20, ge=1, le=100)
+    page: int = Field(default=1, ge=1)
+    product_type: ProductTypeFilter = ProductTypeFilter.ALL
+    status: int | None = Field(default=None, ge=0)
+    sort_field: ProductSortField = ProductSortField.LABEL
+    sort_order: SortOrder = SortOrder.ASC
+
+
+class GetProductArgs(BaseModel):
+    """Argumentos para get_product."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    product_id: int | None = Field(default=None, gt=0)
+    ref: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def check_one_identifier(self) -> GetProductArgs:
+        if self.product_id is None and self.ref is None:
+            raise ValueError("Either product_id or ref required")
+        return self
+
+
+class CountProductsArgs(BaseModel):
+    """Argumentos para count_products."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    product_type: ProductTypeFilter = ProductTypeFilter.ALL
+    status: int | None = Field(default=None, ge=0)
+
+
 from core.hermes.insights.models import (
     CustomerInvoiceSummaryArgs,
     CustomerInvoiceSummaryByThirdpartyArgs,
@@ -297,6 +390,8 @@ from core.hermes.insights.models import (
 
 
 ThirdpartyArgs = ListThirdpartiesArgs | SearchThirdpartiesArgs | GetThirdpartyArgs | CountThirdpartiesArgs
+
+ProductArgs = ListProductsArgs | SearchProductsArgs | GetProductArgs | CountProductsArgs
 
 InvoiceArgs = (
     ListCustomerInvoicesArgs
@@ -325,8 +420,8 @@ class StructuredIntent(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    action: ThirdpartyAction | InvoiceAction | InsightAction
-    arguments: ThirdpartyArgs | InvoiceArgs | InsightArgs
+    action: ThirdpartyAction | InvoiceAction | InsightAction | ProductAction
+    arguments: ThirdpartyArgs | InvoiceArgs | InsightArgs | ProductArgs
 
     # Metadatos opcionales
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -348,6 +443,14 @@ class StructuredIntent(BaseModel):
             if "thirdparty_id" not in v:
                 raise ValueError("GET requiere thirdparty_id")
         elif action == ThirdpartyAction.SEARCH:
+            if "query" not in v or not v["query"]:
+                raise ValueError("SEARCH requiere query no vacía")
+
+        # Validación cruzada básica - Product
+        if action == ProductAction.GET:
+            if "product_id" not in v and "ref" not in v:
+                raise ValueError("GET requiere product_id o ref")
+        elif action == ProductAction.SEARCH:
             if "query" not in v or not v["query"]:
                 raise ValueError("SEARCH requiere query no vacía")
 
@@ -711,6 +814,64 @@ def structured_intent_to_tool_call(intent: StructuredIntent) -> tuple[str, dict[
             "status": args_insight.status,
         }
 
+    # Product actions
+    elif action == ProductAction.LIST:
+        list_args = cast(ListProductsArgs, args)
+        product_type = None
+        if list_args.product_type == ProductTypeFilter.PRODUCT:
+            product_type = "PRODUCT"
+        elif list_args.product_type == ProductTypeFilter.SERVICE:
+            product_type = "SERVICE"
+
+        return "list_products", {
+            "limit": list_args.limit,
+            "page": list_args.page,
+            "product_type": product_type,
+            "status": list_args.status,
+            "sort_field": list_args.sort_field.value,
+            "sort_order": list_args.sort_order.value,
+        }
+
+    elif action == ProductAction.SEARCH:
+        search_args = cast(SearchProductsArgs, args)
+        product_type = None
+        if search_args.product_type == ProductTypeFilter.PRODUCT:
+            product_type = "PRODUCT"
+        elif search_args.product_type == ProductTypeFilter.SERVICE:
+            product_type = "SERVICE"
+
+        return "search_products", {
+            "query": search_args.query,
+            "limit": search_args.limit,
+            "page": search_args.page,
+            "product_type": product_type,
+            "status": search_args.status,
+            "sort_field": search_args.sort_field.value,
+            "sort_order": search_args.sort_order.value,
+        }
+
+    elif action == ProductAction.GET:
+        get_args = cast(GetProductArgs, args)
+        params = {}
+        if get_args.product_id is not None:
+            params["product_id"] = get_args.product_id
+        if get_args.ref is not None:
+            params["ref"] = get_args.ref
+        return "get_product", params
+
+    elif action == ProductAction.COUNT:
+        count_args = cast(CountProductsArgs, args)
+        product_type = None
+        if count_args.product_type == ProductTypeFilter.PRODUCT:
+            product_type = "PRODUCT"
+        elif count_args.product_type == ProductTypeFilter.SERVICE:
+            product_type = "SERVICE"
+
+        return "count_products", {
+            "product_type": product_type,
+            "status": count_args.status,
+        }
+
     raise ValueError(f"Acción no soportada: {action}")
 
 
@@ -787,6 +948,30 @@ INVOICE_TOOLS_CATALOG: list[ToolSchema] = [
 ]
 
 
+PRODUCT_TOOLS_CATALOG: list[ToolSchema] = [
+    ToolSchema(
+        name="list_products",
+        description="Listar productos/servicios con paginación y filtros opcionales",
+        arguments_schema=ListProductsArgs.model_json_schema(),
+    ),
+    ToolSchema(
+        name="search_products",
+        description="Buscar productos/servicios por referencia, nombre o descripción",
+        arguments_schema=SearchProductsArgs.model_json_schema(),
+    ),
+    ToolSchema(
+        name="get_product",
+        description="Obtener detalle completo de un producto/servicio por ID o referencia",
+        arguments_schema=GetProductArgs.model_json_schema(),
+    ),
+    ToolSchema(
+        name="count_products",
+        description="Contar total de productos/servicios con filtros opcionales",
+        arguments_schema=CountProductsArgs.model_json_schema(),
+    ),
+]
+
+
 def get_tools_catalog_for_prompt() -> str:
     """Generar representación del catálogo para el system prompt."""
     lines = ["Tools disponibles (solo estas):"]
@@ -803,6 +988,17 @@ def get_tools_catalog_for_prompt() -> str:
             lines.append("  Argumentos:")
             lines.extend(args_desc)
     for tool in INVOICE_TOOLS_CATALOG:
+        lines.append(f"- {tool.name}: {tool.description}")
+        props = tool.arguments_schema.get("properties", {})
+        required = tool.arguments_schema.get("required", [])
+        args_desc = []
+        for prop_name, prop_info in props.items():
+            req = " (requerido)" if prop_name in required else ""
+            args_desc.append(f"  {prop_name}: {prop_info.get('description', '')}{req}")
+        if args_desc:
+            lines.append("  Argumentos:")
+            lines.extend(args_desc)
+    for tool in PRODUCT_TOOLS_CATALOG:
         lines.append(f"- {tool.name}: {tool.description}")
         props = tool.arguments_schema.get("properties", {})
         required = tool.arguments_schema.get("required", [])
