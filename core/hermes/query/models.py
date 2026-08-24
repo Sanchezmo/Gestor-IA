@@ -109,6 +109,27 @@ class InvoiceSortField(StrEnum):
 
 
 # =========================================================================
+# ENUMS PARA BUSINESS INSIGHTS
+# =========================================================================
+
+
+class InsightAction(StrEnum):
+    """Acciones de Business Insights (Financial Read-Only)."""
+
+    # Customer financial insights
+    CUSTOMER_INVOICE_SUMMARY = "customer_invoice_summary"
+    CUSTOMER_OUTSTANDING_SUMMARY = "customer_outstanding_summary"
+    CUSTOMER_OUTSTANDING_BY_THIRDPARTY = "customer_outstanding_by_thirdparty"
+    CUSTOMER_INVOICE_SUMMARY_BY_THIRDPARTY = "customer_invoice_summary_by_thirdparty"
+
+    # Supplier financial insights
+    SUPPLIER_INVOICE_SUMMARY = "supplier_invoice_summary"
+    SUPPLIER_OUTSTANDING_SUMMARY = "supplier_outstanding_summary"
+    SUPPLIER_OUTSTANDING_BY_THIRDPARTY = "supplier_outstanding_by_thirdparty"
+    SUPPLIER_INVOICE_SUMMARY_BY_THIRDPARTY = "supplier_invoice_summary_by_thirdparty"
+
+
+# =========================================================================
 # MODELOS DE ARGUMENTOS POR ACCIÓN - TERCEROS
 # =========================================================================
 
@@ -273,6 +294,9 @@ class CountSupplierInvoicesArgs(BaseModel):
     due_to: date | None = None
 
 
+from core.hermes.insights.models import InsightArgs
+
+
 # =========================================================================
 # UNION DE ARGUMENTOS
 # =========================================================================
@@ -307,8 +331,8 @@ class StructuredIntent(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    action: ThirdpartyAction | InvoiceAction
-    arguments: ThirdpartyArgs | InvoiceArgs
+    action: ThirdpartyAction | InvoiceAction | InsightAction
+    arguments: ThirdpartyArgs | InvoiceArgs | InsightArgs
 
     # Metadatos opcionales
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -348,6 +372,11 @@ class StructuredIntent(BaseModel):
         elif action == InvoiceAction.SEARCH_SUPPLIER_INVOICES:
             if "query" not in v or not v["query"]:
                 raise ValueError("SEARCH_SUPPLIER_INVOICES requiere query no vacía")
+
+        # Validación cruzada básica - Insight Customer
+        if action == InsightAction.CUSTOMER_INVOICE_SUMMARY_BY_THIRDPARTY:
+            if "thirdparty_id" not in v:
+                raise ValueError("CUSTOMER_INVOICE_SUMMARY_BY_THIRDPARTY requiere thirdparty_id")
 
         return v
 
@@ -606,6 +635,86 @@ def structured_intent_to_tool_call(intent: StructuredIntent) -> tuple[str, dict[
             "date_to": count_args.date_to.isoformat() if count_args.date_to else None,
             "due_from": count_args.due_from.isoformat() if count_args.due_from else None,
             "due_to": count_args.due_to.isoformat() if count_args.due_to else None,
+        }
+
+    # Customer Insight actions
+    elif action == InsightAction.CUSTOMER_INVOICE_SUMMARY:
+        args_insight = cast(CustomerInvoiceSummaryArgs, args)
+        return "customer_invoice_summary", {
+            "period": args_insight.period.value,
+            "date_from": args_insight.date_from.isoformat() if args_insight.date_from else None,
+            "date_to": args_insight.date_to.isoformat() if args_insight.date_to else None,
+            "status": args_insight.status,
+            "thirdparty_id": args_insight.thirdparty_id,
+        }
+
+    elif action == InsightAction.CUSTOMER_OUTSTANDING_SUMMARY:
+        args_insight = cast(CustomerOutstandingSummaryArgs, args)
+        return "customer_outstanding_summary", {
+            "period": args_insight.period.value,
+            "date_from": args_insight.date_from.isoformat() if args_insight.date_from else None,
+            "date_to": args_insight.date_to.isoformat() if args_insight.date_to else None,
+            "status": args_insight.status,
+        }
+
+    elif action == InsightAction.CUSTOMER_OUTSTANDING_BY_THIRDPARTY:
+        args_insight = cast(CustomerOutstandingByThirdpartyArgs, args)
+        return "customer_outstanding_by_thirdparty", {
+            "period": args_insight.period.value,
+            "date_from": args_insight.date_from.isoformat() if args_insight.date_from else None,
+            "date_to": args_insight.date_to.isoformat() if args_insight.date_to else None,
+            "status": args_insight.status,
+            "limit": args_insight.limit,
+        }
+
+    elif action == InsightAction.CUSTOMER_INVOICE_SUMMARY_BY_THIRDPARTY:
+        args_insight = cast(CustomerInvoiceSummaryByThirdpartyArgs, args)
+        return "customer_invoice_summary_by_thirdparty", {
+            "period": args_insight.period.value,
+            "date_from": args_insight.date_from.isoformat() if args_insight.date_from else None,
+            "date_to": args_insight.date_to.isoformat() if args_insight.date_to else None,
+            "thirdparty_id": args_insight.thirdparty_id,
+            "status": args_insight.status,
+        }
+
+    # Supplier Insight actions
+    elif action == InsightAction.SUPPLIER_INVOICE_SUMMARY:
+        args_insight = cast(SupplierInvoiceSummaryArgs, args)
+        return "supplier_invoice_summary", {
+            "period": args_insight.period.value,
+            "date_from": args_insight.date_from.isoformat() if args_insight.date_from else None,
+            "date_to": args_insight.date_to.isoformat() if args_insight.date_to else None,
+            "status": args_insight.status,
+            "thirdparty_id": args_insight.thirdparty_id,
+        }
+
+    elif action == InsightAction.SUPPLIER_OUTSTANDING_SUMMARY:
+        args_insight = cast(SupplierOutstandingSummaryArgs, args)
+        return "supplier_outstanding_summary", {
+            "period": args_insight.period.value,
+            "date_from": args_insight.date_from.isoformat() if args_insight.date_from else None,
+            "date_to": args_insight.date_to.isoformat() if args_insight.date_to else None,
+            "status": args_insight.status,
+        }
+
+    elif action == InsightAction.SUPPLIER_OUTSTANDING_BY_THIRDPARTY:
+        args_insight = cast(SupplierOutstandingByThirdpartyArgs, args)
+        return "supplier_outstanding_by_thirdparty", {
+            "period": args_insight.period.value,
+            "date_from": args_insight.date_from.isoformat() if args_insight.date_from else None,
+            "date_to": args_insight.date_to.isoformat() if args_insight.date_to else None,
+            "status": args_insight.status,
+            "limit": args_insight.limit,
+        }
+
+    elif action == InsightAction.SUPPLIER_INVOICE_SUMMARY_BY_THIRDPARTY:
+        args_insight = cast(SupplierInvoiceSummaryByThirdpartyArgs, args)
+        return "supplier_invoice_summary_by_thirdparty", {
+            "period": args_insight.period.value,
+            "date_from": args_insight.date_from.isoformat() if args_insight.date_from else None,
+            "date_to": args_insight.date_to.isoformat() if args_insight.date_to else None,
+            "thirdparty_id": args_insight.thirdparty_id,
+            "status": args_insight.status,
         }
 
     raise ValueError(f"Acción no soportada: {action}")

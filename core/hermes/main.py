@@ -34,6 +34,7 @@ from core.hermes.query.models import (
     InvoiceAction,
     InvoicePartyType,
     ThirdpartyAction,
+    InsightAction,
 )
 from core.hermes.resolver import InstanceResolutionMiddleware, get_company_context, get_user_context
 from core.hermes.tools import tool_registry
@@ -44,6 +45,19 @@ from core.hermes.tools.invoices.formatters import (
     format_invoice_count_for_telegram,
     format_supplier_invoice_detail_for_telegram,
     format_supplier_invoices_for_telegram,
+)
+from core.hermes.insights import (
+    execute_customer_insight,
+    execute_supplier_insight,
+    format_customer_invoice_summary_for_telegram,
+    format_customer_outstanding_summary_for_telegram,
+    format_customer_outstanding_by_thirdparty_for_telegram,
+    format_customer_invoice_summary_by_thirdparty_for_telegram,
+    format_supplier_invoice_summary_for_telegram,
+    format_supplier_outstanding_summary_for_telegram,
+    format_supplier_outstanding_by_thirdparty_for_telegram,
+    format_customer_invoice_summary_by_thirdparty_for_telegram,
+    format_supplier_invoice_summary_by_thirdparty_for_telegram,
 )
 from core.hermes.tools.thirdparty_tools import register_core_thirdparty_tools
 from core.integrations.cloudflare.manager import create_cloudflare_manager
@@ -951,17 +965,80 @@ async def telegram_webhook(
                                     dolibarr_user_id=user_context.dolibarr_user_id,
                                 )
                         else:
-                            # EJECUTAR TOOL via Hermes
-                            tool_name, tool_params = structured_intent_to_tool_call(interpretation.intent)
-                            tool_result = await tool_registry.execute_tool(
-                                instance_id=instance_id,
-                                name=tool_name,
-                                company_context=ctx,
-                                user_context=user_context,
-                                **tool_params,
-                            )
+                            # EJECUTAR TOOL o INSIGHT via Hermes
+                            action = interpretation.intent.action
+                            tool_result = None
 
-                            if tool_result.success:
+                            # Ruteo: Thirdparty, Invoice o Insight
+                            if action in (
+                                ThirdpartyAction.LIST,
+                                ThirdpartyAction.SEARCH,
+                                ThirdpartyAction.GET,
+                                ThirdpartyAction.COUNT,
+                            ):
+                                # Thirdparty actions -> ToolRegistry
+                                tool_name, tool_params = structured_intent_to_tool_call(interpretation.intent)
+                                tool_result = await tool_registry.execute_tool(
+                                    instance_id=instance_id,
+                                    name=tool_name,
+                                    company_context=ctx,
+                                    user_context=user_context,
+                                    **tool_params,
+                                )
+
+                            elif action in (
+                                InvoiceAction.LIST_CUSTOMER_INVOICES,
+                                InvoiceAction.SEARCH_CUSTOMER_INVOICES,
+                                InvoiceAction.GET_CUSTOMER_INVOICE,
+                                InvoiceAction.COUNT_CUSTOMER_INVOICES,
+                                InvoiceAction.LIST_SUPPLIER_INVOICES,
+                                InvoiceAction.SEARCH_SUPPLIER_INVOICES,
+                                InvoiceAction.GET_SUPPLIER_INVOICE,
+                                InvoiceAction.COUNT_SUPPLIER_INVOICES,
+                            ):
+                                # Invoice actions -> ToolRegistry
+                                tool_name, tool_params = structured_intent_to_tool_call(interpretation.intent)
+                                tool_result = await tool_registry.execute_tool(
+                                    instance_id=instance_id,
+                                    name=tool_name,
+                                    company_context=ctx,
+                                    user_context=user_context,
+                                    **tool_params,
+                                )
+
+                            elif action in (
+                                InsightAction.CUSTOMER_INVOICE_SUMMARY,
+                                InsightAction.CUSTOMER_OUTSTANDING_SUMMARY,
+                                InsightAction.CUSTOMER_OUTSTANDING_BY_THIRDPARTY,
+                                InsightAction.CUSTOMER_INVOICE_SUMMARY_BY_THIRDPARTY,
+                            ):
+                                # Customer Insight actions -> CustomerFinanceInsightService
+                                tool_result = await execute_customer_insight(
+                                    company_context=ctx,
+                                    user_context=user_context,
+                                    action=action.value,
+                                    args=interpretation.intent.arguments.__dict__,
+                                )
+
+                            elif action in (
+                                InsightAction.SUPPLIER_INVOICE_SUMMARY,
+                                InsightAction.SUPPLIER_OUTSTANDING_SUMMARY,
+                                InsightAction.SUPPLIER_OUTSTANDING_BY_THIRDPARTY,
+                                InsightAction.SUPPLIER_INVOICE_SUMMARY_BY_THIRDPARTY,
+                            ):
+                                # Supplier Insight actions -> SupplierFinanceInsightService
+                                tool_result = await execute_supplier_insight(
+                                    company_context=ctx,
+                                    user_context=user_context,
+                                    action=action.value,
+                                    args=interpretation.intent.arguments.__dict__,
+                                )
+
+                            else:
+                                response_text = "Acción no soportada."
+                                tool_result = None
+
+                            if tool_result is not None and tool_result.success:
                                 # Formatear respuesta según tipo de intent
                                 action = interpretation.intent.action
                                 if action == ThirdpartyAction.LIST:
@@ -1029,6 +1106,40 @@ async def telegram_webhook(
                                     response_text = format_invoice_count_for_telegram(
                                         tool_result.data["count"],
                                         InvoicePartyType.SUPPLIER,
+                                    )
+                                # Customer Insight actions
+                                elif action == InsightAction.CUSTOMER_INVOICE_SUMMARY:
+                                    response_text = format_customer_invoice_summary_for_telegram(
+                                        tool_result.data
+                                    )
+                                elif action == InsightAction.CUSTOMER_OUTSTANDING_SUMMARY:
+                                    response_text = format_customer_outstanding_summary_for_telegram(
+                                        tool_result.data
+                                    )
+                                elif action == InsightAction.CUSTOMER_OUTSTANDING_BY_THIRDPARTY:
+                                    response_text = format_customer_outstanding_by_thirdparty_for_telegram(
+                                        tool_result.data
+                                    )
+                                elif action == InsightAction.CUSTOMER_INVOICE_SUMMARY_BY_THIRDPARTY:
+                                    response_text = format_customer_invoice_summary_by_thirdparty_for_telegram(
+                                        tool_result.data
+                                    )
+                                # Supplier Insight actions
+                                elif action == InsightAction.SUPPLIER_INVOICE_SUMMARY:
+                                    response_text = format_supplier_invoice_summary_for_telegram(
+                                        tool_result.data
+                                    )
+                                elif action == InsightAction.SUPPLIER_OUTSTANDING_SUMMARY:
+                                    response_text = format_supplier_outstanding_summary_for_telegram(
+                                        tool_result.data
+                                    )
+                                elif action == InsightAction.SUPPLIER_OUTSTANDING_BY_THIRDPARTY:
+                                    response_text = format_supplier_outstanding_by_thirdparty_for_telegram(
+                                        tool_result.data
+                                    )
+                                elif action == InsightAction.SUPPLIER_INVOICE_SUMMARY_BY_THIRDPARTY:
+                                    response_text = format_supplier_invoice_summary_by_thirdparty_for_telegram(
+                                        tool_result.data
                                     )
                                 else:
                                     response_text = "Consulta procesada correctamente."
