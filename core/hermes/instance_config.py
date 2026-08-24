@@ -48,6 +48,7 @@ class DolibarrConfig(BaseModel):
     api_key: str
     documents_path: str  # ej: /var/lib/dolibarr/documents/empresa_a
     currency: str = "EUR"  # Moneda de la instancia (ej: EUR, USD, MXN)
+    timezone: str = "Europe/Madrid"  # Timezone de la instancia (ej: Europe/Madrid, America/New_York)
 
 
 class TelegramConfig(BaseModel):

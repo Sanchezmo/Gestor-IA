@@ -67,9 +67,10 @@ class SupplierFinanceInsightService:
         period: str,
         date_from: date | None,
         date_to: date | None,
+        company_today: date,
     ) -> tuple[date, date]:
         """Resolver un período financiero a fechas concretas (date_from, date_to)."""
-        today = date.today()
+        today = company_today
 
         if period == "today":
             return today, today
@@ -114,7 +115,8 @@ class SupplierFinanceInsightService:
         Agrega: count, subtotal, tax, total, paid, outstanding.
         """
         args = SupplierInvoiceSummaryArgs(**args)
-        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to)
+        company_today = company_context.get_company_today()
+        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to, company_today)
 
         list_params = {
             "limit": 100,
@@ -215,7 +217,8 @@ class SupplierFinanceInsightService:
         Resumen de facturas de un proveedor específico en un período.
         """
         args = SupplierInvoiceSummaryByThirdpartyArgs(**args)
-        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to)
+        company_today = company_context.get_company_today()
+        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to, company_today)
 
         list_params = {
             "limit": 100,
@@ -309,7 +312,8 @@ class SupplierFinanceInsightService:
         Resumen de lo que debemos a proveedores (pendiente de pago).
         """
         args = SupplierOutstandingSummaryArgs(**args)
-        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to)
+        company_today = company_context.get_company_today()
+        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to, company_today)
 
         list_params = {
             "limit": 100,
@@ -373,8 +377,7 @@ class SupplierFinanceInsightService:
                 else (inv.get("total_ttc", Decimal("0")) - inv.get("total_ht", Decimal("0")))
             )
             for inv in invoices
-        ),
-        Decimal("0"),
+        ), Decimal("0")
 
         if tax == Decimal("0") and total_ttc > Decimal("0") and subtotal > Decimal("0"):
             tax = total_ttc - subtotal
@@ -405,7 +408,8 @@ class SupplierFinanceInsightService:
         Ranking de proveedores a los que más debemos (pendiente de pago).
         """
         args = SupplierOutstandingByThirdpartyArgs(**args)
-        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to)
+        company_today = company_context.get_company_today()
+        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to, company_today)
 
         # Obtener todas las facturas pendientes en el período
         list_params = {

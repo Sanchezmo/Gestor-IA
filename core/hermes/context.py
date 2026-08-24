@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from core.hermes.identity import UserContext
 from core.hermes.instance_config import InstanceConfig
@@ -73,6 +75,22 @@ class CompanyContext:
     def dolibarr_config(self):
         """Configuración de Dolibarr ERP."""
         return self.instance_config.dolibarr
+
+    @property
+    def timezone(self) -> str:
+        """Timezone de la instancia (ej: Europe/Madrid, America/New_York)."""
+        return self.instance_config.dolibarr.timezone
+
+    def get_company_today(self) -> date:
+        """
+        Obtener la fecha actual en la timezone de la instancia.
+        
+        Usa la timezone configurada en la instancia para calcular
+        la fecha actual, en lugar de depender de la timezone del sistema.
+        """
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(self.timezone)
+        return datetime.now(tz).date()
 
     @property
     def telegram_config(self):

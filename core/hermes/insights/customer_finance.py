@@ -68,9 +68,10 @@ class CustomerFinanceInsightService:
         period: str,
         date_from: date | None,
         date_to: date | None,
+        company_today: date,
     ) -> tuple[date, date]:
         """Resolver un período financiero a fechas concretas (date_from, date_to)."""
-        today = date.today()
+        today = company_today
 
         if period == "today":
             return today, today
@@ -116,7 +117,8 @@ class CustomerFinanceInsightService:
         Agrega: count, subtotal, tax, total, paid, outstanding.
         """
         args = CustomerInvoiceSummaryArgs(**args)
-        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to)
+        company_today = company_context.get_company_today()
+        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to, company_today)
 
         # Ejecutar tool con pagination_data para obtener total
         list_params = {
@@ -214,7 +216,8 @@ class CustomerFinanceInsightService:
         Resumen de facturas de un cliente específico en un período.
         """
         args = CustomerInvoiceSummaryByThirdpartyArgs(**args)
-        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to)
+        company_today = company_context.get_company_today()
+        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to, company_today)
 
         list_params = {
             "limit": 100,
@@ -307,7 +310,8 @@ class CustomerFinanceInsightService:
         Resumen de lo que nos deben los clientes (pendiente de cobro).
         """
         args = CustomerOutstandingSummaryArgs(**args)
-        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to)
+        company_today = company_context.get_company_today()
+        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to, company_today)
 
         list_params = {
             "limit": 100,
@@ -371,8 +375,7 @@ class CustomerFinanceInsightService:
                 else (inv.get("total_ttc", Decimal("0")) - inv.get("total_ht", Decimal("0")))
             )
             for inv in invoices
-        ),
-        Decimal("0"),
+        ), Decimal("0")
 
         if tax == Decimal("0") and total_ttc > Decimal("0") and subtotal > Decimal("0"):
             tax = total_ttc - subtotal
@@ -403,7 +406,8 @@ class CustomerFinanceInsightService:
         Ranking de clientes que más nos deben (pendiente de cobro).
         """
         args = CustomerOutstandingByThirdpartyArgs(**args)
-        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to)
+        company_today = company_context.get_company_today()
+        date_from, date_to = self._resolve_period(args.period, args.date_from, args.date_to, company_today)
 
         # Obtener todas las facturas pendientes en el período
         list_params = {
