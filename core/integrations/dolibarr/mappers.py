@@ -320,7 +320,9 @@ def dolibarr_to_product_summary(data: dict[str, Any], currency: str = "EUR") -> 
     # Stock fields (may not be present for services)
     stock_reel = _to_decimal(data.get("stock_reel")) if data.get("stock_reel") is not None else None
     desiredstock = _to_decimal(data.get("desiredstock")) if data.get("desiredstock") is not None else None
-    seuil_stock_alerte = _to_decimal(data.get("seuil_stock_alerte")) if data.get("seuil_stock_alerte") is not None else None
+    seuil_stock_alerte = (
+        _to_decimal(data.get("seuil_stock_alerte")) if data.get("seuil_stock_alerte") is not None else None
+    )
 
     return {
         "id": data.get("id") or data.get("rowid"),
@@ -354,21 +356,23 @@ def dolibarr_to_product_detail(data: dict[str, Any], currency: str = "EUR") -> d
     summary = dolibarr_to_product_summary(data, currency)
 
     # Additional fields
-    summary.update({
-        "description": data.get("description"),
-        "price_min": _to_decimal(data.get("price_min")) if data.get("price_min") is not None else None,
-        "price_base_type": data.get("price_base_type"),  # "HT" or "TTC"
-        "weight": _to_decimal(data.get("weight")) if data.get("weight") is not None else None,
-        "weight_units": data.get("weight_units"),
-        "length": _to_decimal(data.get("length")) if data.get("length") is not None else None,
-        "surface": _to_decimal(data.get("surface")) if data.get("surface") is not None else None,
-        "volume": _to_decimal(data.get("volume")) if data.get("volume") is not None else None,
-        "units": data.get("units"),
-        # Supplier info if present
-        "supplier_info": _extract_supplier_info(data) if _has_supplier_info(data) else None,
-        # Extrafields
-        "extrafields": _extract_extrafields(data) if _has_extrafields(data) else None,
-    })
+    summary.update(
+        {
+            "description": data.get("description"),
+            "price_min": _to_decimal(data.get("price_min")) if data.get("price_min") is not None else None,
+            "price_base_type": data.get("price_base_type"),  # "HT" or "TTC"
+            "weight": _to_decimal(data.get("weight")) if data.get("weight") is not None else None,
+            "weight_units": data.get("weight_units"),
+            "length": _to_decimal(data.get("length")) if data.get("length") is not None else None,
+            "surface": _to_decimal(data.get("surface")) if data.get("surface") is not None else None,
+            "volume": _to_decimal(data.get("volume")) if data.get("volume") is not None else None,
+            "units": data.get("units"),
+            # Supplier info if present
+            "supplier_info": _extract_supplier_info(data) if _has_supplier_info(data) else None,
+            # Extrafields
+            "extrafields": _extract_extrafields(data) if _has_extrafields(data) else None,
+        }
+    )
 
     return summary
 

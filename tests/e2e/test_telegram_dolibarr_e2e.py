@@ -273,7 +273,7 @@ class TestTelegramToDolibarrHappyPath:
             _resolver = IdentityResolver(store, mock_factory)
             user_context = await _resolver.resolve(context_a, 123456)
 
-# Patch DolibarrClient.from_instance_config to return our mock
+            # Patch DolibarrClient.from_instance_config to return our mock
             with patch("core.hermes.context.CompanyContext.create_dolibarr_client", return_value=mock_client):
                 tool = ListThirdpartiesTool()
                 result = await tool.execute(context_a, user_context, limit=10, page=1)

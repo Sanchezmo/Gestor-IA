@@ -84,11 +84,12 @@ class CompanyContext:
     def get_company_today(self) -> date:
         """
         Obtener la fecha actual en la timezone de la instancia.
-        
+
         Usa la timezone configurada en la instancia para calcular
         la fecha actual, en lugar de depender de la timezone del sistema.
         """
         from zoneinfo import ZoneInfo
+
         tz = ZoneInfo(self.timezone)
         return datetime.now(tz).date()
 

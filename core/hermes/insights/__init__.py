@@ -80,7 +80,7 @@ async def execute_customer_insight(
 ) -> Any:
     """Ejecutar un insight de cliente."""
     from core.hermes.tools import ToolResult
-    
+
     service = get_customer_finance_service()
     method_map = {
         "customer_invoice_summary": service.customer_invoice_summary,
@@ -114,7 +114,7 @@ async def execute_supplier_insight(
 ) -> Any:
     """Ejecutar un insight de proveedor."""
     from core.hermes.tools import ToolResult
-    
+
     service = get_supplier_finance_service()
     method_map = {
         "supplier_invoice_summary": service.supplier_invoice_summary,

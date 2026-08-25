@@ -418,7 +418,7 @@ class DolibarrClient:
                         "page": result.get("pagination", {}).get("page", page),
                         "limit": result.get("pagination", {}).get("limit", limit),
                         "pages": result.get("pagination", {}).get("pages", 0),
-                    }
+                    },
                 }
             return result.get("data", [])
         return result
@@ -584,7 +584,7 @@ class DolibarrClient:
                         "page": result.get("pagination", {}).get("page", page),
                         "limit": result.get("pagination", {}).get("limit", limit),
                         "pages": result.get("pagination", {}).get("pages", 0),
-                    }
+                    },
                 }
             return result.get("data", [])
         return result
@@ -680,7 +680,7 @@ class DolibarrClient:
                         "page": result.get("pagination", {}).get("page", page),
                         "limit": result.get("pagination", {}).get("limit", limit),
                         "pages": result.get("pagination", {}).get("pages", 0),
-                    }
+                    },
                 }
             return result.get("data", [])
         return result
@@ -712,6 +712,334 @@ class DolibarrClient:
 
     async def add_supplier_invoice_line(self, invoice_id: int, line_data: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", f"supplierinvoices/{invoice_id}/lines", json=line_data)
+
+    # =========================================================================
+    # PROPUESTAS COMERCIALES (PROPALS)
+    # =========================================================================
+
+    async def list_proposals(
+        self,
+        limit: int = 100,
+        page: int = 1,
+        status: int | None = None,
+        thirdparty_id: int | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        sortfield: str = "date",
+        sortorder: str = "DESC",
+    ) -> list[dict[str, Any]]:
+        """Listar propuestas comerciales (propals)."""
+        if page < 1:
+            page = 1
+        if limit < 1 or limit > 100:
+            limit = 100
+
+        params: dict[str, Any] = {
+            "limit": limit,
+            "page": page,
+            "sortfield": sortfield,
+            "sortorder": sortorder,
+        }
+        if status is not None:
+            params["status"] = status
+        if thirdparty_id is not None:
+            params["thirdparty_ids"] = str(thirdparty_id)
+        if date_from is not None:
+            params["date_from"] = int(datetime.combine(date_from, datetime.min.time()).timestamp())
+        if date_to is not None:
+            params["date_to"] = int(datetime.combine(date_to, datetime.max.time()).timestamp())
+
+        result = await self._request("GET", "propals", params=params)
+        return result.get("data", []) if isinstance(result, dict) else result
+
+    async def get_proposal(self, proposal_id: int) -> dict[str, Any]:
+        """Obtener propuesta por ID."""
+        return await self._request("GET", f"propals/{proposal_id}")
+
+    async def create_proposal(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Crear propuesta comercial."""
+        result: dict[str, Any] | int = await self._request("POST", "propals", json=data)
+        if isinstance(result, dict) and "data" in result:
+            return result["data"]
+        elif isinstance(result, int):
+            return await self.get_proposal(result)
+        return result
+
+    async def add_proposal_line(self, proposal_id: int, line_data: dict[str, Any]) -> dict[str, Any]:
+        """Añadir línea a propuesta."""
+        return await self._request("POST", f"propals/{proposal_id}/lines", json=line_data)
+
+    async def validate_proposal(self, proposal_id: int) -> dict[str, Any]:
+        """Validar propuesta (estado 0 → 1)."""
+        return await self._request("POST", f"propals/{proposal_id}/validate")
+
+    # =========================================================================
+    # FACTURAS CLIENTE (INVOICES) - V3
+    # =========================================================================
+
+    async def create_invoice(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Crear factura de cliente."""
+        result: dict[str, Any] | int = await self._request("POST", "invoices", json=data)
+        if isinstance(result, dict) and "data" in result:
+            return result["data"]
+        elif isinstance(result, int):
+            return await self.get_invoice(result)
+        return result
+
+    async def get_invoice(self, invoice_id: int) -> dict[str, Any]:
+        """Obtener factura de cliente por ID."""
+        return await self._request("GET", f"invoices/{invoice_id}")
+
+    async def add_invoice_line(self, invoice_id: int, line_data: dict[str, Any]) -> dict[str, Any]:
+        """Añadir línea a factura de cliente."""
+        return await self._request("POST", f"invoices/{invoice_id}/lines", json=line_data)
+
+    async def validate_invoice(self, invoice_id: int) -> dict[str, Any]:
+        """Validar factura (estado 0 → 1)."""
+        return await self._request("POST", f"invoices/{invoice_id}/validate")
+
+    async def cancel_invoice(self, invoice_id: int) -> dict[str, Any]:
+        """Anular factura (estado 1 → 3)."""
+        return await self._request("POST", f"invoices/{invoice_id}/cancel")
+
+    async def create_invoice_from_proposal(self, proposal_id: int, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Crear factura copiando datos de una propuesta validada."""
+        # Obtener propuesta
+        proposal = await self.get_proposal(proposal_id)
+        if not proposal:
+            raise DolibarrException(
+                message=f"Propuesta {proposal_id} no encontrada",
+                endpoint=f"propals/{proposal_id}",
+                status_code=404,
+            )
+        
+        # Verificar que la propuesta está validada (status=1)
+        if proposal.get("status", 0) != 1:
+            raise DolibarrException(
+                message="Solo se pueden facturar propuestas validadas (status=1)",
+                endpoint=f"propals/{proposal_id}",
+                status_code=400,
+            )
+
+        # Preparar datos de factura basados en propuesta
+        invoice_data = {
+            "fk_soc": proposal.get("fk_soc"),
+            "date": int(datetime.now().timestamp()),
+            "date_lim_reglement": proposal.get("date_valid", int((datetime.now() + timedelta(days=30)).timestamp())),
+            "cond_reglement_id": proposal.get("cond_reglement_id"),
+            "mode_reglement_id": proposal.get("mode_reglement_id"),
+            "note_private": proposal.get("note_private", ""),
+            "note_public": proposal.get("note_public", ""),
+            "fk_origin": proposal_id,
+            "origin_type": "propal",
+        }
+
+        # Aplicar overrides si se proporcionan
+        if overrides:
+            invoice_data.update(overrides)
+
+        # Crear factura
+        invoice = await self.create_invoice(invoice_data)
+        invoice_id = invoice.get("id")
+        if not invoice_id:
+            raise DolibarrException(
+                message="No se pudo crear la factura desde la propuesta",
+                endpoint="invoices",
+                status_code=500,
+            )
+
+        # Copiar líneas de la propuesta
+        proposal_lines = await self._request("GET", f"propals/{proposal_id}/lines")
+        lines = proposal_lines.get("data", []) if isinstance(proposal_lines, dict) else proposal_lines
+
+        for line in lines:
+            line_data = {
+                "label": line.get("label") or line.get("description"),
+                "qty": line.get("qty"),
+                "price_ht": line.get("price_ht"),
+                "tva_tx": line.get("tva_tx"),
+                "remise_percent": line.get("remise_percent", 0),
+                "fk_product": line.get("fk_product"),
+                "fk_origin_line": line.get("id"),
+                "origin_type": "propal",
+            }
+            await self.add_invoice_line(invoice_id, line_data)
+
+        # Retornar factura completa
+        return await self.get_invoice(invoice_id)
+
+    # =========================================================================
+    # FACTURAS PROVEEDOR (SUPPLIER INVOICES) - V3 (ya existían parcialmente)
+    # =========================================================================
+
+    # create_supplier_invoice, add_supplier_invoice_line, validate_supplier_invoice ya existen
+
+    # =========================================================================
+    # PEDIDOS (ORDERS) - V3
+    # =========================================================================
+
+    async def create_order(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Crear pedido de cliente."""
+        result: dict[str, Any] | int = await self._request("POST", "orders", json=data)
+        if isinstance(result, dict) and "data" in result:
+            return result["data"]
+        elif isinstance(result, int):
+            return await self.get_order(result)
+        return result
+
+    async def get_order(self, order_id: int) -> dict[str, Any]:
+        """Obtener pedido por ID."""
+        return await self._request("GET", f"orders/{order_id}")
+
+    async def add_order_line(self, order_id: int, line_data: dict[str, Any]) -> dict[str, Any]:
+        """Añadir línea a pedido."""
+        return await self._request("POST", f"orders/{order_id}/lines", json=line_data)
+
+    async def validate_order(self, order_id: int) -> dict[str, Any]:
+        """Validar pedido (estado 0 → 1)."""
+        return await self._request("POST", f"orders/{order_id}/validate")
+
+    # =========================================================================
+    # PAGOS / COBROS (PAYMENTS) - V3
+    # =========================================================================
+
+    async def create_payment(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Crear cobro (pago de cliente)."""
+        result: dict[str, Any] | int = await self._request("POST", "payments", json=data)
+        if isinstance(result, dict) and "data" in result:
+            return result["data"]
+        elif isinstance(result, int):
+            return await self.get_payment(result)
+        return result
+
+    async def get_payment(self, payment_id: int) -> dict[str, Any]:
+        """Obtener cobro por ID."""
+        return await self._request("GET", f"payments/{payment_id}")
+
+    async def create_supplier_payment(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Crear pago a proveedor."""
+        result: dict[str, Any] | int = await self._request("POST", "supplier_payments", json=data)
+        if isinstance(result, dict) and "data" in result:
+            return result["data"]
+        elif isinstance(result, int):
+            return await self.get_supplier_payment(result)
+        return result
+
+    async def get_supplier_payment(self, payment_id: int) -> dict[str, Any]:
+        """Obtener pago a proveedor por ID."""
+        return await self._request("GET", f"supplier_payments/{payment_id}")
+
+    # =========================================================================
+    # MOVIMIENTOS DE STOCK - V3
+    # =========================================================================
+
+    async def create_stock_movement(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Crear movimiento de stock.
+        
+        Tipos:
+        - 0: Entrada (receipt)
+        - 1: Salida (delivery)
+        - 2: Traslado (transfer)
+        - 3: Inventario (inventory adjustment)
+        """
+        result: dict[str, Any] | int = await self._request("POST", "stockmovements", json=data)
+        if isinstance(result, dict) and "data" in result:
+            return result["data"]
+        elif isinstance(result, int):
+            return await self.get_stock_movement(result)
+        return result
+
+    async def get_stock_movement(self, movement_id: int) -> dict[str, Any]:
+        """Obtener movimiento de stock por ID."""
+        return await self._request("GET", f"stockmovements/{movement_id}")
+
+    async def get_stock(self, product_id: int, warehouse_id: int) -> dict[str, Any]:
+        """Obtener stock actual de un producto en un almacén."""
+        return await self._request("GET", f"products/{product_id}/stock", params={"warehouse_id": warehouse_id})
+
+    # =========================================================================
+    # PROYECTOS - V3
+    # =========================================================================
+
+    async def create_project(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Crear proyecto."""
+        result: dict[str, Any] | int = await self._request("POST", "projects", json=data)
+        if isinstance(result, dict) and "data" in result:
+            return result["data"]
+        elif isinstance(result, int):
+            return await self.get_project(result)
+        return result
+
+    async def get_project(self, project_id: int) -> dict[str, Any]:
+        """Obtener proyecto por ID."""
+        return await self._request("GET", f"projects/{project_id}")
+
+    async def add_project_task(self, project_id: int, task_data: dict[str, Any]) -> dict[str, Any]:
+        """Añadir tarea a proyecto."""
+        return await self._request("POST", f"projects/{project_id}/tasks", json=task_data)
+
+    async def impute_hours(self, project_id: int, task_id: int, hours_data: dict[str, Any]) -> dict[str, Any]:
+        """Imputar horas a tarea de proyecto."""
+        return await self._request("POST", f"projects/{project_id}/tasks/{task_id}/imputations", json=hours_data)
+
+    # =========================================================================
+    # BC3 (CONSTRUCCIÓN) - V3
+    # =========================================================================
+
+    async def import_bc3(self, file_data: bytes, project_name: str) -> dict[str, Any]:
+        """Importar archivo BC3 y crear catálogo."""
+        # BC3 se importa como documento y luego se procesa
+        # Por simplicidad, subimos como documento y retornamos info para procesamiento posterior
+        url = f"/api/index.php/documents/upload"
+        
+        files = {"file": (f"{project_name}.bc3", file_data, "application/xml")}
+        headers = {
+            "DOLAPIKEY": self.api_key,
+            "Accept": "application/json",
+        }
+        
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                headers=headers,
+                timeout=self.timeout,
+            ) as client:
+                response = await client.post(url, files=files)
+            
+            if response.status_code >= 400:
+                raise DolibarrException(
+                    message=f"Error subiendo BC3: {response.text}",
+                    endpoint=url,
+                    status_code=response.status_code,
+                )
+            
+            result = response.json()
+            doc_id = result.get("data", {}).get("id") if isinstance(result.get("data"), dict) else result.get("id")
+            
+            return {
+                "document_id": doc_id,
+                "project_name": project_name,
+                "status": "uploaded",
+                "message": "BC3 subido. Procesar con procesador BC3 externo o script.",
+            }
+            
+        except httpx.TimeoutException:
+            raise DolibarrException(message="Timeout importando BC3", endpoint=url, status_code=504)
+        except httpx.RequestError as e:
+            raise DolibarrException(message=f"Error importando BC3: {e}", endpoint=url, status_code=502)
+
+    async def export_bc3(self, project_id: int) -> bytes:
+        """Exportar proyecto/presupuesto a formato BC3.
+        
+        Nota: La exportación BC3 nativa puede no estar disponible en Dolibarr API estándar.
+        Requiere implementación personalizada o módulo específico.
+        """
+        # Por ahora, retornar error indicando que requiere implementación
+        raise DolibarrException(
+            message="Exportación BC3 requiere módulo específico o implementación personalizada",
+            endpoint=f"projects/{project_id}/export_bc3",
+            status_code=501,
+        )
 
     # =========================================================================
     # DOCUMENTOS ADJUNTOS

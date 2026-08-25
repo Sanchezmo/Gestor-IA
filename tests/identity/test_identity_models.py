@@ -324,6 +324,13 @@ class TestGestorPermissions:
             "content.generate",
             "admin",
             "product.read",
+            "thirdparty.read",
+            "customer_invoice.read",
+            "supplier_invoice.read",
+            "thirdparty.create",
+            "product.create",
+            "service.create",
+            "proposal.create",
         }
         assert GestorPermissions.ALL == expected
 

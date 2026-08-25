@@ -11,6 +11,7 @@ Estrategia: parser-first (determinista primero, fallback a Ollama si no match)
 """
 
 from abc import ABC, abstractmethod
+import re
 from typing import Any
 
 from core.hermes.ai import AIProvider
@@ -26,6 +27,12 @@ from core.hermes.query.models import (
     StructuredIntent,
     ThirdpartyAction,
     ThirdpartyPartyType,
+    CommandAction,
+    CreateThirdpartyArgs,
+    CreateProductArgs,
+    CreateServiceArgs,
+    CreateProposalArgs,
+    ProposalLineArgs,
 )
 
 # =========================================================================
@@ -104,8 +111,19 @@ class DeterministicIntentInterpreter(IntentInterpreter):
                 error_message="Texto vacío",
             )
 
-        # Usar parser legacy
-        legacy_intent = self._parser.parse(text.strip())
+        text = text.strip()
+
+        # 1. Primero intentar detectar comandos de escritura (Command Layer V1)
+        command_intent = self._parse_command(text)
+        if command_intent:
+            return IntentInterpretation(
+                status=InterpretationStatus.MATCHED,
+                intent=command_intent,
+                interpreter_used=self.name,
+            )
+
+        # 2. Usar parser legacy para queries de lectura
+        legacy_intent = self._parser.parse(text)
 
         if legacy_intent is None:
             return IntentInterpretation(
@@ -127,6 +145,143 @@ class DeterministicIntentInterpreter(IntentInterpreter):
                 interpreter_used=self.name,
                 error_message=f"Error convirtiendo intent: {e}",
             )
+
+    def _parse_command(self, text: str) -> StructuredIntent | None:
+        """Parsear comandos de escritura (crear terceros, productos, servicios)."""
+        import re
+
+        text_lower = text.lower()
+
+        # CREATE THIRDPARTY patterns
+        # "crea el cliente ACME CIF B12345678"
+        # "crea el proveedor Pinturas Norte SL"
+        # "crea cliente ACME cif B12345678"
+        thirdparty_patterns = [
+            # "crea el cliente ACME CIF B12345678"
+            (r"^crea\s+el\s+cliente\s+(.+?)\s+(?:cif|nif)\s+(\S+)$", True, False),
+            # "crea el proveedor Pinturas Norte"
+            (r"^crea\s+el\s+proveedor\s+(.+?)(?:\s+(?:cif|nif)\s+(\S+))?$", False, True),
+            # "crea cliente ACME CIF B12345678"
+            (r"^crea\s+cliente\s+(.+?)\s+(?:cif|nif)\s+(\S+)$", True, False),
+            # "crea proveedor Pinturas Norte"
+            (r"^crea\s+proveedor\s+(.+?)(?:\s+(?:cif|nif)\s+(\S+))?$", False, True),
+        ]
+
+        for pattern, is_customer, is_supplier in thirdparty_patterns:
+            match = re.match(pattern, text_lower, re.IGNORECASE)
+            if match:
+                groups = match.groups()
+                name = groups[0].strip()
+                vat_number = groups[1].strip().upper() if len(groups) > 1 and groups[1] else None
+
+                # Determine customer/supplier from pattern
+                if not is_customer and not is_supplier:
+                    # Check explicit words
+                    if "cliente" in text_lower:
+                        is_customer = True
+                    elif "proveedor" in text_lower:
+                        is_supplier = True
+                    else:
+                        is_customer = True  # default
+
+                args = CreateThirdpartyArgs(
+                    name=name,
+                    vat_number=vat_number,
+                    is_customer=is_customer,
+                    is_supplier=is_supplier,
+                )
+                return StructuredIntent(
+                    action=CommandAction.CREATE_THIRDPARTY,
+                    arguments=args,
+                    raw_text=text,
+                )
+
+        # CREATE PRODUCT patterns
+        # "crea un producto llamado Pintura plástica blanca"
+        # "crea producto Pintura plástica blanca ref PINT-001"
+        product_patterns = [
+            (r"^crea\s+un\s+producto\s+llamado\s+(.+?)(?:\s+ref\s+(\S+))?$", None),
+            (r"^crea\s+producto\s+(.+?)(?:\s+ref\s+(\S+))?$", None),
+        ]
+
+        for pattern, _ in product_patterns:
+            match = re.match(pattern, text_lower, re.IGNORECASE)
+            if match:
+                groups = match.groups()
+                label = groups[0].strip()
+                ref = groups[1].strip().upper() if len(groups) > 1 and groups[1] else label[:20].upper()
+
+                args = CreateProductArgs(
+                    ref=ref,
+                    label=label,
+                )
+                return StructuredIntent(
+                    action=CommandAction.CREATE_PRODUCT,
+                    arguments=args,
+                    raw_text=text,
+                )
+
+        # CREATE SERVICE patterns
+        # "crea un servicio llamado Mano de obra pintor"
+        # "crea servicio Mano de obra pintor ref SERV-001"
+        service_patterns = [
+            (r"^crea\s+un\s+servicio\s+llamado\s+(.+?)(?:\s+ref\s+(\S+))?$", None),
+            (r"^crea\s+servicio\s+(.+?)(?:\s+ref\s+(\S+))?$", None),
+        ]
+
+        for pattern, _ in service_patterns:
+            match = re.match(pattern, text_lower, re.IGNORECASE)
+            if match:
+                groups = match.groups()
+                label = groups[0].strip()
+                ref = groups[1].strip().upper() if len(groups) > 1 and groups[1] else label[:20].upper()
+
+                args = CreateServiceArgs(
+                    ref=ref,
+                    label=label,
+                )
+                return StructuredIntent(
+                    action=CommandAction.CREATE_SERVICE,
+                    arguments=args,
+                    raw_text=text,
+                )
+
+        # CREATE PROPOSAL patterns (Command Layer V2)
+        # "prepárame un presupuesto para ACME con 2 líneas: Pintura 10 uds a 15€ y Mano de obra 20 hrs a 25€"
+        # "crea un presupuesto para ACME: Pintura 10 x 15€, Mano de obra 20 x 25€"
+        proposal_patterns = [
+            # "prepárame un presupuesto para ACME con 2 líneas: ..."
+            (r"^prep[aá]rame\s+un\s+presupuesto\s+para\s+(.+?)\s+con\s+\d+\s+l[íi]neas?\s*:\s*(.+)$", None),
+            # "crea un presupuesto para ACME: desc cant precio, desc cant precio"
+            (r"^crea\s+un\s+presupuesto\s+para\s+(.+?)\s*:\s*(.+)$", None),
+            # "presupuesto para ACME: ..."
+            (r"^presupuesto\s+para\s+(.+?)\s*:\s*(.+)$", None),
+        ]
+
+        for pattern, _ in proposal_patterns:
+            match = re.match(pattern, text_lower, re.IGNORECASE)
+            if match:
+                groups = match.groups()
+                cliente = groups[0].strip()
+                lineas_text = groups[1].strip()
+
+                # Parse lines: "Pintura 10 uds a 15€ y Mano de obra 20 hrs a 25€"
+                # or "Pintura 10 x 15€, Mano de obra 20 x 25€"
+                lineas = self._parse_proposal_lines(lineas_text)
+                if not lineas:
+                    continue
+
+                args = CreateProposalArgs(
+                    cliente=cliente,
+                    lineas=lineas,
+                )
+                return StructuredIntent(
+                    action=CommandAction.CREATE_PROPOSAL,
+                    arguments=args,
+                    raw_text=text,
+                )
+
+        return None
 
     def _legacy_to_structured(self, legacy_intent: Any) -> StructuredIntent:
         """Convertir legacy ThirdpartyIntent a StructuredIntent."""
@@ -173,6 +328,46 @@ class DeterministicIntentInterpreter(IntentInterpreter):
             raise ValueError(f"Tipo de intent legacy no soportado: {intent_type}")
 
         return StructuredIntent(action=action, arguments=arguments, raw_text=None)
+
+    def _parse_proposal_lines(self, text: str) -> list[ProposalLineArgs] | None:
+        """Parsear líneas de propuesta: 'Pintura 10 uds a 15€ y Mano de obra 20 hrs a 25€'"""
+        # Split by separators: y, e, ,, ;
+        parts = re.split(r"\s+(?:y|e|,|;)\s+", text)
+        lineas = []
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            # Pattern: "Descripción CANT x PRECIO" or "Descripción CANT a PRECIO"
+            match = re.match(
+                r"^(.+?)\s+(\d+(?:\.\d+)?)\s*(?:uds?|hrs?|horas?|unidades?)?\s*(?:a|x|por)\s*([\d.,]+)\s*€?$",
+                part,
+                re.IGNORECASE,
+            )
+
+            if not match:
+                # Try simpler: "Descripción CANT PRECIO"
+                match = re.match(r"^(.+?)\s+(\d+(?:\.\d+)?)\s+([\d.,]+)\s*€?$", part)
+
+            if match:
+                descripcion = match.group(1).strip()
+                cantidad = float(match.group(2))
+                precio = float(match.group(3).replace(",", "."))
+
+                lineas.append(
+                    ProposalLineArgs(
+                        descripcion=descripcion,
+                        cantidad=cantidad,
+                        precio_unitario=precio,
+                    )
+                )
+            else:
+                # Cannot parse this line
+                return None
+
+        return lineas if lineas else None
 
     async def aclose(self) -> None:
         """No hay recursos que limpiar."""

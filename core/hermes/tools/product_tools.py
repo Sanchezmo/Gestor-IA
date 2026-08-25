@@ -204,7 +204,11 @@ class ListProductsTool(Tool):
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
                     "page": {"type": "integer", "minimum": 1, "default": 1},
                     "product_type": {"type": "string", "enum": ["PRODUCT", "SERVICE"]},
-                    "status": {"type": "integer", "minimum": 0, "description": "Filtrar por status (0=borrador, 1=activo, etc.)"},
+                    "status": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Filtrar por status (0=borrador, 1=activo, etc.)",
+                    },
                     "sort_field": {
                         "type": "string",
                         "enum": sorted(ALLOWED_PRODUCT_SORT_FIELDS),
@@ -244,9 +248,7 @@ class ListProductsTool(Tool):
 
                 # Transformar a resumen
                 currency = getattr(company_context, "currency", "EUR") or "EUR"
-                products = [
-                    dolibarr_to_product_summary(p, currency=currency) for p in raw_products
-                ]
+                products = [dolibarr_to_product_summary(p, currency=currency) for p in raw_products]
 
                 return ToolResult.ok(
                     data={
@@ -263,7 +265,9 @@ class ListProductsTool(Tool):
                                 "currency": p.currency,
                                 "stock_reel": str(p.stock_reel) if p.stock_reel is not None else None,
                                 "desiredstock": str(p.desiredstock) if p.desiredstock is not None else None,
-                                "seuil_stock_alerte": str(p.seuil_stock_alerte) if p.seuil_stock_alerte is not None else None,
+                                "seuil_stock_alerte": str(p.seuil_stock_alerte)
+                                if p.seuil_stock_alerte is not None
+                                else None,
                                 "default_warehouse": p.default_warehouse,
                                 "barcode": p.barcode,
                             }
@@ -368,9 +372,7 @@ class SearchProductsTool(Tool):
 
                 # Transformar a resumen
                 currency = getattr(company_context, "currency", "EUR") or "EUR"
-                products = [
-                    dolibarr_to_product_summary(p, currency=currency) for p in raw_products
-                ]
+                products = [dolibarr_to_product_summary(p, currency=currency) for p in raw_products]
 
                 return ToolResult.ok(
                     data={
@@ -387,7 +389,9 @@ class SearchProductsTool(Tool):
                                 "currency": p.currency,
                                 "stock_reel": str(p.stock_reel) if p.stock_reel is not None else None,
                                 "desiredstock": str(p.desiredstock) if p.desiredstock is not None else None,
-                                "seuil_stock_alerte": str(p.seuil_stock_alerte) if p.seuil_stock_alerte is not None else None,
+                                "seuil_stock_alerte": str(p.seuil_stock_alerte)
+                                if p.seuil_stock_alerte is not None
+                                else None,
                                 "default_warehouse": p.default_warehouse,
                                 "barcode": p.barcode,
                             }
@@ -497,7 +501,9 @@ class GetProductTool(Tool):
                             "currency": product.currency,
                             "stock_reel": str(product.stock_reel) if product.stock_reel is not None else None,
                             "desiredstock": str(product.desiredstock) if product.desiredstock is not None else None,
-                            "seuil_stock_alerte": str(product.seuil_stock_alerte) if product.seuil_stock_alerte is not None else None,
+                            "seuil_stock_alerte": str(product.seuil_stock_alerte)
+                            if product.seuil_stock_alerte is not None
+                            else None,
                             "default_warehouse": product.default_warehouse,
                             "weight": str(product.weight) if product.weight is not None else None,
                             "weight_units": product.weight_units,

@@ -77,10 +77,7 @@ class CustomerInvoiceSummaryArgs(FinancialPeriodArgs):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: str | None = Field(
-        default=None,
-        description="Filtrar por estado: draft, validated, paid, cancelled"
-    )
+    status: str | None = Field(default=None, description="Filtrar por estado: draft, validated, paid, cancelled")
     thirdparty_id: int | None = Field(default=None, gt=0)
 
 
@@ -89,10 +86,7 @@ class CustomerOutstandingSummaryArgs(FinancialPeriodArgs):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: str | None = Field(
-        default=None,
-        description="Filtrar por estado: draft, validated, paid, cancelled"
-    )
+    status: str | None = Field(default=None, description="Filtrar por estado: draft, validated, paid, cancelled")
 
 
 class CustomerOutstandingByThirdpartyArgs(FinancialPeriodArgs):
@@ -100,10 +94,7 @@ class CustomerOutstandingByThirdpartyArgs(FinancialPeriodArgs):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: str | None = Field(
-        default=None,
-        description="Filtrar por estado: draft, validated, paid, cancelled"
-    )
+    status: str | None = Field(default=None, description="Filtrar por estado: draft, validated, paid, cancelled")
     limit: int = Field(default=10, ge=1, le=100)
 
 
@@ -113,10 +104,7 @@ class CustomerInvoiceSummaryByThirdpartyArgs(FinancialPeriodArgs):
     model_config = ConfigDict(extra="forbid")
 
     thirdparty_id: int = Field(..., gt=0)
-    status: str | None = Field(
-        default=None,
-        description="Filtrar por estado: draft, validated, paid, cancelled"
-    )
+    status: str | None = Field(default=None, description="Filtrar por estado: draft, validated, paid, cancelled")
 
 
 class SupplierInvoiceSummaryArgs(FinancialPeriodArgs):
@@ -124,10 +112,7 @@ class SupplierInvoiceSummaryArgs(FinancialPeriodArgs):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: str | None = Field(
-        default=None,
-        description="Filtrar por estado: draft, validated, paid, cancelled"
-    )
+    status: str | None = Field(default=None, description="Filtrar por estado: draft, validated, paid, cancelled")
     thirdparty_id: int | None = Field(default=None, gt=0)
 
 
@@ -136,10 +121,7 @@ class SupplierOutstandingSummaryArgs(FinancialPeriodArgs):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: str | None = Field(
-        default=None,
-        description="Filtrar por estado: draft, validated, paid, cancelled"
-    )
+    status: str | None = Field(default=None, description="Filtrar por estado: draft, validated, paid, cancelled")
 
 
 class SupplierOutstandingByThirdpartyArgs(FinancialPeriodArgs):
@@ -147,10 +129,7 @@ class SupplierOutstandingByThirdpartyArgs(FinancialPeriodArgs):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: str | None = Field(
-        default=None,
-        description="Filtrar por estado: draft, validated, paid, cancelled"
-    )
+    status: str | None = Field(default=None, description="Filtrar por estado: draft, validated, paid, cancelled")
     limit: int = Field(default=10, ge=1, le=100)
 
 
@@ -160,10 +139,7 @@ class SupplierInvoiceSummaryByThirdpartyArgs(FinancialPeriodArgs):
     model_config = ConfigDict(extra="forbid")
 
     thirdparty_id: int = Field(..., gt=0)
-    status: str | None = Field(
-        default=None,
-        description="Filtrar por estado: draft, validated, paid, cancelled"
-    )
+    status: str | None = Field(default=None, description="Filtrar por estado: draft, validated, paid, cancelled")
 
 
 # =========================================================================
@@ -176,10 +152,7 @@ class FinancialSummaryResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    period: dict[str, date | str] = Field(
-        default_factory=dict,
-        description="Período consultado: from, to"
-    )
+    period: dict[str, date | str] = Field(default_factory=dict, description="Período consultado: from, to")
     invoice_count: int = Field(default=0, description="Número de facturas")
     subtotal: Decimal = Field(default=Decimal("0"), description="Base imponible total")
     tax: Decimal = Field(default=Decimal("0"), description="Impuestos totales")
@@ -425,8 +398,7 @@ def format_supplier_outstanding_summary_for_telegram(result: SupplierOutstanding
 
 
 def format_outstanding_by_thirdparty_for_telegram(
-    result: CustomerOutstandingByThirdpartyResult | SupplierOutstandingByThirdpartyResult,
-    party_label: str
+    result: CustomerOutstandingByThirdpartyResult | SupplierOutstandingByThirdpartyResult, party_label: str
 ) -> str:
     """Formatear ranking de terceros por importe pendiente para Telegram."""
     if not result.items:

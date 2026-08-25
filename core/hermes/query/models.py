@@ -9,7 +9,7 @@ No se permite extra="allow" - solo campos explícitos.
 
 from datetime import date
 from enum import StrEnum
-from typing import Any, cast
+from typing import Any, cast, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -128,6 +128,316 @@ class ProductTypeFilter(StrEnum):
     ALL = "all"
     PRODUCT = "product"
     SERVICE = "service"
+
+
+# =========================================================================
+# ENUMS PARA COMANDOS (COMMAND LAYER V1)
+# =========================================================================
+
+
+class CommandAction(StrEnum):
+    """Acciones de escritura soportadas (Command Layer V1 + V2 + V3)."""
+
+    CREATE_THIRDPARTY = "create_thirdparty"
+    CREATE_PRODUCT = "create_product"
+    CREATE_SERVICE = "create_service"
+    CREATE_PROPOSAL = "create_proposal"
+    # V3
+    CREATE_INVOICE = "create_invoice"
+    CREATE_INVOICE_FROM_PROPOSAL = "create_invoice_from_proposal"
+    CREATE_SUPPLIER_INVOICE = "create_supplier_invoice"
+    CREATE_ORDER = "create_order"
+    CREATE_SUPPLIER_ORDER = "create_supplier_order"
+    CREATE_PAYMENT = "create_payment"
+    CREATE_COLLECTION = "create_collection"
+    CREATE_STOCK_MOVEMENT = "create_stock_movement"
+    CREATE_PROJECT = "create_project"
+    ADD_PROJECT_TASK = "add_project_task"
+    IMPORT_BC3 = "import_bc3"
+    EXPORT_BC3 = "export_bc3"
+
+
+class CreateThirdpartyArgs(BaseModel):
+    """Argumentos para create_thirdparty."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=200)
+    vat_number: str | None = Field(default=None, max_length=50)
+    email: str | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=50)
+    address: str | None = Field(default=None, max_length=255)
+    town: str | None = Field(default=None, max_length=100)
+    zip: str | None = Field(default=None, max_length=20)
+    is_customer: bool = False
+    is_supplier: bool = False
+
+    @model_validator(mode="after")
+    def check_at_least_one_type(self) -> CreateThirdpartyArgs:
+        if not self.is_customer and not self.is_supplier:
+            raise ValueError("Debe ser al menos cliente o proveedor")
+        return self
+
+
+class CreateProductArgs(BaseModel):
+    """Argumentos para create_product (type=0)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str = Field(..., min_length=1, max_length=50)
+    label: str = Field(..., min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=5000)
+    price: float | None = Field(default=None, ge=0)
+    vat_rate: float | None = Field(default=None, ge=0, le=100)
+
+
+class CreateServiceArgs(BaseModel):
+    """Argumentos para create_service (type=1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str = Field(..., min_length=1, max_length=50)
+    label: str = Field(..., min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=5000)
+    price: float | None = Field(default=None, ge=0)
+    vat_rate: float | None = Field(default=None, ge=0, le=100)
+
+
+class ProposalLineArgs(BaseModel):
+    """Argumentos para línea de propuesta/presupuesto."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    descripcion: str = Field(..., min_length=1, max_length=500)
+    cantidad: float = Field(..., gt=0)
+    precio_unitario: float = Field(..., ge=0)
+    iva_porcentaje: float = Field(default=21.0, ge=0, le=100)
+    descuento_porcentaje: float = Field(default=0.0, ge=0, le=100)
+    producto_ref: str | None = Field(default=None, max_length=50)
+    es_servicio: bool = False
+
+
+class CreateProposalArgs(BaseModel):
+    """Argumentos para create_proposal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cliente: str = Field(..., min_length=1, max_length=200)
+    fecha: date | None = None
+    validez_dias: int | None = Field(default=None, ge=1)
+    lineas: list[ProposalLineArgs] = Field(..., min_length=1)
+    serie: str | None = Field(default=None, max_length=50)
+    forma_pago: str | None = Field(default=None, max_length=100)
+    proyecto: str | None = Field(default=None, max_length=200)
+    notas_privadas: str | None = Field(default=None, max_length=2000)
+    notas_publicas: str | None = Field(default=None, max_length=2000)
+
+
+# =========================================================================
+# V3 MODELS (Command Layer V3)
+# =========================================================================
+
+
+class InvoiceLineArgs(BaseModel):
+    """Argumentos para línea de factura."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    descripcion: str = Field(..., min_length=1, max_length=500)
+    cantidad: float = Field(..., gt=0)
+    precio_unitario: float = Field(..., ge=0)
+    iva_porcentaje: float = Field(default=21.0, ge=0, le=100)
+    descuento_porcentaje: float = Field(default=0.0, ge=0, le=100)
+    producto_ref: str | None = Field(default=None, max_length=50)
+    retencion_porcentaje: float = Field(default=0.0, ge=0, le=100)
+
+
+class CreateInvoiceArgs(BaseModel):
+    """Argumentos para create_invoice (factura directa)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cliente: str = Field(..., min_length=1, max_length=200)
+    fecha: date | None = None
+    fecha_vencimiento: date | None = None
+    lineas: list[InvoiceLineArgs] = Field(..., min_length=1)
+    forma_pago: str | None = Field(default=None, max_length=100)
+    serie: str | None = Field(default=None, max_length=50)
+    retencion_porcentaje: float = Field(default=0.0, ge=0, le=100)
+    proyecto: str | None = Field(default=None, max_length=200)
+    notas_privadas: str | None = Field(default=None, max_length=2000)
+    notas_publicas: str | None = Field(default=None, max_length=2000)
+
+
+class CreateInvoiceFromProposalArgs(BaseModel):
+    """Argumentos para create_invoice_from_proposal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    proposal_id: int = Field(..., gt=0)
+    fecha: date | None = None
+    fecha_vencimiento: date | None = None
+    forma_pago: str | None = Field(default=None, max_length=100)
+    serie: str | None = Field(default=None, max_length=50)
+    notas_privadas: str | None = Field(default=None, max_length=2000)
+    notas_publicas: str | None = Field(default=None, max_length=2000)
+
+
+class CreateSupplierInvoiceArgs(BaseModel):
+    """Argumentos para create_supplier_invoice."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    proveedor: str = Field(..., min_length=1, max_length=200)
+    fecha: date | None = None
+    fecha_vencimiento: date | None = None
+    lineas: list[InvoiceLineArgs] = Field(..., min_length=1)
+    forma_pago: str | None = Field(default=None, max_length=100)
+    serie: str | None = Field(default=None, max_length=50)
+    proyecto: str | None = Field(default=None, max_length=200)
+    notas: str | None = Field(default=None, max_length=2000)
+
+
+class OrderLineArgs(BaseModel):
+    """Argumentos para línea de pedido."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    descripcion: str = Field(..., min_length=1, max_length=500)
+    cantidad: float = Field(..., gt=0)
+    precio_unitario: float = Field(..., ge=0)
+    iva_porcentaje: float = Field(default=21.0, ge=0, le=100)
+    descuento_porcentaje: float = Field(default=0.0, ge=0, le=100)
+    producto_ref: str | None = Field(default=None, max_length=50)
+
+
+class CreateOrderArgs(BaseModel):
+    """Argumentos para create_order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cliente: str = Field(..., min_length=1, max_length=200)
+    fecha: date | None = None
+    lineas: list = Field(..., min_length=1)
+    forma_pago: str | None = Field(default=None, max_length=100)
+    serie: str | None = Field(default=None, max_length=50)
+    almacen: str | None = Field(default=None, max_length=50)
+    proyecto: str | None = Field(default=None, max_length=200)
+    notas: str | None = Field(default=None, max_length=2000)
+
+
+class CreateSupplierOrderArgs(BaseModel):
+    """Argumentos para create_supplier_order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    proveedor: str = Field(..., min_length=1, max_length=200)
+    fecha: date | None = None
+    lineas: list = Field(..., min_length=1)
+    forma_pago: str | None = Field(default=None, max_length=100)
+    serie: str | None = Field(default=None, max_length=50)
+    almacen: str | None = Field(default=None, max_length=50)
+    proyecto: str | None = Field(default=None, max_length=200)
+    notas: str | None = Field(default=None, max_length=2000)
+
+
+class CreatePaymentArgs(BaseModel):
+    """Argumentos para create_payment (cobro de cliente)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cliente: str = Field(..., min_length=1, max_length=200)
+    importe: float = Field(..., gt=0)
+    fecha: date | None = None
+    forma_pago: str | None = Field(default=None, max_length=100)
+    cuenta_bancaria: str | None = Field(default=None, max_length=100)
+    facturas: list[int] | None = None
+    auto_allocate: bool = True
+
+
+class CreateCollectionArgs(BaseModel):
+    """Argumentos para create_collection (pago a proveedor)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    proveedor: str = Field(..., min_length=1, max_length=200)
+    importe: float = Field(..., gt=0)
+    fecha: date | None = None
+    forma_pago: str | None = Field(default=None, max_length=100)
+    cuenta_bancaria: str | None = Field(default=None, max_length=100)
+    facturas: list[int] | None = None
+    auto_allocate: bool = True
+
+
+class StockLineArgs(BaseModel):
+    """Argumentos para línea de movimiento de stock."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    producto_ref: str = Field(..., min_length=1, max_length=50)
+    cantidad: float = Field(..., gt=0)
+    precio_unitario: float | None = Field(default=None, ge=0)
+    lote: str | None = Field(default=None, max_length=50)
+
+
+class CreateStockMovementArgs(BaseModel):
+    """Argumentos para create_stock_movement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tipo: Literal["entrada", "salida", "traslado", "inventario"]
+    almacen_origen: str = Field(..., min_length=1, max_length=100)
+    almacen_destino: str | None = Field(default=None, max_length=100)
+    fecha: date | None = None
+    lineas: list = Field(..., min_length=1)
+    referencia: str | None = Field(default=None, max_length=100)
+    notas: str | None = Field(default=None, max_length=2000)
+
+
+class CreateProjectArgs(BaseModel):
+    """Argumentos para create_project."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    nombre: str = Field(..., min_length=1, max_length=200)
+    descripcion: str | None = Field(default=None, max_length=2000)
+    cliente: str | None = Field(default=None, max_length=200)
+    fecha_inicio: date | None = None
+    fecha_fin: date | None = None
+    presupuesto: float | None = Field(default=None, ge=0)
+    estado: Literal["planificacion", "en_curso", "finalizado"] = "planificacion"
+
+
+class AddProjectTaskArgs(BaseModel):
+    """Argumentos para add_project_task."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: int = Field(..., gt=0)
+    nombre: str = Field(..., min_length=1, max_length=200)
+    descripcion: str | None = Field(default=None, max_length=2000)
+    fecha_inicio: date | None = None
+    fecha_fin: date | None = None
+    horas_estimadas: float | None = Field(default=None, ge=0)
+    coste_estimado: float | None = Field(default=None, ge=0)
+
+
+class ImportBC3Args(BaseModel):
+    """Argumentos para import_bc3."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_data: bytes
+    nombre_proyecto: str = Field(..., min_length=1, max_length=200)
+    vincular_productos: bool = False
+
+
+class ExportBC3Args(BaseModel):
+    """Argumentos para export_bc3."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: int = Field(..., gt=0)
 
 
 class ProductSortField(StrEnum):
@@ -385,6 +695,31 @@ from core.hermes.insights.models import (
 )
 
 # =========================================================================
+# COMMAND ARGS UNION (Command Layer V1)
+# =========================================================================
+
+
+CommandArgs = (
+    CreateThirdpartyArgs
+    | CreateProductArgs
+    | CreateServiceArgs
+    | CreateProposalArgs
+    | CreateInvoiceArgs
+    | CreateInvoiceFromProposalArgs
+    | CreateSupplierInvoiceArgs
+    | CreateOrderArgs
+    | CreateSupplierOrderArgs
+    | CreatePaymentArgs
+    | CreateCollectionArgs
+    | CreateStockMovementArgs
+    | CreateProjectArgs
+    | AddProjectTaskArgs
+    | ImportBC3Args
+    | ExportBC3Args
+)
+
+
+# =========================================================================
 # UNION DE ARGUMENTOS
 # =========================================================================
 
@@ -420,8 +755,8 @@ class StructuredIntent(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    action: ThirdpartyAction | InvoiceAction | InsightAction | ProductAction
-    arguments: ThirdpartyArgs | InvoiceArgs | InsightArgs | ProductArgs
+    action: ThirdpartyAction | InvoiceAction | InsightAction | ProductAction | CommandAction
+    arguments: ThirdpartyArgs | InvoiceArgs | InsightArgs | ProductArgs | CommandArgs
 
     # Metadatos opcionales
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -474,6 +809,76 @@ class StructuredIntent(BaseModel):
         if action == InsightAction.CUSTOMER_INVOICE_SUMMARY_BY_THIRDPARTY:
             if "thirdparty_id" not in v:
                 raise ValueError("CUSTOMER_INVOICE_SUMMARY_BY_THIRDPARTY requiere thirdparty_id")
+
+        # Validación cruzada básica - Command Layer V1
+        if action == CommandAction.CREATE_THIRDPARTY:
+            if "name" not in v or not v["name"]:
+                raise ValueError("CREATE_THIRDPARTY requiere name")
+        elif action == CommandAction.CREATE_PRODUCT:
+            if "ref" not in v or not v["ref"]:
+                raise ValueError("CREATE_PRODUCT requiere ref")
+            if "label" not in v or not v["label"]:
+                raise ValueError("CREATE_PRODUCT requiere label")
+        elif action == CommandAction.CREATE_SERVICE:
+            if "ref" not in v or not v["ref"]:
+                raise ValueError("CREATE_SERVICE requiere ref")
+            if "label" not in v or not v["label"]:
+                raise ValueError("CREATE_SERVICE requiere label")
+
+        # Validación cruzada básica - Command Layer V2
+        if action == CommandAction.CREATE_PROPOSAL:
+            if "cliente" not in v or not v["cliente"]:
+                raise ValueError("CREATE_PROPOSAL requiere cliente")
+            if "lineas" not in v or not v["lineas"]:
+                raise ValueError("CREATE_PROPOSAL requiere lineas")
+
+        # Validación cruzada básica - Command Layer V3
+        if action == CommandAction.CREATE_INVOICE:
+            if "cliente" not in v or not v["cliente"]:
+                raise ValueError("CREATE_INVOICE requiere cliente")
+            if "lineas" not in v or not v["lineas"]:
+                raise ValueError("CREATE_INVOICE requiere lineas")
+        elif action == CommandAction.CREATE_INVOICE_FROM_PROPOSAL:
+            if "proposal_id" not in v:
+                raise ValueError("CREATE_INVOICE_FROM_PROPOSAL requiere proposal_id")
+        elif action == CommandAction.CREATE_SUPPLIER_INVOICE:
+            if "proveedor" not in v or not v["proveedor"]:
+                raise ValueError("CREATE_SUPPLIER_INVOICE requiere proveedor")
+            if "lineas" not in v or not v["lineas"]:
+                raise ValueError("CREATE_SUPPLIER_INVOICE requiere lineas")
+        elif action in (CommandAction.CREATE_ORDER, CommandAction.CREATE_SUPPLIER_ORDER):
+            if "cliente" not in v and "proveedor" not in v:
+                raise ValueError("CREATE_ORDER requiere cliente o proveedor")
+            if "lineas" not in v or not v["lineas"]:
+                raise ValueError("CREATE_ORDER requiere lineas")
+        elif action in (CommandAction.CREATE_PAYMENT, CommandAction.CREATE_COLLECTION):
+            if "cliente" not in v and "proveedor" not in v:
+                raise ValueError("CREATE_PAYMENT/COLLECTION requiere cliente o proveedor")
+            if "importe" not in v or v["importe"] <= 0:
+                raise ValueError("CREATE_PAYMENT/COLLECTION requiere importe > 0")
+        elif action == CommandAction.CREATE_STOCK_MOVEMENT:
+            if "tipo" not in v:
+                raise ValueError("CREATE_STOCK_MOVEMENT requiere tipo")
+            if "almacen_origen" not in v:
+                raise ValueError("CREATE_STOCK_MOVEMENT requiere almacen_origen")
+            if "lineas" not in v or not v["lineas"]:
+                raise ValueError("CREATE_STOCK_MOVEMENT requiere lineas")
+        elif action == CommandAction.CREATE_PROJECT:
+            if "nombre" not in v or not v["nombre"]:
+                raise ValueError("CREATE_PROJECT requiere nombre")
+        elif action == CommandAction.ADD_PROJECT_TASK:
+            if "project_id" not in v:
+                raise ValueError("ADD_PROJECT_TASK requiere project_id")
+            if "nombre" not in v or not v["nombre"]:
+                raise ValueError("ADD_PROJECT_TASK requiere nombre")
+        elif action == CommandAction.IMPORT_BC3:
+            if "file_data" not in v:
+                raise ValueError("IMPORT_BC3 requiere file_data")
+            if "nombre_proyecto" not in v or not v["nombre_proyecto"]:
+                raise ValueError("IMPORT_BC3 requiere nombre_proyecto")
+        elif action == CommandAction.EXPORT_BC3:
+            if "project_id" not in v:
+                raise ValueError("EXPORT_BC3 requiere project_id")
 
         return v
 
@@ -1084,3 +1489,8 @@ def format_count_for_telegram(count: int, party_type: ThirdpartyPartyType) -> st
         return f"Hay {count} proveedores registrados."
     else:
         return f"Hay {count} terceros registrados (clientes + proveedores)."
+
+
+# Resolve forward references for Pydantic v2
+StructuredIntent.model_rebuild()
+IntentInterpretation.model_rebuild()

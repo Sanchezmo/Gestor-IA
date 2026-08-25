@@ -186,6 +186,7 @@ class UserContext:
 class GestorPermissions:
     """Gestor-IA specific permissions (not from Dolibarr ERP)."""
 
+    # Read permissions
     AI_USE = "ai.use"
     AI_EXTERNAL_PROVIDER = "ai.external_provider"
     AUDIT_READ = "audit.read"
@@ -194,6 +195,17 @@ class GestorPermissions:
     CONTENT_GENERATE = "content.generate"
     ADMIN = "admin"
     PRODUCT_READ = "product.read"
+    THIRDPARTY_READ = "thirdparty.read"
+    CUSTOMER_INVOICE_READ = "customer_invoice.read"
+    SUPPLIER_INVOICE_READ = "supplier_invoice.read"
+
+    # Write permissions (Command Layer V1)
+    THIRDPARTY_CREATE = "thirdparty.create"
+    PRODUCT_CREATE = "product.create"
+    SERVICE_CREATE = "service.create"
+
+    # Write permissions (Command Layer V2)
+    PROPOSAL_CREATE = "proposal.create"
 
     # All Gestor-IA permissions
     ALL: frozenset[str] = frozenset(
@@ -206,6 +218,13 @@ class GestorPermissions:
             CONTENT_GENERATE,
             ADMIN,
             PRODUCT_READ,
+            THIRDPARTY_READ,
+            CUSTOMER_INVOICE_READ,
+            SUPPLIER_INVOICE_READ,
+            THIRDPARTY_CREATE,
+            PRODUCT_CREATE,
+            SERVICE_CREATE,
+            PROPOSAL_CREATE,
         ]
     )
 

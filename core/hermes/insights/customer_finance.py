@@ -164,7 +164,9 @@ class CustomerFinanceInsightService:
                 )
                 if not page_result.success:
                     raise RuntimeError(f"Error ejecutando list_customer_invoices: {page_result.error_message}")
-                page_invoices = page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
+                page_invoices = (
+                    page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
+                )
                 if not page_invoices:
                     break
                 all_invoices.extend(page_invoices)
@@ -271,7 +273,9 @@ class CustomerFinanceInsightService:
                 )
                 if not page_result.success:
                     raise RuntimeError(f"Error ejecutando list_customer_invoices: {page_result.error_message}")
-                page_invoices = page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
+                page_invoices = (
+                    page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
+                )
                 if not page_invoices:
                     break
                 all_invoices.extend(page_invoices)
@@ -370,7 +374,9 @@ class CustomerFinanceInsightService:
                 )
                 if not page_result.success:
                     raise RuntimeError(f"Error ejecutando list_customer_invoices: {page_result.error_message}")
-                page_invoices = page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
+                page_invoices = (
+                    page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
+                )
                 if not page_invoices:
                     break
                 all_invoices.extend(page_invoices)
@@ -476,7 +482,9 @@ class CustomerFinanceInsightService:
                 )
                 if not page_result.success:
                     raise RuntimeError(f"Error ejecutando list_customer_invoices: {page_result.error_message}")
-                page_invoices = page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
+                page_invoices = (
+                    page_result.data if isinstance(page_result.data, list) else page_result.data.get("invoices", [])
+                )
                 if not page_invoices:
                     break
                 all_invoices.extend(page_invoices)
@@ -516,7 +524,7 @@ class CustomerFinanceInsightService:
             for v in by_thirdparty.values()
         ]
         items.sort(key=lambda x: x.outstanding, reverse=True)
-        items = items[:args.limit]
+        items = items[: args.limit]
 
         total_outstanding = sum((item.outstanding for item in items), Decimal("0"))
 

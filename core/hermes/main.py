@@ -65,6 +65,10 @@ from core.hermes.tools.product_formatters import (
 )
 from core.hermes.tools.product_tools import register_core_product_tools
 from core.hermes.tools.thirdparty_tools import register_core_thirdparty_tools
+from core.hermes.commands import register_core_commands, command_registry
+from core.hermes.commands.executor import CommandExecutor
+from core.hermes.commands.store import PendingCommandStore
+from core.hermes.commands.telegram import send_command_preview, handle_command_callback
 from core.integrations.cloudflare.manager import create_cloudflare_manager
 from core.integrations.dolibarr.client import DolibarrClient
 from core.integrations.telegram.client import TelegramClient, create_telegram_client
@@ -138,6 +142,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     register_core_thirdparty_tools()
     register_core_invoice_tools()
     register_core_product_tools()
+
+    # Registrar core commands de Hermes (Command Layer V1)
+    register_core_commands()
 
     # Crear intérprete de intención compuesto (parser-first + Ollama fallback)
     # Usamos una config dummy para el intérprete global; se creará uno por request con CompanyContext
@@ -1269,13 +1276,9 @@ async def telegram_webhook(
                                     )
                                 # Customer Insight actions
                                 elif action == InsightAction.CUSTOMER_INVOICE_SUMMARY:
-                                    response_text = format_customer_invoice_summary_for_telegram(
-                                        tool_result.data
-                                    )
+                                    response_text = format_customer_invoice_summary_for_telegram(tool_result.data)
                                 elif action == InsightAction.CUSTOMER_OUTSTANDING_SUMMARY:
-                                    response_text = format_customer_outstanding_summary_for_telegram(
-                                        tool_result.data
-                                    )
+                                    response_text = format_customer_outstanding_summary_for_telegram(tool_result.data)
                                 elif action == InsightAction.CUSTOMER_OUTSTANDING_BY_THIRDPARTY:
                                     response_text = format_customer_outstanding_by_thirdparty_for_telegram(
                                         tool_result.data
@@ -1286,13 +1289,9 @@ async def telegram_webhook(
                                     )
                                 # Supplier Insight actions
                                 elif action == InsightAction.SUPPLIER_INVOICE_SUMMARY:
-                                    response_text = format_supplier_invoice_summary_for_telegram(
-                                        tool_result.data
-                                    )
+                                    response_text = format_supplier_invoice_summary_for_telegram(tool_result.data)
                                 elif action == InsightAction.SUPPLIER_OUTSTANDING_SUMMARY:
-                                    response_text = format_supplier_outstanding_summary_for_telegram(
-                                        tool_result.data
-                                    )
+                                    response_text = format_supplier_outstanding_summary_for_telegram(tool_result.data)
                                 elif action == InsightAction.SUPPLIER_OUTSTANDING_BY_THIRDPARTY:
                                     response_text = format_supplier_outstanding_by_thirdparty_for_telegram(
                                         tool_result.data
@@ -1395,6 +1394,138 @@ async def telegram_webhook(
         # On error, delete key to allow retry (but only if we still own it)
         # Note: In production, consider using a Lua script for atomic check-and-delete
         r.delete(idempotency_key)  # Permitir reintento
+        raise HTTPException(500, "Processing failed")
+
+
+# =========================================================================
+# TELEGRAM CALLBACK QUERY ENDPOINT (Command Confirmations)
+# =========================================================================
+
+
+@app.post("/webhook/{instance_id}/callback", tags=["Telegram"])
+@app.post("/webhook/{instance_id}/callback/", tags=["Telegram"])
+async def telegram_callback(
+    instance_id: str,
+    request: Request,
+    ctx: CompanyContext = Depends(get_company_context),
+):
+    """
+    Callback query handler for command confirmations.
+
+    Handles inline keyboard callbacks: confirm:<command_id> / cancel:<command_id>
+    """
+    # Verificar que el instance_id del path coincide con el resuelto
+    if ctx.instance_id != instance_id:
+        raise HTTPException(400, "Instance ID mismatch")
+
+    # Verificar secret token
+    secret_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if ctx.telegram_config.webhook_secret_required:
+        if not secret_token:
+            raise HTTPException(403, "Missing webhook secret token")
+        import hmac
+
+        if not hmac.compare_digest(secret_token, ctx.telegram_config.webhook_secret):
+            raise HTTPException(403, "Invalid webhook secret token")
+
+    # Parse update
+    try:
+        update = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+
+    callback_query = update.get("callback_query")
+    if not callback_query:
+        raise HTTPException(400, "No callback query")
+
+    callback_data = callback_query.get("data")
+    if not callback_data:
+        raise HTTPException(400, "No callback data")
+
+    telegram_user_id = callback_query.get("from", {}).get("id")
+    if not telegram_user_id:
+        raise HTTPException(400, "No user ID in callback")
+
+    chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
+    message_id = callback_query.get("message", {}).get("message_id")
+
+    if not chat_id or not message_id:
+        raise HTTPException(400, "Invalid callback message")
+
+    # Idempotency check for callback
+    from core.hermes.config import get_global_settings
+
+    settings = get_global_settings()
+    import redis
+
+    r = redis.Redis(
+        host=settings.REDIS_HOST,
+        port=settings.REDIS_PORT,
+        password=settings.REDIS_PASSWORD or None,
+        db=ctx.instance_config.get_redis_db(),
+        decode_responses=True,
+    )
+
+    callback_id = callback_query.get("id")
+    callback_idempotency_key = f"telegram:callback:{callback_id}"
+
+    # ATOMIC: SET NX EX
+    acquired = r.set(callback_idempotency_key, "processing", nx=True, ex=86400)
+    if not acquired:
+        # Duplicate callback - answer with 200 to avoid Telegram retries
+        return {"success": True, "duplicate": True}
+
+    try:
+        # Resolver identidad -> UserContext
+        user_context = None
+        if telegram_user_id:
+            try:
+                user_context = await get_user_context(request)
+            except HTTPException:
+                pass  # Will be handled by executor
+
+        if not user_context:
+            # Answer callback to remove loading state
+            telegram_client = await _get_telegram_client(instance_id, ctx.telegram_config.bot_token)
+            await telegram_client.answer_callback_query(callback_query["id"], text="No autorizado", show_alert=True)
+            r.set(callback_idempotency_key, "completed", ex=86400)
+            return {"success": True, "unauthorized": True}
+
+        # Crear executor y manejar callback
+        telegram_client = await _get_telegram_client(instance_id, ctx.telegram_config.bot_token)
+
+        # Create instance-specific audit logger
+        audit_logger = create_audit_logger(instance_config=ctx.instance_config)
+
+        # Create pending command store
+        store = PendingCommandStore(ctx.instance_id)
+
+        executor = CommandExecutor(
+            registry=command_registry,
+            store=store,
+            audit_logger=audit_logger,
+            company_context=ctx,
+            user_context=user_context,
+        )
+
+        await handle_command_callback(
+            executor=executor,
+            telegram=telegram_client,
+            chat_id=chat_id,
+            message_id=message_id,
+            callback_data=callback_data,
+            telegram_user_id=telegram_user_id,
+        )
+
+        # Answer callback query (remove loading state)
+        await telegram_client.answer_callback_query(callback_query["id"])
+
+        r.set(callback_idempotency_key, "completed", ex=86400)
+        return {"success": True}
+
+    except Exception as e:
+        logger.error("callback_processing_failed", instance_id=instance_id, error=str(e))
+        r.delete(callback_idempotency_key)  # Permitir reintento
         raise HTTPException(500, "Processing failed")
 
 
