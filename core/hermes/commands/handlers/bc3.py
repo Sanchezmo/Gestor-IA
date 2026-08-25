@@ -1,7 +1,11 @@
 """
-Command Layer V3 - BC3 Handler.
+Command Layer - BC3 Handler (EXPERIMENTAL).
+
+⚠️ EXPERIMENTAL / NOT PRODUCTION READY ⚠️
 
 Handlers for importing/exporting BC3 files in Dolibarr.
+NOT registered in command_registry by default.
+Requires explicit opt-in and validation before production use.
 """
 
 from __future__ import annotations
@@ -23,7 +27,11 @@ from core.integrations.dolibarr.client import DolibarrException
 
 
 class ImportBC3Handler(CommandHandler):
-    """Handler for importing BC3 files and creating catalog in Dolibarr."""
+    """Handler for importing BC3 files and creating catalog in Dolibarr.
+
+    EXPERIMENTAL: Not registered in production command registry.
+    Requires file handling in Telegram endpoint (NOT_IMPLEMENTED).
+    """
 
     @property
     def command_type(self) -> CommandType:
@@ -148,7 +156,11 @@ class ImportBC3Handler(CommandHandler):
 
 
 class ExportBC3Handler(CommandHandler):
-    """Handler for exporting project/budget to BC3 format."""
+    """Handler for exporting project/budget to BC3 format.
+
+    EXPERIMENTAL: Not registered in production command registry.
+    Simplified implementation - exports basic project structure only.
+    """
 
     @property
     def command_type(self) -> CommandType:

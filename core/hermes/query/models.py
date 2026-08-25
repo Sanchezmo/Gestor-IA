@@ -989,7 +989,7 @@ def structured_intent_to_tool_call(intent: StructuredIntent) -> tuple[str, dict[
 
         return "list_thirdparties", {
             "limit": list_args.limit,
-            "offset": list_args.offset,
+            "page": (list_args.offset // list_args.limit) + 1 if list_args.limit > 0 else 1,
             "filter_customer": filter_customer,
             "sort_field": list_args.sort_field.value,
             "sort_order": list_args.sort_order.value,
@@ -1011,7 +1011,7 @@ def structured_intent_to_tool_call(intent: StructuredIntent) -> tuple[str, dict[
             "filter_customer": filter_customer,
             "filter_supplier": filter_supplier,
             "limit": search_args.limit,
-            "offset": search_args.offset,
+            "page": (search_args.offset // search_args.limit) + 1 if search_args.limit > 0 else 1,
             "sort_field": search_args.sort_field.value,
             "sort_order": search_args.sort_order.value,
         }

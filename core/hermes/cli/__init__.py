@@ -449,6 +449,8 @@ def main() -> int:
             print("ERROR: Falta --instance")
             return 1
         return cmd_user_list(project_root, instance_id)
+    elif command == "healthcheck":
+        return cmd_healthcheck(project_root)
     elif command == "user-show":
         if len(sys.argv) < 5:
             print("ERROR: user-show requiere --instance, --telegram-user")
@@ -467,3 +469,158 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+# =========================================================================
+# HEALTHCHECK COMMAND
+# =========================================================================
+
+
+def _run_cmd(cmd: str, timeout: int = 10) -> tuple[bool, str]:
+    """Run shell command and return (success, output)."""
+    try:
+        result = subprocess.run(cmd, shell=True, capture_output=True, timeout=timeout)
+        return result.returncode == 0, result.stdout.decode().strip()
+    except subprocess.TimeoutExpired:
+        return False, "TIMEOUT"
+    except Exception as e:
+        return False, str(e)
+
+
+def cmd_healthcheck(project_root: Path) -> int:
+    """Healthcheck completo de todos los servicios del sistema."""
+    import subprocess
+    
+    print("==========================================")
+    print("  HEALTHCHECK GESTOR-IA")
+    print("==========================================")
+    print("")
+    
+    errors = 0
+    warnings = 0
+    
+    def _run_cmd_local(cmd: str, timeout: int = 10) -> tuple[bool, str]:
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, timeout=timeout)
+            if result.returncode == 0:
+                return True, result.stdout.decode().strip()
+            else:
+                return False, result.stderr.decode().strip()
+        except subprocess.TimeoutExpired:
+            return False, "TIMEOUT"
+        except Exception as e:
+            return False, str(e)
+    
+    def check(cmd: str, desc: str, critical: bool = True) -> bool:
+        nonlocal errors, warnings
+        success, output = _run_cmd_local(cmd)
+        if success:
+            print(f"[OK] {desc}")
+            return True
+        else:
+            detail = output.strip() if output else "(no output)"
+            msg = f"[FAIL] {desc}: {detail}"
+            if critical:
+                errors += 1
+                print(msg)
+            else:
+                warnings += 1
+                print(f"[WARN] {desc}: {detail}")
+            return False
+    
+    def warn(cmd: str, desc: str) -> bool:
+        nonlocal warnings
+        success, output = _run_cmd_local(cmd)
+        if success:
+            print(f"[OK] {desc}")
+            return True
+        else:
+            warnings += 1
+            detail = output.strip() if output else "(no output)"
+            print(f"[WARN] {desc}: {detail}")
+            return False
+    
+    print("")
+    print("=== Sistema base ===")
+    check("command -v python3", "Python3 instalado")
+    check("command -v mysql", "MariaDB client instalado")
+    check("command -v redis-cli", "Redis client instalado")
+    check("command -v curl", "curl instalado")
+    
+    print("")
+    print("=== Entorno Python ===")
+    if Path(project_root / ".venv").exists():
+        print("[OK] Virtualenv existe")
+        check(f"{project_root}/.venv/bin/python -c \"import fastapi, pydantic, httpx, sqlalchemy, redis, structlog, yaml\"", "Dependencias core instaladas")
+    else:
+        print("[FAIL] Virtualenv no encontrado")
+        errors += 1
+    
+    print("")
+    print("=== Configuración ===")
+    check(f"test -f {project_root}/.env", "Archivo .env existe")
+    
+    print("")
+    print("=== Servicios ===")
+    for svc in ["mariadb", "redis", "ollama"]:
+        warn(f"systemctl is-active --quiet {svc}", f"{svc}: systemd service")
+    
+    print("")
+    print("=== Conectividad bases de datos ===")
+    check("redis-cli -a ***REMOVED*** ping", "Redis: CONEXIÓN OK")
+    
+    print("")
+    print("=== Ollama ===")
+    if not check("curl -sf http://127.0.0.1:11434/api/tags", "Ollama API: RESPONDE", critical=False):
+        warnings += 1
+        print("[WARN] Ollama API: NO RESPONDE")
+    
+    print("")
+    print("=== MariaDB ===")
+    if not check("mysqladmin -u root -p***REMOVED*** ping", "MariaDB: CONEXIÓN OK", critical=False):
+        warnings += 1
+        print("[WARN] MariaDB: CONEXIÓN FALLÓ (¿docker compose up?)")
+    
+    print("")
+    print("=== Hermes API ===")
+    if not check("curl -sf -o /dev/null http://localhost:8000/health", "Hermes API: HEALTHY", critical=False):
+        warnings += 1
+        print("[WARN] Hermes API: NO RESPONDE (¿make dev-start?)")
+    
+    print("")
+    print("=== Dolibarr ERP ===")
+    if not check("curl -sf -o /dev/null http://localhost:8081/index.php", "Dolibarr: ACCESIBLE", critical=False):
+        warnings += 1
+        print("[WARN] Dolibarr: NO ACCESIBLE (¿docker compose up?)")
+    else:
+        if not check("curl -sf -o /dev/null -H 'DOLAPIKEY: demo_dolibarr_api_key_123' 'http://localhost:8081/api/index.php/thirdparties?limit=1'", "Dolibarr API: OK", critical=False):
+            warnings += 1
+            print("[WARN] Dolibarr API: NO RESPONDE")
+    
+    print("")
+    print("=== Instancias ===")
+    instances_root = project_root / "instances"
+    for instance_dir in instances_root.iterdir():
+        if instance_dir.is_dir() and (instance_dir / "config.yml").exists():
+            instance = instance_dir.name
+            print(f"Instancia: {instance}")
+            if (instance_dir / "instance.env").exists():
+                print("  instance.env: EXISTE")
+            else:
+                print("  instance.env: FALTA")
+                warnings += 1
+    
+    print("")
+    print("==========================================")
+    print("  RESUMEN")
+    print("==========================================")
+    if errors == 0 and warnings == 0:
+        print("[OK] TODO OK - Sistema listo para demo")
+        return 0
+    elif errors == 0:
+        print(f"[WARN] {warnings} advertencias - Sistema funcional pero revisar opcionales")
+        return 0
+    else:
+        print(f"[FAIL] {errors} errores críticos - CORREGIR ANTES DE DEMO")
+        print(f"Advertencias: {warnings}")
+        return 1
+

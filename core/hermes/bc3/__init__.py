@@ -1,7 +1,10 @@
 """
 BC3 Advanced - Módulo principal para gestión avanzada de archivos BC3.
 
-Proporciona funcionalidad completa para:
+⚠️ EXPERIMENTAL / NOT PRODUCTION READY ⚠️
+
+Este módulo está en desarrollo activo y NO debe usarse en producción.
+Funcionalidad planeada:
 - Parser robusto con validación XSD
 - Catálogo técnico 4-niveles (Capítulos → Subcapítulos → Items → Descomposición)
 - Tipos de recursos (Materiales, Mano de obra, Maquinaria, Auxiliares, Subcontratación)
@@ -10,6 +13,18 @@ Proporciona funcionalidad completa para:
 - Mediciones
 - Presupuestos
 - Vinculación Dolibarr
+
+Estado actual:
+- Parser: funcional básico
+- Catálogo: estructura definida
+- SQLite price_db: almacenamiento temporal/catálogo técnico (NO source of truth)
+- Cost breakdown: cálculos básicos
+- Measurements: estructura definida
+- Budget generator: estructura definida
+- Dolibarr link: sincronización básica
+
+ADVERTENCIA: Dolibarr debe seguir siendo el source of truth empresarial.
+Este módulo NO intenta convertirse en ERP paralelo.
 """
 
 from __future__ import annotations
@@ -159,7 +174,7 @@ __all__ = [
     "parse_bc3_file",
     "parse_bc3_bytes",
     "validate_bc3_file",
-    # Price DB
+    # Price DB (EXPERIMENTAL - SQLite temporal para catálogo técnico)
     "BC3PriceDatabase",
     "BC3PriceEntry",
     "create_price_database",
@@ -207,4 +222,4 @@ __all__ = [
     "calculate_stock_valuation",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.0.0-experimental"

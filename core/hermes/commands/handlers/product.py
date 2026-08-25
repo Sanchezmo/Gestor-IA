@@ -2,10 +2,14 @@
 Command Layer V1 - Create Product/Service Handlers.
 
 Handlers for creating products (type=0) and services (type=1) in Dolibarr.
+
+Money handling: Input as str → Decimal internally → str to Dolibarr API.
+No float at any boundary.
 """
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from core.hermes.commands.base import CommandHandler
@@ -13,6 +17,23 @@ from core.hermes.commands.models import CommandPreview, CommandResult, CommandTy
 from core.hermes.context import CompanyContext
 from core.hermes.identity import UserContext
 from core.integrations.dolibarr.client import DolibarrException
+
+
+def _parse_decimal(value: Any, field_name: str, min_value: Decimal | None = None, max_value: Decimal | None = None) -> Decimal:
+    """Parse input to Decimal safely. Input must be str/int/Decimal, not float."""
+    if value is None:
+        return None
+    if isinstance(value, float):
+        raise ValueError(f"{field_name}: float no permitido, use string (ej: '38.50')")
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError(f"{field_name}: valor inválido '{value}'")
+    if min_value is not None and result < min_value:
+        raise ValueError(f"{field_name}: debe ser >= {min_value}")
+    if max_value is not None and result > max_value:
+        raise ValueError(f"{field_name}: debe ser <= {max_value}")
+    return result
 
 
 class CreateProductHandler(CommandHandler):
@@ -50,23 +71,14 @@ class CreateProductHandler(CommandHandler):
             if len(description) > 5000:
                 raise ValueError("La descripción es demasiado larga")
 
+        # Money fields: str input → Decimal internal
         price = payload.get("price")
         if price is not None:
-            try:
-                price = float(price)
-                if price < 0:
-                    raise ValueError("El precio no puede ser negativo")
-            except (ValueError, TypeError):
-                raise ValueError("Precio inválido")
+            price = _parse_decimal(price, "price", min_value=Decimal("0"))
 
         vat_rate = payload.get("vat_rate")
         if vat_rate is not None:
-            try:
-                vat_rate = float(vat_rate)
-                if vat_rate < 0 or vat_rate > 100:
-                    raise ValueError("IVA debe estar entre 0 y 100")
-            except (ValueError, TypeError):
-                raise ValueError("IVA inválido")
+            vat_rate = _parse_decimal(vat_rate, "vat_rate", min_value=Decimal("0"), max_value=Decimal("100"))
 
         return {
             "ref": ref,
@@ -89,9 +101,11 @@ class CreateProductHandler(CommandHandler):
         ]
 
         if validated_payload.get("price") is not None:
-            lines.append(f"Precio: {validated_payload['price']} {currency}")
+            price = validated_payload["price"]
+            lines.append(f"Precio: {price:.2f} {currency}")
         if validated_payload.get("vat_rate") is not None:
-            lines.append(f"IVA: {validated_payload['vat_rate']}%")
+            vat = validated_payload["vat_rate"]
+            lines.append(f"IVA: {vat:.2f}%")
 
         summary = "\n".join(lines)
 
@@ -107,7 +121,7 @@ class CreateProductHandler(CommandHandler):
         """Execute product creation in Dolibarr."""
         dolibarr = company_context.create_dolibarr_client()
 
-        # Build Dolibarr payload
+        # Build Dolibarr payload - pass Decimal as string for API
         dolibarr_payload = {
             "ref": validated_payload["ref"],
             "label": validated_payload["label"],
@@ -117,9 +131,9 @@ class CreateProductHandler(CommandHandler):
         if validated_payload.get("description"):
             dolibarr_payload["description"] = validated_payload["description"]
         if validated_payload.get("price") is not None:
-            dolibarr_payload["price"] = validated_payload["price"]
+            dolibarr_payload["price"] = str(validated_payload["price"])
         if validated_payload.get("vat_rate") is not None:
-            dolibarr_payload["tva_tx"] = validated_payload["vat_rate"]
+            dolibarr_payload["tva_tx"] = str(validated_payload["vat_rate"])
 
         try:
             async with dolibarr as client:
@@ -199,9 +213,11 @@ class CreateServiceHandler(CommandHandler):
         ]
 
         if validated_payload.get("price") is not None:
-            lines.append(f"Precio: {validated_payload['price']} {currency}")
+            price = validated_payload["price"]
+            lines.append(f"Precio: {price:.2f} {currency}")
         if validated_payload.get("vat_rate") is not None:
-            lines.append(f"IVA: {validated_payload['vat_rate']}%")
+            vat = validated_payload["vat_rate"]
+            lines.append(f"IVA: {vat:.2f}%")
 
         summary = "\n".join(lines)
 
@@ -226,9 +242,9 @@ class CreateServiceHandler(CommandHandler):
         if validated_payload.get("description"):
             dolibarr_payload["description"] = validated_payload["description"]
         if validated_payload.get("price") is not None:
-            dolibarr_payload["price"] = validated_payload["price"]
+            dolibarr_payload["price"] = str(validated_payload["price"])
         if validated_payload.get("vat_rate") is not None:
-            dolibarr_payload["tva_tx"] = validated_payload["vat_rate"]
+            dolibarr_payload["tva_tx"] = str(validated_payload["vat_rate"])
 
         try:
             async with dolibarr as client:

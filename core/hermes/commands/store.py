@@ -2,41 +2,57 @@
 Command Layer V1 - Pending Command Store.
 
 Redis-backed storage with atomic operations and TTL.
+Uses shared Redis + namespace prefix per instance for isolation.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 import redis
 
 from core.hermes.config import get_global_settings
+from core.hermes.instance_config import load_instance_config
 
 from .models import CommandStatus, CommandType, PendingCommand
 
 
 class PendingCommandStore:
-    """Redis-backed store for pending commands with TTL and atomic operations."""
+    """Redis-backed store for pending commands with TTL and atomic operations.
 
-    KEY_PREFIX = "pending:command:"
+    Isolation strategy:
+    - Shared Redis connection (single pool)
+    - Namespace prefix: hermes:{instance_id}:pending_commands:{command_id}
+    - Explicit instance_id verification on every read
+    - TTL for automatic cleanup
+    - Unpredictable UUID command_id
+    """
+
+    KEY_PREFIX = "hermes:{instance_id}:pending_commands:"
     DEFAULT_TTL = timedelta(hours=24)
 
     def __init__(self, instance_id: str) -> None:
         self.instance_id = instance_id
         settings = get_global_settings()
+
+        # Load instance config to get correct Redis DB number
+        config = load_instance_config(instance_id)
+        redis_db = config.get_redis_db() if config else 0
+
         self._redis = redis.Redis(
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
             password=settings.REDIS_PASSWORD or None,
-            db=instance_id,  # Use instance-specific Redis DB
+            db=redis_db,  # Numeric DB from instance config hash (0-15)
             decode_responses=True,
         )
 
     def _key(self, command_id: UUID) -> str:
-        return f"{self.KEY_PREFIX}{command_id}"
+        return f"hermes:{self.instance_id}:pending_commands:{command_id}"
 
     def create(self, pending: PendingCommand) -> None:
         """Create pending command. Atomic SET NX EX for idempotency."""
@@ -160,20 +176,30 @@ class PendingCommandStore:
                     pipe.unwatch()
 
     def _serialize(self, pending: PendingCommand) -> dict[str, Any]:
+        def _json_safe(value: Any) -> Any:
+            """Convert value to JSON-safe type."""
+            if isinstance(value, Decimal):
+                return str(value)
+            if isinstance(value, dict):
+                return {k: _json_safe(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_json_safe(v) for v in value]
+            return value
+
         return {
             "command_id": str(pending.command_id),
             "instance_id": pending.instance_id,
             "telegram_user_id": pending.telegram_user_id,
             "dolibarr_user_id": pending.dolibarr_user_id,
             "command_type": pending.command_type.value,
-            "validated_payload": pending.validated_payload,
+            "validated_payload": _json_safe(pending.validated_payload),
             "status": pending.status.value,
             "created_at": pending.created_at.isoformat(),
             "expires_at": pending.expires_at.isoformat(),
             "confirmed_at": pending.confirmed_at.isoformat() if pending.confirmed_at else None,
             "executed_at": pending.executed_at.isoformat() if pending.executed_at else None,
             "idempotency_key": pending.idempotency_key,
-            "result": pending.result,
+            "result": _json_safe(pending.result) if pending.result else None,
             "error_code": pending.error_code,
             "error_message": pending.error_message,
         }
@@ -204,7 +230,26 @@ class PendingCommandStore:
             updates["confirmed_at"] = datetime.now()
         elif status == CommandStatus.EXECUTED:
             updates["executed_at"] = datetime.now()
-        return PendingCommand(**{**self._serialize(pending), **updates})
+        
+        # Build new PendingCommand preserving proper types
+        # Start with current values, then apply updates
+        return PendingCommand(
+            command_id=pending.command_id,
+            instance_id=pending.instance_id,
+            telegram_user_id=pending.telegram_user_id,
+            dolibarr_user_id=pending.dolibarr_user_id,
+            command_type=pending.command_type,
+            validated_payload=pending.validated_payload,
+            status=updates.get("status", pending.status),
+            created_at=pending.created_at,
+            expires_at=pending.expires_at,
+            confirmed_at=updates.get("confirmed_at", pending.confirmed_at),
+            executed_at=updates.get("executed_at", pending.executed_at),
+            idempotency_key=pending.idempotency_key,
+            result=updates.get("result", pending.result),
+            error_code=updates.get("error_code", pending.error_code),
+            error_message=updates.get("error_message", pending.error_message),
+        )
 
     def close(self) -> None:
         """Close Redis connection."""

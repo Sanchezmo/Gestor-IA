@@ -1107,9 +1107,10 @@ class TestParametersValidation:
         schema = tool.definition.parameters_schema
         assert schema["type"] == "object"
         assert "limit" in schema["properties"]
-        assert "offset" in schema["properties"]
+        assert "page" in schema["properties"]
         assert schema["properties"]["limit"]["minimum"] == 1
         assert schema["properties"]["limit"]["maximum"] == 100
+        assert schema["properties"]["page"]["minimum"] == 1
 
 
 # =========================================================================

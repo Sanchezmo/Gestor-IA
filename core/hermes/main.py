@@ -601,11 +601,13 @@ async def telegram_webhook(
         if not hmac.compare_digest(secret_token, ctx.telegram_config.webhook_secret):
             raise HTTPException(403, "Invalid webhook secret token")
 
-    # Parse update
-    try:
-        update = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON")
+    # Parse update (use cached body from get_company_context dependency)
+    update = getattr(request.state, "telegram_update", None)
+    if update is None:
+        try:
+            update = await request.json()
+        except Exception:
+            raise HTTPException(400, "Invalid JSON")
 
     update_id = update.get("update_id")
 

@@ -159,7 +159,7 @@ class AuditLogger:
             pool_size: Tamaño del pool de conexiones
         """
         # Usar pymysql para MariaDB
-        engine_url = database_url.replace("mysql://", "mysql+pymysql://")
+        engine_url = database_url if database_url.startswith("mysql+pymysql://") else database_url.replace("mysql://", "mysql+pymysql://")
         self.engine = create_engine(
             engine_url,
             pool_size=pool_size,
@@ -567,7 +567,7 @@ def create_audit_logger(instance_config: InstanceConfig | None = None, database_
         return AuditLogger(database_url)
 
     if instance_config:
-        return AuditLogger(instance_config.get_dolibarr_db_url().replace("mysql://", "mysql+pymysql://"))
+        return AuditLogger((lambda u: u if u.startswith("mysql+pymysql://") else u.replace("mysql://", "mysql+pymysql://"))(instance_config.get_dolibarr_db_url()))
 
     # Fallback: global audit DB (separada)
     from core.hermes.config import get_global_settings

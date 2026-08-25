@@ -286,7 +286,7 @@ class ListThirdpartiesTool(Tool):
                 "type": "object",
                 "properties": {
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
-                    "offset": {"type": "integer", "minimum": 0, "default": 0},
+                    "page": {"type": "integer", "minimum": 1, "default": 1},
                     "filter_customer": {"type": "boolean", "description": "True=solo clientes, False=solo proveedores"},
                     "filter_status": {"type": "integer", "description": "Filtrar por status (0=borrador, 1=activo)"},
                     "sort_field": {
@@ -432,7 +432,7 @@ class SearchThirdpartiesTool(Tool):
                         "description": "True=solo proveedores, False=solo no proveedores",
                     },
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
-                    "offset": {"type": "integer", "minimum": 0, "default": 0},
+                    "page": {"type": "integer", "minimum": 1, "default": 1},
                     "sort_field": {
                         "type": "string",
                         "enum": sorted(ALLOWED_THIRDPARTY_SORT_FIELDS),

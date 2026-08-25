@@ -237,6 +237,8 @@ async def get_company_context(request: Request) -> CompanyContext:
     if request.url.path.startswith("/webhook/"):
         try:
             body = await request.json()
+            # Cache body in request.state for webhook handler to reuse
+            request.state.telegram_update = body
             actor_type, actor_id = extract_telegram_actor(body)
         except Exception:
             actor_type, actor_id = "telegram_webhook", "unknown"
@@ -299,7 +301,10 @@ async def get_user_context(request: Request) -> UserContext:
 
     if request.url.path.startswith("/webhook/"):
         try:
-            body = await request.json()
+            # Use cached body from get_company_context if available
+            body = getattr(request.state, "telegram_update", None)
+            if body is None:
+                body = await request.json()
             _, actor_id = extract_telegram_actor(body)
             telegram_user_id = int(actor_id)
         except Exception:
