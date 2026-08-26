@@ -175,6 +175,11 @@ class IdentityResolver:
                     all_permissions = merge_dolibarr_permissions(all_permissions, group.rights)
 
         # 4. Build UserContext
+        # Assign Gestor-IA roles based on Dolibarr user
+        gestor_roles = frozenset()
+        if user.id == 1:  # Dolibarr admin user gets admin role
+            gestor_roles = frozenset(["admin"])
+
         user_context = UserContext(
             instance_id=instance_id,
             telegram_user_id=telegram_user_id,
@@ -182,7 +187,7 @@ class IdentityResolver:
             dolibarr_user=user,
             dolibarr_groups=groups,
             dolibarr_permissions=all_permissions,
-            gestor_roles=frozenset(),  # TODO: load from config
+            gestor_roles=gestor_roles,
         )
 
         # 5. Update last_seen_at

@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from functools import lru_cache
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
@@ -278,7 +278,10 @@ async def get_company_context(request: Request) -> CompanyContext:
 # =========================================================================
 
 
-async def get_user_context(request: Request) -> UserContext:
+async def get_user_context(
+    request: Request,
+    company_context: CompanyContext = Depends(get_company_context),
+) -> UserContext:
     """
     Dependency de FastAPI que provee UserContext para endpoints autenticados.
 
@@ -293,9 +296,6 @@ async def get_user_context(request: Request) -> UserContext:
         async def handler(user_ctx: UserContext = Depends(get_user_context)):
             # user_ctx.dolibarr_user, user_ctx.effective_permissions, etc.
     """
-    # Get CompanyContext first (resolves instance)
-    company_context = await get_company_context(request)
-
     # Extract telegram_user_id from webhook update or actor_id
     telegram_user_id: int | None = None
 
@@ -304,7 +304,7 @@ async def get_user_context(request: Request) -> UserContext:
             # Use cached body from get_company_context if available
             body = getattr(request.state, "telegram_update", None)
             if body is None:
-                body = await request.json()
+                raise HTTPException(400, "Request body not cached")
             _, actor_id = extract_telegram_actor(body)
             telegram_user_id = int(actor_id)
         except Exception:
@@ -359,6 +359,38 @@ async def get_user_context(request: Request) -> UserContext:
         )
 
     return user_context
+
+
+# =========================================================================
+# HELPER: Resolver UserContext desde CompanyContext ya resuelto
+# =========================================================================
+
+
+async def resolve_user_context_from_company_context(
+    company_context: CompanyContext,
+    telegram_user_id: int,
+) -> UserContext | None:
+    """
+    Resolver UserContext usando CompanyContext ya resuelto (sin leer request.body).
+    
+    Retorna None si no hay identidad válida (en lugar de lanzar HTTPException).
+    Útil para webhook handlers que quieren manejar auth graceful.
+    """
+    identity_store = IdentityStore(company_context.instance_id)
+
+    def _client_factory(ctx: CompanyContext) -> DolibarrClient:
+        return DolibarrClient.from_instance_config(ctx.dolibarr_config)
+
+    resolver = IdentityResolver(identity_store, _client_factory)
+
+    try:
+        user_context = await resolver.resolve(company_context, telegram_user_id)
+        return user_context
+    except (IdentityNotFoundError, IdentityDisabledError, DolibarrUserNotFoundError, DolibarrUserDisabledError):
+        return None
+    except DolibarrConnectionError:
+        # Default deny on Dolibarr failure
+        return None
 
 
 # =========================================================================

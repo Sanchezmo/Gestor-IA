@@ -225,8 +225,6 @@ class CommandExecutor:
             success=True,
             new_state={"preview": preview.summary, "payload": payload},
             idempotency_key=str(preview.command_id),
-            telegram_user_id=self.user.telegram_user_id,
-            dolibarr_user_id=self.user.dolibarr_user_id,
         )
 
     async def _audit_preview_denied(self, intent: CommandIntent, error_code: str, error_message: str = "") -> None:
@@ -238,8 +236,6 @@ class CommandExecutor:
             error_code=error_code,
             error_message=error_message,
             idempotency_key=intent.request_id,
-            telegram_user_id=self.user.telegram_user_id,
-            dolibarr_user_id=self.user.dolibarr_user_id,
         )
 
     async def _audit_confirmed(self, pending: PendingCommand) -> None:

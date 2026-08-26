@@ -47,8 +47,9 @@ from core.hermes.query.models import (
     InvoiceAction,
     InvoicePartyType,
     ThirdpartyAction,
+    CommandAction,
 )
-from core.hermes.resolver import InstanceResolutionMiddleware, get_company_context, get_user_context
+from core.hermes.resolver import InstanceResolutionMiddleware, get_company_context, get_user_context, resolve_user_context_from_company_context
 from core.hermes.tools import tool_registry
 from core.hermes.tools.invoices import register_core_invoice_tools
 from core.hermes.tools.invoices.formatters import (
@@ -604,10 +605,7 @@ async def telegram_webhook(
     # Parse update (use cached body from get_company_context dependency)
     update = getattr(request.state, "telegram_update", None)
     if update is None:
-        try:
-            update = await request.json()
-        except Exception:
-            raise HTTPException(400, "Invalid JSON")
+        raise HTTPException(400, "Request body not cached - dependency order issue")
 
     update_id = update.get("update_id")
 
@@ -661,15 +659,9 @@ async def telegram_webhook(
         auth_error = None
 
         if telegram_user_id:
-            try:
-                # Usar get_user_context que ya resuelve identidad + permisos
-                user_context = await get_user_context(request)
-            except HTTPException as e:
-                auth_error = e.detail
-                if isinstance(auth_error, dict):
-                    auth_error = auth_error.get("message", "No autorizado")
-                else:
-                    auth_error = str(auth_error)
+            user_context = await resolve_user_context_from_company_context(ctx, telegram_user_id)
+            if user_context is None:
+                auth_error = "No tienes acceso autorizado a este asistente."
 
         # =====================================================================
         # ENRUTAMIENTO DE COMANDOS
@@ -718,9 +710,12 @@ async def telegram_webhook(
             else:
                 # AUTORIZACIÓN ANTES DE EJECUTAR
                 auth_service = AuthorizationService()
+                has_perm = (user_context.has_permission("societe.thirdparty_customer.read") or
+                           user_context.has_permission("societe.thirdparty_supplier.read"))
                 try:
-                    auth_service.require(user_context, "thirdparty.read")
-                except Exception as e:
+                    if not has_perm:
+                        raise PermissionError("Falta permiso: societe.thirdparty_customer.read / societe.thirdparty_supplier.read")
+                except PermissionError as e:
                     response_text = "No tienes permiso para consultar terceros."
                     # Auditoría: autorización denegada
                     if _audit_logger:
@@ -733,8 +728,6 @@ async def telegram_webhook(
                             success=False,
                             error_code="PERMISSION_DENIED",
                             error_message=str(e),
-                            telegram_user_id=user_context.telegram_user_id,
-                            dolibarr_user_id=user_context.dolibarr_user_id,
                         )
                 else:
                     # EJECUTAR TOOL via Hermes
@@ -761,8 +754,6 @@ async def telegram_webhook(
                                 resource_type="thirdparty",
                                 status_code=200,
                                 success=True,
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                                 new_state={"count": tool_result.data["count"]},
                             )
                     else:
@@ -778,8 +769,6 @@ async def telegram_webhook(
                                 success=False,
                                 error_code=tool_result.error_code,
                                 error_message=tool_result.error_message,
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                             )
 
         elif text == "/facturas":
@@ -812,8 +801,6 @@ async def telegram_webhook(
                             success=False,
                             error_code="PERMISSION_DENIED",
                             error_message=str(e),
-                            telegram_user_id=user_context.telegram_user_id,
-                            dolibarr_user_id=user_context.dolibarr_user_id,
                         )
                 else:
                     tool_result = await tool_registry.execute_tool(
@@ -838,8 +825,6 @@ async def telegram_webhook(
                                 resource_type="customer_invoice",
                                 status_code=200,
                                 success=True,
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                                 new_state={"count": tool_result.data["count"]},
                             )
                     else:
@@ -853,8 +838,6 @@ async def telegram_webhook(
                                 success=False,
                                 error_code=tool_result.error_code,
                                 error_message=tool_result.error_message,
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                             )
 
         elif text == "/facturas_proveedor":
@@ -887,8 +870,6 @@ async def telegram_webhook(
                             success=False,
                             error_code="PERMISSION_DENIED",
                             error_message=str(e),
-                            telegram_user_id=user_context.telegram_user_id,
-                            dolibarr_user_id=user_context.dolibarr_user_id,
                         )
                 else:
                     tool_result = await tool_registry.execute_tool(
@@ -913,8 +894,6 @@ async def telegram_webhook(
                                 resource_type="supplier_invoice",
                                 status_code=200,
                                 success=True,
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                                 new_state={"count": tool_result.data["count"]},
                             )
                     else:
@@ -928,8 +907,6 @@ async def telegram_webhook(
                                 success=False,
                                 error_code=tool_result.error_code,
                                 error_message=tool_result.error_message,
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                             )
 
         elif text == "/productos":
@@ -962,8 +939,6 @@ async def telegram_webhook(
                             success=False,
                             error_code="PERMISSION_DENIED",
                             error_message=str(e),
-                            telegram_user_id=user_context.telegram_user_id,
-                            dolibarr_user_id=user_context.dolibarr_user_id,
                         )
                 else:
                     tool_result = await tool_registry.execute_tool(
@@ -990,8 +965,6 @@ async def telegram_webhook(
                                 resource_type="product",
                                 status_code=200,
                                 success=True,
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                                 new_state={"count": tool_result.data["count"]},
                             )
                     else:
@@ -1005,8 +978,6 @@ async def telegram_webhook(
                                 success=False,
                                 error_code=tool_result.error_code,
                                 error_message=tool_result.error_message,
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                             )
 
         elif text == "/servicios":
@@ -1039,8 +1010,6 @@ async def telegram_webhook(
                             success=False,
                             error_code="PERMISSION_DENIED",
                             error_message=str(e),
-                            telegram_user_id=user_context.telegram_user_id,
-                            dolibarr_user_id=user_context.dolibarr_user_id,
                         )
                 else:
                     tool_result = await tool_registry.execute_tool(
@@ -1067,8 +1036,6 @@ async def telegram_webhook(
                                 resource_type="service",
                                 status_code=200,
                                 success=True,
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                                 new_state={"count": tool_result.data["count"]},
                             )
                     else:
@@ -1082,8 +1049,6 @@ async def telegram_webhook(
                                 success=False,
                                 error_code=tool_result.error_code,
                                 error_message=tool_result.error_message,
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                             )
 
         # =====================================================================
@@ -1114,31 +1079,58 @@ async def telegram_webhook(
                     interpretation = await instance_interpreter.interpret(text)
 
                     if interpretation.status == InterpretationStatus.MATCHED and interpretation.intent:
-                        # AUTORIZACIÓN ANTES DE EJECUTAR
-                        auth_service = AuthorizationService()
-                        try:
-                            auth_service.require(user_context, "thirdparty.read")
-                        except Exception as e:
-                            response_text = "No tienes permiso para consultar terceros."
-                            if _audit_logger:
-                                await _audit_logger.log_from_context(
-                                    ctx,
-                                    action=AuditActions.AUTHORIZATION_DENIED,
-                                    resource_type="tool",
-                                    resource_id=interpretation.intent.action.value,
-                                    status_code=403,
-                                    success=False,
-                                    error_code="PERMISSION_DENIED",
-                                    error_message=str(e),
-                                    telegram_user_id=user_context.telegram_user_id,
-                                    dolibarr_user_id=user_context.dolibarr_user_id,
-                                )
-                        else:
-                            # EJECUTAR TOOL o INSIGHT via Hermes
-                            action = interpretation.intent.action
-                            tool_result = None
+                        action = interpretation.intent.action
 
-                            # Ruteo: Thirdparty, Invoice o Insight
+                        # AUTORIZACIÓN ANTES DE EJECUTAR (solo para acciones de QUERY, no COMMAND)
+                        auth_service = AuthorizationService()
+                        tool_result = None
+
+                        # Check permissions for QUERY actions
+                        is_query_action = False
+                        if action in (
+                            ThirdpartyAction.LIST,
+                            ThirdpartyAction.SEARCH,
+                            ThirdpartyAction.GET,
+                            ThirdpartyAction.COUNT,
+                            InvoiceAction.LIST_CUSTOMER_INVOICES,
+                            InvoiceAction.SEARCH_CUSTOMER_INVOICES,
+                            InvoiceAction.GET_CUSTOMER_INVOICE,
+                            InvoiceAction.COUNT_CUSTOMER_INVOICES,
+                            InvoiceAction.LIST_SUPPLIER_INVOICES,
+                            InvoiceAction.SEARCH_SUPPLIER_INVOICES,
+                            InvoiceAction.GET_SUPPLIER_INVOICE,
+                            InvoiceAction.COUNT_SUPPLIER_INVOICES,
+                        ):
+                            is_query_action = True
+                            try:
+                                if isinstance(action, ThirdpartyAction):
+                                    has_perm = (user_context.has_permission("societe.thirdparty_customer.read") or
+                                               user_context.has_permission("societe.thirdparty_supplier.read"))
+                                    required_perm = "societe.thirdparty_customer.read / societe.thirdparty_supplier.read"
+                                else:
+                                    has_perm = user_context.has_permission("customer_invoice.read")
+                                    required_perm = "customer_invoice.read"
+                                
+                                if not has_perm:
+                                    raise PermissionError(f"Falta permiso: {required_perm}")
+                            except PermissionError as e:
+                                response_text = f"No tienes permiso para {required_perm}."
+                                if _audit_logger:
+                                    await _audit_logger.log_from_context(
+                                        ctx,
+                                        action=AuditActions.AUTHORIZATION_DENIED,
+                                        resource_type="tool",
+                                        resource_id=action.value,
+                                        status_code=403,
+                                        success=False,
+                                        error_code="PERMISSION_DENIED",
+                                        error_message=str(e),
+                                    )
+                                # Skip execution
+                                action = None  # Mark as handled
+
+                        # EJECUTAR TOOL o INSIGHT via Hermes (si autorizado)
+                        if action is not None:
                             if action in (
                                 ThirdpartyAction.LIST,
                                 ThirdpartyAction.SEARCH,
@@ -1203,10 +1195,77 @@ async def telegram_webhook(
                                     args=interpretation.intent.arguments.__dict__,
                                 )
 
+                            elif action in (
+                                CommandAction.CREATE_THIRDPARTY,
+                                CommandAction.CREATE_PRODUCT,
+                                CommandAction.CREATE_SERVICE,
+                            ):
+                                # Command actions -> CommandExecutor (preview + confirmation)
+                                from core.hermes.commands.models import CommandIntent, CommandType
+
+                                command_type = CommandType(action.value)
+
+                                command_intent = CommandIntent(
+                                    command_type=command_type,
+                                    payload=interpretation.intent.arguments.__dict__,
+                                    instance_id=ctx.instance_id,
+                                    telegram_user_id=user_context.telegram_user_id,
+                                    dolibarr_user_id=user_context.dolibarr_user_id,
+                                    request_id=str(update_id),
+                                )
+
+                                audit_logger = create_audit_logger(instance_config=ctx.instance_config)
+                                store = PendingCommandStore(ctx.instance_id)
+
+                                executor = CommandExecutor(
+                                    registry=command_registry,
+                                    store=store,
+                                    audit_logger=audit_logger,
+                                    company_context=ctx,
+                                    user_context=user_context,
+                                )
+
+                                try:
+                                    preview = await executor.preview(command_intent)
+                                except PermissionError as e:
+                                    logger.warning("command_preview_denied", instance_id=instance_id, error=str(e))
+                                    response_text = f"❌ {e}"
+                                    if _audit_logger:
+                                        await _audit_logger.log_from_context(
+                                            ctx,
+                                            action="command.preview.denied",
+                                            resource_type=action.value,
+                                            status_code=403,
+                                            success=False,
+                                            error_code="PERMISSION_DENIED",
+                                            error_message=str(e),
+                                        )
+                                except Exception as e:
+                                    logger.error("command_preview_failed", instance_id=instance_id, error=str(e), exc_info=True)
+                                    response_text = "Error interno generando preview."
+                                    if _audit_logger:
+                                        await _audit_logger.log_from_context(
+                                            ctx,
+                                            action="command.preview.error",
+                                            resource_type=action.value,
+                                            status_code=500,
+                                            success=False,
+                                            error_code="INTERNAL_ERROR",
+                                            error_message=str(e),
+                                        )
+                                else:
+                                    await send_command_preview(
+                                        telegram=telegram_client,
+                                        chat_id=chat_id,
+                                        preview=preview,
+                                    )
+                                    response_text = ""
+
                             else:
                                 response_text = "Acción no soportada."
                                 tool_result = None
 
+                            # For command actions, preview was already sent, no tool_result
                             if tool_result is not None and tool_result.success:
                                 # Formatear respuesta según tipo de intent
                                 action = interpretation.intent.action
@@ -1312,8 +1371,6 @@ async def telegram_webhook(
                                         resource_type="thirdparty",
                                         status_code=200,
                                         success=True,
-                                        telegram_user_id=user_context.telegram_user_id,
-                                        dolibarr_user_id=user_context.dolibarr_user_id,
                                         new_state={
                                             "count": tool_result.data.get(
                                                 "count", len(tool_result.data.get("thirdparties", []))
@@ -1321,21 +1378,23 @@ async def telegram_webhook(
                                         },
                                     )
                             else:
-                                response_text = (
-                                    tool_result.error_message or "No he podido consultar Dolibarr en este momento."
-                                )
-                                if _audit_logger:
-                                    await _audit_logger.log_from_context(
-                                        ctx,
-                                        action=f"thirdparty.{interpretation.intent.action.value}",
-                                        resource_type="thirdparty",
-                                        status_code=500,
-                                        success=False,
-                                        error_code=tool_result.error_code,
-                                        error_message=tool_result.error_message,
-                                        telegram_user_id=user_context.telegram_user_id,
-                                        dolibarr_user_id=user_context.dolibarr_user_id,
+                                if tool_result is not None:
+                                    response_text = (
+                                        tool_result.error_message or "No he podido consultar Dolibarr en este momento."
                                     )
+                                    if _audit_logger:
+                                        await _audit_logger.log_from_context(
+                                            ctx,
+                                            action=f"thirdparty.{interpretation.intent.action.value}",
+                                            resource_type="thirdparty",
+                                            status_code=500,
+                                            success=False,
+                                            error_code=tool_result.error_code,
+                                            error_message=tool_result.error_message,
+                                        )
+                                else:
+                                    # Command action - preview already sent
+                                    response_text = ""
                     elif interpretation.status == InterpretationStatus.NEEDS_CLARIFICATION:
                         response_text = interpretation.clarification_message or (
                             "No he entendido la consulta completamente. "
@@ -1350,8 +1409,6 @@ async def telegram_webhook(
                                 success=False,
                                 error_code="NEEDS_CLARIFICATION",
                                 error_message=interpretation.clarification_message,
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                             )
                     else:
                         # NO_MATCH, INVALID_OUTPUT, PROVIDER_ERROR
@@ -1375,8 +1432,6 @@ async def telegram_webhook(
                                     f"Interpreter: {interpretation.interpreter_used}, "
                                     f"status: {interpretation.status.value}"
                                 ),
-                                telegram_user_id=user_context.telegram_user_id,
-                                dolibarr_user_id=user_context.dolibarr_user_id,
                             )
 
                 finally:
@@ -1392,7 +1447,8 @@ async def telegram_webhook(
         return {"success": True, "update_id": update_id}
 
     except Exception as e:
-        logger.error("webhook_processing_failed", instance_id=instance_id, error=str(e))
+        import traceback
+        logger.error("webhook_processing_failed", instance_id=instance_id, error=str(e), traceback=traceback.format_exc())
         # On error, delete key to allow retry (but only if we still own it)
         # Note: In production, consider using a Lua script for atomic check-and-delete
         r.delete(idempotency_key)  # Permitir reintento
@@ -1430,11 +1486,10 @@ async def telegram_callback(
         if not hmac.compare_digest(secret_token, ctx.telegram_config.webhook_secret):
             raise HTTPException(403, "Invalid webhook secret token")
 
-    # Parse update
-    try:
-        update = await request.json()
-    except Exception:
-        raise HTTPException(400, "Invalid JSON")
+    # Parse update (use cached body from get_company_context dependency)
+    update = getattr(request.state, "telegram_update", None)
+    if update is None:
+        raise HTTPException(400, "Request body not cached - dependency order issue")
 
     callback_query = update.get("callback_query")
     if not callback_query:

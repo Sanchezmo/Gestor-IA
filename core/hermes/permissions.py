@@ -49,6 +49,7 @@ def flatten_dolibarr_permissions(rights: dict[str, Any]) -> frozenset[str]:
     Output format: "module.submodule.permission"
 
     Only includes permissions with truthy levels (default deny).
+    Dolibarr permission levels can be: 'r' (read), 'w' (write), 'd' (delete), 1, True, etc.
     """
     permissions: set[str] = set()
 
@@ -57,11 +58,16 @@ def flatten_dolibarr_permissions(rights: dict[str, Any]) -> frozenset[str]:
             for key, value in obj.items():
                 new_prefix = f"{prefix}.{key}" if prefix else key
                 _traverse(value, new_prefix)
-        elif isinstance(obj, (int, float, bool)):
+        else:
             # Leaf node with permission level - include if truthy
-            if obj:
-                permissions.add(prefix)
-        # Ignore other types (lists, None, etc.)
+            # Dolibarr uses strings like 'r', 'w', 'd' or integers 1/0 or booleans
+            if isinstance(obj, str):
+                # Non-empty string means permission granted
+                if obj:
+                    permissions.add(prefix)
+            elif isinstance(obj, (int, float, bool)):
+                if obj:
+                    permissions.add(prefix)
 
     _traverse(rights)
     return frozenset(permissions)

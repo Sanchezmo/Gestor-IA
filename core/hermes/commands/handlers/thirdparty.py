@@ -24,7 +24,8 @@ class CreateThirdpartyHandler(CommandHandler):
 
     @property
     def required_permission(self) -> str:
-        return "thirdparty.create"
+        # Maps to Dolibarr permission: societe.thirdparty_customer.write
+        return "societe.thirdparty_customer.write"
 
     def validate_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Validate and normalize thirdparty payload."""

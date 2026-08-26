@@ -154,17 +154,18 @@ class DeterministicIntentInterpreter(IntentInterpreter):
 
         # CREATE THIRDPARTY patterns
         # "crea el cliente ACME CIF B12345678"
+        # "crea el cliente ACME con CIF B12345678"
         # "crea el proveedor Pinturas Norte SL"
         # "crea cliente ACME cif B12345678"
         thirdparty_patterns = [
-            # "crea el cliente ACME CIF B12345678"
-            (r"^crea\s+el\s+cliente\s+(.+?)\s+(?:cif|nif)\s+(\S+)$", True, False),
-            # "crea el proveedor Pinturas Norte"
-            (r"^crea\s+el\s+proveedor\s+(.+?)(?:\s+(?:cif|nif)\s+(\S+))?$", False, True),
-            # "crea cliente ACME CIF B12345678"
-            (r"^crea\s+cliente\s+(.+?)\s+(?:cif|nif)\s+(\S+)$", True, False),
-            # "crea proveedor Pinturas Norte"
-            (r"^crea\s+proveedor\s+(.+?)(?:\s+(?:cif|nif)\s+(\S+))?$", False, True),
+            # "crea el cliente ACME CIF B12345678" or "crea el cliente ACME con CIF B12345678"
+            (r"^crea\s+el\s+cliente\s+(.+?)\s+(?:con\s+)?(?:cif|nif)\s+(\S+)$", True, False),
+            # "crea el proveedor Pinturas Norte" or "crea el proveedor Pinturas Norte con CIF..."
+            (r"^crea\s+el\s+proveedor\s+(.+?)(?:\s+(?:con\s+)?(?:cif|nif)\s+(\S+))?$", False, True),
+            # "crea cliente ACME CIF B12345678" or "crea cliente ACME con CIF B12345678"
+            (r"^crea\s+cliente\s+(.+?)\s+(?:con\s+)?(?:cif|nif)\s+(\S+)$", True, False),
+            # "crea proveedor Pinturas Norte" or "crea proveedor Pinturas Norte con CIF..."
+            (r"^crea\s+proveedor\s+(.+?)(?:\s+(?:con\s+)?(?:cif|nif)\s+(\S+))?$", False, True),
         ]
 
         for pattern, is_customer, is_supplier in thirdparty_patterns:
@@ -805,6 +806,8 @@ Usuario: "productos de ACME"
         schema = IntentInterpretation.model_json_schema()
 
         # Llamar a Ollama con format=schema
+        import json
+
         try:
             result = await self._provider.generate(
                 prompt=text.strip(),
@@ -816,8 +819,6 @@ Usuario: "productos de ACME"
             )
 
             # Parsear respuesta JSON
-            import json
-
             response_text = result.get("text", "").strip()
             if not response_text:
                 return IntentInterpretation(
