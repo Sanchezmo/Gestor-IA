@@ -567,7 +567,13 @@ def create_audit_logger(instance_config: InstanceConfig | None = None, database_
         return AuditLogger(database_url)
 
     if instance_config:
-        return AuditLogger((lambda u: u if u.startswith("mysql+pymysql://") else u.replace("mysql://", "mysql+pymysql://"))(instance_config.get_dolibarr_db_url()))
+        # Usar BD de auditoría global (no la BD de Dolibarr de la instancia)
+        from core.hermes.config import get_global_settings
+
+        settings = get_global_settings()
+        return AuditLogger(
+            f"mysql+pymysql://root:{settings.MARIADB_ROOT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/gestor_ia_audit"
+        )
 
     # Fallback: global audit DB (separada)
     from core.hermes.config import get_global_settings

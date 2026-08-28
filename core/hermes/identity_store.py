@@ -21,7 +21,7 @@ from core.hermes.identity import TelegramIdentity
 from core.hermes.instance_config import validate_instance_id
 from core.hermes.utils import get_instances_root
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 -- Schema version tracking
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS telegram_identities (
     username_cache TEXT,
     first_name_cache TEXT,
     last_name_cache TEXT,
+    dolibarr_api_key TEXT,
     PRIMARY KEY (instance_id, telegram_user_id),
     UNIQUE(instance_id, dolibarr_user_id)
 );
@@ -103,6 +104,14 @@ class IdentityStore:
         current_version = row[0] if row else 0
 
         if current_version < SCHEMA_VERSION:
+            # Migration from v1 to v2: add dolibarr_api_key column
+            if current_version < 2:
+                try:
+                    conn.execute("ALTER TABLE telegram_identities ADD COLUMN dolibarr_api_key TEXT")
+                except sqlite3.OperationalError:
+                    # Column might already exist
+                    pass
+
             # Run migrations (for future versions)
             # For now, just set version
             conn.execute(
@@ -159,8 +168,8 @@ class IdentityStore:
                 INSERT INTO telegram_identities (
                     instance_id, telegram_user_id, dolibarr_user_id,
                     enabled, created_at, last_seen_at,
-                    username_cache, first_name_cache, last_name_cache
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    username_cache, first_name_cache, last_name_cache, dolibarr_api_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row["instance_id"],
@@ -172,6 +181,7 @@ class IdentityStore:
                     row["username_cache"],
                     row["first_name_cache"],
                     row["last_name_cache"],
+                    row["dolibarr_api_key"],
                 ),
             )
             conn.commit()
@@ -189,7 +199,8 @@ class IdentityStore:
                     last_seen_at = ?,
                     username_cache = ?,
                     first_name_cache = ?,
-                    last_name_cache = ?
+                    last_name_cache = ?,
+                    dolibarr_api_key = ?
                 WHERE instance_id = ? AND telegram_user_id = ?
                 """,
                 (
@@ -199,6 +210,7 @@ class IdentityStore:
                     row["username_cache"],
                     row["first_name_cache"],
                     row["last_name_cache"],
+                    row["dolibarr_api_key"],
                     row["instance_id"],
                     row["telegram_user_id"],
                 ),
@@ -247,6 +259,17 @@ class IdentityStore:
             cursor = conn.execute(
                 "UPDATE telegram_identities SET last_seen_at = ? WHERE instance_id = ? AND telegram_user_id = ?",
                 (now, self.instance_id, telegram_user_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(f"Identity not found: {self.instance_id}/{telegram_user_id}")
+            conn.commit()
+
+    def set_dolibarr_api_key(self, telegram_user_id: int, api_key: str | None) -> None:
+        """Update Dolibarr API key for a user."""
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "UPDATE telegram_identities SET dolibarr_api_key = ? WHERE instance_id = ? AND telegram_user_id = ?",
+                (api_key, self.instance_id, telegram_user_id),
             )
             if cursor.rowcount == 0:
                 raise KeyError(f"Identity not found: {self.instance_id}/{telegram_user_id}")

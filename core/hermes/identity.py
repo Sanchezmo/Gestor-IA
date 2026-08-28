@@ -32,6 +32,7 @@ class TelegramIdentity:
     username_cache: str | None = None
     first_name_cache: str | None = None
     last_name_cache: str | None = None
+    dolibarr_api_key: str | None = None  # Per-user Dolibarr API key for ERP authorization
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> TelegramIdentity:
@@ -49,6 +50,7 @@ class TelegramIdentity:
             username_cache=row.get("username_cache"),
             first_name_cache=row.get("first_name_cache"),
             last_name_cache=row.get("last_name_cache"),
+            dolibarr_api_key=row.get("dolibarr_api_key"),
         )
 
     def to_row(self) -> dict[str, Any]:
@@ -63,6 +65,7 @@ class TelegramIdentity:
             "username_cache": self.username_cache,
             "first_name_cache": self.first_name_cache,
             "last_name_cache": self.last_name_cache,
+            "dolibarr_api_key": self.dolibarr_api_key,
         }
 
     def with_enabled(self, enabled: bool) -> TelegramIdentity:
@@ -77,6 +80,7 @@ class TelegramIdentity:
             username_cache=self.username_cache,
             first_name_cache=self.first_name_cache,
             last_name_cache=self.last_name_cache,
+            dolibarr_api_key=self.dolibarr_api_key,
         )
 
     def with_last_seen(self, last_seen_at: datetime) -> TelegramIdentity:
@@ -91,6 +95,7 @@ class TelegramIdentity:
             username_cache=self.username_cache,
             first_name_cache=self.first_name_cache,
             last_name_cache=self.last_name_cache,
+            dolibarr_api_key=self.dolibarr_api_key,
         )
 
     def with_metadata(
@@ -110,6 +115,22 @@ class TelegramIdentity:
             username_cache=username if username is not None else self.username_cache,
             first_name_cache=first_name if first_name is not None else self.first_name_cache,
             last_name_cache=last_name if last_name is not None else self.last_name_cache,
+            dolibarr_api_key=self.dolibarr_api_key,
+        )
+
+    def with_dolibarr_api_key(self, api_key: str | None) -> TelegramIdentity:
+        """Return copy with updated Dolibarr API key."""
+        return TelegramIdentity(
+            instance_id=self.instance_id,
+            telegram_user_id=self.telegram_user_id,
+            dolibarr_user_id=self.dolibarr_user_id,
+            enabled=self.enabled,
+            created_at=self.created_at,
+            last_seen_at=self.last_seen_at,
+            username_cache=self.username_cache,
+            first_name_cache=self.first_name_cache,
+            last_name_cache=self.last_name_cache,
+            dolibarr_api_key=api_key,
         )
 
 
@@ -186,7 +207,7 @@ class UserContext:
 class GestorPermissions:
     """Gestor-IA specific permissions (not from Dolibarr ERP)."""
 
-    # Read permissions
+    # Read permissions (Hermes-specific only)
     AI_USE = "ai.use"
     AI_EXTERNAL_PROVIDER = "ai.external_provider"
     AUDIT_READ = "audit.read"
@@ -194,20 +215,22 @@ class GestorPermissions:
     INSTANCE_MANAGE = "instance.manage"
     CONTENT_GENERATE = "content.generate"
     ADMIN = "admin"
-    PRODUCT_READ = "product.read"
-    THIRDPARTY_READ = "thirdparty.read"
-    CUSTOMER_INVOICE_READ = "customer_invoice.read"
-    SUPPLIER_INVOICE_READ = "supplier_invoice.read"
 
-    # Write permissions (Command Layer V1)
+    # Write permissions (Command Layer V1 - Hermes controls workflow, NOT ERP permission)
     THIRDPARTY_CREATE = "thirdparty.create"
     PRODUCT_CREATE = "product.create"
     SERVICE_CREATE = "service.create"
 
-    # Write permissions (Command Layer V2)
+    # Write permissions (Command Layer V2 - experimental)
     PROPOSAL_CREATE = "proposal.create"
 
-    # All Gestor-IA permissions
+    # Advanced/Experimental capabilities (future)
+    BC3_IMPORT = "bc3.import"
+    MASS_OPERATIONS = "mass_operations"
+    MEDIA_PUBLISH = "media.publish"
+    SYSTEM_MANAGE = "system.manage"
+
+    # All Gestor-IA permissions (Hermes-specific only - NO ERP mirrors)
     ALL: frozenset[str] = frozenset(
         [
             AI_USE,
@@ -217,14 +240,14 @@ class GestorPermissions:
             INSTANCE_MANAGE,
             CONTENT_GENERATE,
             ADMIN,
-            PRODUCT_READ,
-            THIRDPARTY_READ,
-            CUSTOMER_INVOICE_READ,
-            SUPPLIER_INVOICE_READ,
             THIRDPARTY_CREATE,
             PRODUCT_CREATE,
             SERVICE_CREATE,
             PROPOSAL_CREATE,
+            BC3_IMPORT,
+            MASS_OPERATIONS,
+            MEDIA_PUBLISH,
+            SYSTEM_MANAGE,
         ]
     )
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from core.hermes.context import CompanyContext
-from core.hermes.identity import UserContext
+from core.hermes.identity import TelegramIdentity, UserContext
 from core.hermes.identity_store import IdentityStore
 from core.hermes.permissions import merge_dolibarr_permissions
 from core.integrations.dolibarr.client import DolibarrClient, DolibarrException
@@ -87,6 +87,32 @@ class DolibarrConnectionError(IdentityError):
         )
 
 
+class DolibarrAuthError(IdentityError):
+    """Dolibarr authentication failed (401) - invalid user API key."""
+
+    def __init__(self, instance_id: str, telegram_user_id: int, original_error: DolibarrException):
+        self.original_error = original_error
+        super().__init__(
+            f"Dolibarr authentication failed for Telegram user {telegram_user_id} "
+            f"in instance {instance_id}: invalid API key",
+            instance_id,
+            telegram_user_id,
+        )
+
+
+class DolibarrPermissionError(IdentityError):
+    """Dolibarr permission denied (403) - user lacks ERP permissions."""
+
+    def __init__(self, instance_id: str, telegram_user_id: int, original_error: DolibarrException):
+        self.original_error = original_error
+        super().__init__(
+            f"Dolibarr permission denied for Telegram user {telegram_user_id} "
+            f"in instance {instance_id}: user lacks ERP permissions",
+            instance_id,
+            telegram_user_id,
+        )
+
+
 # =========================================================================
 # IDENTITY RESOLVER
 # =========================================================================
@@ -100,6 +126,7 @@ class IdentityResolver:
     1. Load TelegramIdentity from SQLite (instance_id + telegram_user_id)
     2. Validate identity exists and is enabled
     3. Load DolibarrUser via DolibarrClient.get_user() with permissions
+       using the USER'S OWN Dolibarr API key (not shared admin key)
     4. Validate Dolibarr user exists and is active
     5. Load user groups and group permissions
     6. Merge user + group permissions
@@ -110,7 +137,7 @@ class IdentityResolver:
     def __init__(
         self,
         identity_store: IdentityStore,
-        dolibarr_client_factory: Callable[[CompanyContext], DolibarrClient],
+        dolibarr_client_factory: Callable[[CompanyContext, TelegramIdentity], DolibarrClient],
     ):
         self._store = identity_store
         self._client_factory = dolibarr_client_factory
@@ -135,6 +162,8 @@ class IdentityResolver:
             IdentityDisabledError: Telegram identity disabled
             DolibarrUserNotFoundError: Dolibarr user not found
             DolibarrUserDisabledError: Dolibarr user inactive
+            DolibarrAuthError: User's Dolibarr API key is invalid (401)
+            DolibarrPermissionError: User lacks ERP permissions in Dolibarr (403)
             DolibarrConnectionError: API connection failed
         """
         instance_id = company_context.instance_id
@@ -147,14 +176,18 @@ class IdentityResolver:
         if not identity.enabled:
             raise IdentityDisabledError(instance_id, telegram_user_id)
 
-        # 2. Load Dolibarr user
-        client = self._client_factory(company_context)
+        # 2. Load Dolibarr user using USER'S OWN API KEY
+        client = self._client_factory(company_context, identity)
         try:
             async with client as dolibarr:
                 user = await dolibarr.get_user(identity.dolibarr_user_id, include_permissions=True)
         except DolibarrException as e:
             if e.status_code == 404:
                 raise DolibarrUserNotFoundError(instance_id, telegram_user_id, identity.dolibarr_user_id)
+            elif e.status_code == 401:
+                raise DolibarrAuthError(instance_id, telegram_user_id, e)
+            elif e.status_code == 403:
+                raise DolibarrPermissionError(instance_id, telegram_user_id, e)
             # Other errors (5xx, timeout, etc.) -> connection error
             raise DolibarrConnectionError(instance_id, telegram_user_id, e)
 

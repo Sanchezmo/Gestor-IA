@@ -2,10 +2,14 @@
 Authorization service for multi-user permission checks.
 
 Centralizes all permission logic with default-deny principle.
+
+Hermes ONLY manages Hermes-specific capabilities.
+Dolibarr is the SOLE AUTHORITY for ERP permissions.
 """
 
 from __future__ import annotations
 
+from core.hermes.capabilities import get_capability_resolver
 from core.hermes.identity import UserContext
 
 
@@ -32,8 +36,9 @@ class AuthorizationService:
 
     Principles:
     - Default deny: if permission not provable -> DENY
-    - Single source of truth: UserContext.effective_permissions
+    - Single source of truth: UserContext.gestor_roles for Hermes capabilities
     - Clean API: can() for checks, require() for enforcement
+    - ERP permissions are NOT checked here - Dolibarr enforces them
     """
 
     def __init__(self) -> None:
@@ -45,12 +50,21 @@ class AuthorizationService:
 
         Args:
             user_context: Authenticated user context
-            permission: Permission string (e.g., "thirdparty.read", "ai.use")
+            permission: Permission string (e.g., "ai.use", "admin")
 
         Returns:
             True if allowed, False if denied (default deny)
+            
+        Note:
+            Only checks Hermes-specific capabilities.
+            ERP permissions (thirdparty.read, product.read, etc.) are NOT checked here.
+            Dolibarr will return 403 if the user lacks ERP permissions.
         """
-        return user_context.has_permission(permission)
+        # Use CapabilityResolver to check Hermes capabilities only
+        resolver = get_capability_resolver()
+        # User's effective_permissions includes both ERP permissions (flattened) and gestor_roles
+        # We only check gestor_roles for Hermes capabilities
+        return resolver.resolve(permission, user_context.gestor_roles)
 
     def require(self, user_context: UserContext, permission: str) -> None:
         """
@@ -61,14 +75,14 @@ class AuthorizationService:
             permission: Permission string
 
         Raises:
-            ForbiddenError: If permission not in effective_permissions
+            ForbiddenError: If permission not in gestor_roles
         """
         if not self.can(user_context, permission):
             raise ForbiddenError(permission, user_context)
 
-    def get_effective_permissions(self, user_context: UserContext) -> frozenset[str]:
-        """Get all effective permissions for a user."""
-        return user_context.effective_permissions
+    def get_hermes_capabilities(self, user_context: UserContext) -> frozenset[str]:
+        """Get all Hermes capabilities granted to the user."""
+        return user_context.gestor_roles
 
     def require_any(self, user_context: UserContext, permissions: list[str]) -> None:
         """

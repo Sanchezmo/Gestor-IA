@@ -141,13 +141,62 @@ class CompanyContext:
     # =========================================================================
 
     def create_dolibarr_client(self) -> DolibarrClient:
-        """Crear cliente Dolibarr configurado para esta instancia."""
+        """Crear cliente Dolibarr configurado para esta instancia (usa API key de instancia/admin)."""
         from core.integrations.dolibarr.client import DolibarrClient
 
         db = self.instance_config.dolibarr
         return DolibarrClient(
             base_url=db.internal_url,
             api_key=db.api_key,
+            timeout=30,
+        )
+
+    def create_dolibarr_client_for_user(self, identity) -> DolibarrClient:
+        """
+        Crear cliente Dolibarr usando la API key DEL USUARIO.
+        
+        FAIL CLOSED: Si el usuario no tiene API key configurada, lanza error.
+        NO usa fallback a la key de instancia/admin.
+        
+        Nota: Incluye fallback defensivo para cargar la API key desde la BD
+        si falta en el objeto identity (workaround para race condition SQLite).
+        """
+        from core.integrations.dolibarr.client import DolibarrClient
+        from core.hermes.identity_store import IdentityStore
+        from core.hermes.utils import get_instances_root
+        from pathlib import Path
+
+        db = self.instance_config.dolibarr
+        
+        # FAIL CLOSED: Validar que existe identity
+        if not identity:
+            raise ValueError(
+                "No TelegramIdentity provided. Cannot create user-scoped DolibarrClient."
+            )
+        
+        # Obtener API key: primero del objeto identity, si falla cargar desde BD
+        api_key = identity.dolibarr_api_key
+        if not api_key:
+            # Workaround defensivo: cargar desde BD directamente
+            try:
+                store = IdentityStore(self.instance_id, get_instances_root())
+                fresh_identity = store.get(identity.telegram_user_id)
+                if fresh_identity and fresh_identity.dolibarr_api_key:
+                    api_key = fresh_identity.dolibarr_api_key
+                    # Actualizar el objeto identity para futuras llamadas
+                    identity = fresh_identity
+            except Exception:
+                pass  # Si falla la recarga, mantener comportamiento FAIL CLOSED
+        
+        if not api_key:
+            raise ValueError(
+                f"User {identity.telegram_user_id} has no Dolibarr API key configured. "
+                f"FAIL CLOSED: no admin fallback."
+            )
+        
+        return DolibarrClient(
+            base_url=db.internal_url,
+            api_key=api_key,
             timeout=30,
         )
 
