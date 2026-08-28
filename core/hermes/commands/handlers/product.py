@@ -37,7 +37,11 @@ def _parse_decimal(value: Any, field_name: str, min_value: Decimal | None = None
 
 
 class CreateProductHandler(CommandHandler):
-    """Handler for creating products (type=0) in Dolibarr."""
+    """Handler for creating products (type=0) in Dolibarr.
+
+    ERP permission checked by Dolibarr via user's API key.
+    Hermes only validates identity, cross-instance isolation, and workflow security.
+    """
 
     @property
     def command_type(self) -> CommandType:
@@ -45,7 +49,9 @@ class CreateProductHandler(CommandHandler):
 
     @property
     def required_permission(self) -> str:
-        return "product.create"
+        # No Hermes-specific permission required for this write operation.
+        # Dolibarr enforces ERP permissions (produit.creer) via the user's API key.
+        return ""
 
     def validate_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Validate and normalize product payload."""
@@ -118,8 +124,14 @@ class CreateProductHandler(CommandHandler):
     async def execute(
         self, company_context: CompanyContext, user_context: UserContext, validated_payload: dict[str, Any]
     ) -> CommandResult:
-        """Execute product creation in Dolibarr."""
-        dolibarr = company_context.create_dolibarr_client()
+        """Execute product creation in Dolibarr using user's API key."""
+        # Obtener TelegramIdentity del user_context para usar su API key
+        from core.hermes.identity_store import IdentityStore
+        identity_store = IdentityStore(company_context.instance_id)
+        identity = identity_store.get(user_context.telegram_user_id)
+
+        # Crear cliente Dolibarr usando la API key DEL USUARIO
+        dolibarr = company_context.create_dolibarr_client_for_user(identity)
 
         # Build Dolibarr payload - pass Decimal as string for API
         dolibarr_payload = {
@@ -160,7 +172,19 @@ class CreateProductHandler(CommandHandler):
                 )
 
         except DolibarrException as e:
-            if e.status_code == 409:
+            if e.status_code == 401:
+                return CommandResult(
+                    success=False,
+                    error_code="DOLIBARR_AUTH_FAILED",
+                    error_message="No he podido autenticar tu usuario en Dolibarr",
+                )
+            elif e.status_code == 403:
+                return CommandResult(
+                    success=False,
+                    error_code="DOLIBARR_PERMISSION_DENIED",
+                    error_message="No tienes permisos en Dolibarr para crear productos",
+                )
+            elif e.status_code == 409:
                 raise
             return CommandResult(
                 success=False,
@@ -183,7 +207,11 @@ class CreateProductHandler(CommandHandler):
 
 
 class CreateServiceHandler(CommandHandler):
-    """Handler for creating services (type=1) in Dolibarr."""
+    """Handler for creating services (type=1) in Dolibarr.
+
+    ERP permission checked by Dolibarr via user's API key.
+    Hermes only validates identity, cross-instance isolation, and workflow security.
+    """
 
     @property
     def command_type(self) -> CommandType:
@@ -191,7 +219,9 @@ class CreateServiceHandler(CommandHandler):
 
     @property
     def required_permission(self) -> str:
-        return "service.create"
+        # No Hermes-specific permission required for this write operation.
+        # Dolibarr enforces ERP permissions (produit.creer) via the user's API key.
+        return ""
 
     def validate_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Validate and normalize service payload (same as product)."""
@@ -230,8 +260,14 @@ class CreateServiceHandler(CommandHandler):
     async def execute(
         self, company_context: CompanyContext, user_context: UserContext, validated_payload: dict[str, Any]
     ) -> CommandResult:
-        """Execute service creation in Dolibarr."""
-        dolibarr = company_context.create_dolibarr_client()
+        """Execute service creation in Dolibarr using user's API key."""
+        # Obtener TelegramIdentity del user_context para usar su API key
+        from core.hermes.identity_store import IdentityStore
+        identity_store = IdentityStore(company_context.instance_id)
+        identity = identity_store.get(user_context.telegram_user_id)
+
+        # Crear cliente Dolibarr usando la API key DEL USUARIO
+        dolibarr = company_context.create_dolibarr_client_for_user(identity)
 
         dolibarr_payload = {
             "ref": validated_payload["ref"],
@@ -271,7 +307,19 @@ class CreateServiceHandler(CommandHandler):
                 )
 
         except DolibarrException as e:
-            if e.status_code == 409:
+            if e.status_code == 401:
+                return CommandResult(
+                    success=False,
+                    error_code="DOLIBARR_AUTH_FAILED",
+                    error_message="No he podido autenticar tu usuario en Dolibarr",
+                )
+            elif e.status_code == 403:
+                return CommandResult(
+                    success=False,
+                    error_code="DOLIBARR_PERMISSION_DENIED",
+                    error_message="No tienes permisos en Dolibarr para crear servicios",
+                )
+            elif e.status_code == 409:
                 raise
             return CommandResult(
                 success=False,

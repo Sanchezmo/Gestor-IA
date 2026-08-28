@@ -16,7 +16,11 @@ from core.integrations.dolibarr.client import DolibarrException
 
 
 class CreateThirdpartyHandler(CommandHandler):
-    """Handler for creating thirdparties (clients/suppliers)."""
+    """Handler for creating thirdparties (clients/suppliers).
+
+    ERP permission checked by Dolibarr via user's API key.
+    Hermes only validates identity, cross-instance isolation, and workflow security.
+    """
 
     @property
     def command_type(self) -> CommandType:
@@ -24,8 +28,10 @@ class CreateThirdpartyHandler(CommandHandler):
 
     @property
     def required_permission(self) -> str:
-        # Maps to Dolibarr permission: societe.thirdparty_customer.write
-        return "societe.thirdparty_customer.write"
+        # No Hermes-specific permission required for this write operation.
+        # Dolibarr enforces ERP permissions (societe.thirdparty_customer.write / societe.thirdparty_supplier.write)
+        # via the user's API key. Hermes only enforces identity, isolation, preview/confirm, idempotency.
+        return ""
 
     def validate_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Validate and normalize thirdparty payload."""
@@ -127,8 +133,14 @@ class CreateThirdpartyHandler(CommandHandler):
     async def execute(
         self, company_context: CompanyContext, user_context: UserContext, validated_payload: dict[str, Any]
     ) -> CommandResult:
-        """Execute thirdparty creation in Dolibarr."""
-        dolibarr = company_context.create_dolibarr_client()
+        """Execute thirdparty creation in Dolibarr using user's API key."""
+        # Obtener TelegramIdentity del user_context para usar su API key
+        from core.hermes.identity_store import IdentityStore
+        identity_store = IdentityStore(company_context.instance_id)
+        identity = identity_store.get(user_context.telegram_user_id)
+
+        # Crear cliente Dolibarr usando la API key DEL USUARIO
+        dolibarr = company_context.create_dolibarr_client_for_user(identity)
 
         # Build Dolibarr payload
         dolibarr_payload = {
@@ -175,7 +187,19 @@ class CreateThirdpartyHandler(CommandHandler):
                 )
 
         except DolibarrException as e:
-            if e.status_code == 409:
+            if e.status_code == 401:
+                return CommandResult(
+                    success=False,
+                    error_code="DOLIBARR_AUTH_FAILED",
+                    error_message="No he podido autenticar tu usuario en Dolibarr",
+                )
+            elif e.status_code == 403:
+                return CommandResult(
+                    success=False,
+                    error_code="DOLIBARR_PERMISSION_DENIED",
+                    error_message="No tienes permisos en Dolibarr para crear terceros",
+                )
+            elif e.status_code == 409:
                 # Duplicate - will be handled by executor as idempotent
                 raise
             return CommandResult(

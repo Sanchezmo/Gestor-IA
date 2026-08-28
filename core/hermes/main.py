@@ -562,10 +562,12 @@ async def _format_thirdparties_response(parties: list[dict], limit: int, page: i
             tipo.append("Proveedor")
         tipo_str = f" ({', '.join(tipo)})" if tipo else ""
         email_str = f" - {p['email']}" if p.get("email") else ""
-        lines.append(f"{i}. {p['name']}{tipo_str}{email_str}")
+        # Dolibarr usa 'nom' para el nombre de terceros
+        name = p.get("nom") or p.get("name") or "Sin nombre"
+        lines.append(f"{i}. {name}{tipo_str}{email_str}")
 
     if len(parties) >= limit:
-        lines.append(f"\nMostrando los primeros {limit} resultados (página {page}).")
+        lines.append(f"\nMostrando los primeros {limit} resultados (página {page + 1}).")
 
     return "\n".join(lines)
 
@@ -708,68 +710,46 @@ async def telegram_webhook(
                         error_message="Telegram user not linked",
                     )
             else:
-                # AUTORIZACIÓN ANTES DE EJECUTAR
-                auth_service = AuthorizationService()
-                has_perm = (user_context.has_permission("societe.thirdparty_customer.read") or
-                           user_context.has_permission("societe.thirdparty_supplier.read"))
-                try:
-                    if not has_perm:
-                        raise PermissionError("Falta permiso: societe.thirdparty_customer.read / societe.thirdparty_supplier.read")
-                except PermissionError as e:
-                    response_text = "No tienes permiso para consultar terceros."
-                    # Auditoría: autorización denegada
+                # AUTORIZACIÓN Y EJECUCIÓN via ToolRegistry (usa AuthorizationService + CapabilityResolver)
+                tool_result = await tool_registry.execute_tool(
+                    instance_id=instance_id,
+                    name="list_thirdparties",
+                    company_context=ctx,
+                    user_context=user_context,
+                    limit=10,
+                    page=0,
+                )
+
+                if tool_result.success:
+                    response_text = await _format_thirdparties_response(
+                        tool_result.data["thirdparties"],
+                        tool_result.data["limit"],
+                        tool_result.data["page"],
+                    )
+                    # Auditoría: éxito
                     if _audit_logger:
                         await _audit_logger.log_from_context(
                             ctx,
-                            action=AuditActions.AUTHORIZATION_DENIED,
-                            resource_type="tool",
-                            resource_id="list_thirdparties",
-                            status_code=403,
-                            success=False,
-                            error_code="PERMISSION_DENIED",
-                            error_message=str(e),
+                            action="thirdparty.list",
+                            resource_type="thirdparty",
+                            status_code=200,
+                            success=True,
+                            new_state={"count": tool_result.data["count"]},
                         )
                 else:
-                    # EJECUTAR TOOL via Hermes
-                    tool_result = await tool_registry.execute_tool(
-                        instance_id=instance_id,
-                        name="list_thirdparties",
-                        company_context=ctx,
-                        user_context=user_context,
-                        limit=10,
-                        offset=0,
-                    )
-
-                    if tool_result.success:
-                        response_text = await _format_thirdparties_response(
-                            tool_result.data["thirdparties"],
-                            tool_result.data["limit"],
-                            tool_result.data["offset"],
+                    # Error de tool (Dolibarr, etc.)
+                    response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                    # Auditoría: error
+                    if _audit_logger:
+                        await _audit_logger.log_from_context(
+                            ctx,
+                            action="thirdparty.list",
+                            resource_type="thirdparty",
+                            status_code=500,
+                            success=False,
+                            error_code=tool_result.error_code,
+                            error_message=tool_result.error_message,
                         )
-                        # Auditoría: éxito
-                        if _audit_logger:
-                            await _audit_logger.log_from_context(
-                                ctx,
-                                action="thirdparty.list",
-                                resource_type="thirdparty",
-                                status_code=200,
-                                success=True,
-                                new_state={"count": tool_result.data["count"]},
-                            )
-                    else:
-                        # Error de tool (Dolibarr, etc.)
-                        response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
-                        # Auditoría: error
-                        if _audit_logger:
-                            await _audit_logger.log_from_context(
-                                ctx,
-                                action="thirdparty.list",
-                                resource_type="thirdparty",
-                                status_code=500,
-                                success=False,
-                                error_code=tool_result.error_code,
-                                error_message=tool_result.error_message,
-                            )
 
         elif text == "/facturas":
             if not user_context:
@@ -786,59 +766,44 @@ async def telegram_webhook(
                         error_message="Telegram user not linked",
                     )
             else:
-                auth_service = AuthorizationService()
-                try:
-                    auth_service.require(user_context, "customer_invoice.read")
-                except Exception as e:
-                    response_text = "No tienes permiso para consultar facturas de cliente."
+                # ERP permission checked by Dolibarr via user's API key
+                tool_result = await tool_registry.execute_tool(
+                    instance_id=instance_id,
+                    name="list_customer_invoices",
+                    company_context=ctx,
+                    user_context=user_context,
+                    limit=10,
+                    page=1,
+                )
+
+                if tool_result.success:
+                    response_text = format_customer_invoices_for_telegram(
+                        tool_result.data["invoices"],
+                        tool_result.data["limit"],
+                        tool_result.data["page"],
+                    )
                     if _audit_logger:
                         await _audit_logger.log_from_context(
                             ctx,
-                            action=AuditActions.AUTHORIZATION_DENIED,
-                            resource_type="tool",
-                            resource_id="list_customer_invoices",
-                            status_code=403,
-                            success=False,
-                            error_code="PERMISSION_DENIED",
-                            error_message=str(e),
+                            action="customer_invoice.list",
+                            resource_type="customer_invoice",
+                            status_code=200,
+                            success=True,
+                            new_state={"count": tool_result.data["count"]},
                         )
                 else:
-                    tool_result = await tool_registry.execute_tool(
-                        instance_id=instance_id,
-                        name="list_customer_invoices",
-                        company_context=ctx,
-                        user_context=user_context,
-                        limit=10,
-                        offset=0,
-                    )
-
-                    if tool_result.success:
-                        response_text = format_customer_invoices_for_telegram(
-                            tool_result.data["invoices"],
-                            tool_result.data["limit"],
-                            tool_result.data["offset"],
+                    # ToolResult.error_message already handles 401/403 from Dolibarr
+                    response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                    if _audit_logger:
+                        await _audit_logger.log_from_context(
+                            ctx,
+                            action="customer_invoice.list",
+                            resource_type="customer_invoice",
+                            status_code=403 if tool_result.error_code == "DOLIBARR_PERMISSION_DENIED" else 500,
+                            success=False,
+                            error_code=tool_result.error_code,
+                            error_message=tool_result.error_message,
                         )
-                        if _audit_logger:
-                            await _audit_logger.log_from_context(
-                                ctx,
-                                action="customer_invoice.list",
-                                resource_type="customer_invoice",
-                                status_code=200,
-                                success=True,
-                                new_state={"count": tool_result.data["count"]},
-                            )
-                    else:
-                        response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
-                        if _audit_logger:
-                            await _audit_logger.log_from_context(
-                                ctx,
-                                action="customer_invoice.list",
-                                resource_type="customer_invoice",
-                                status_code=500,
-                                success=False,
-                                error_code=tool_result.error_code,
-                                error_message=tool_result.error_message,
-                            )
 
         elif text == "/facturas_proveedor":
             if not user_context:
@@ -855,59 +820,44 @@ async def telegram_webhook(
                         error_message="Telegram user not linked",
                     )
             else:
-                auth_service = AuthorizationService()
-                try:
-                    auth_service.require(user_context, "supplier_invoice.read")
-                except Exception as e:
-                    response_text = "No tienes permiso para consultar facturas de proveedor."
+                # ERP permission checked by Dolibarr via user's API key
+                tool_result = await tool_registry.execute_tool(
+                    instance_id=instance_id,
+                    name="list_supplier_invoices",
+                    company_context=ctx,
+                    user_context=user_context,
+                    limit=10,
+                    page=1,
+                )
+
+                if tool_result.success:
+                    response_text = format_supplier_invoices_for_telegram(
+                        tool_result.data["invoices"],
+                        tool_result.data["limit"],
+                        tool_result.data["page"],
+                    )
                     if _audit_logger:
                         await _audit_logger.log_from_context(
                             ctx,
-                            action=AuditActions.AUTHORIZATION_DENIED,
-                            resource_type="tool",
-                            resource_id="list_supplier_invoices",
-                            status_code=403,
-                            success=False,
-                            error_code="PERMISSION_DENIED",
-                            error_message=str(e),
+                            action="supplier_invoice.list",
+                            resource_type="supplier_invoice",
+                            status_code=200,
+                            success=True,
+                            new_state={"count": tool_result.data["count"]},
                         )
                 else:
-                    tool_result = await tool_registry.execute_tool(
-                        instance_id=instance_id,
-                        name="list_supplier_invoices",
-                        company_context=ctx,
-                        user_context=user_context,
-                        limit=10,
-                        offset=0,
-                    )
-
-                    if tool_result.success:
-                        response_text = format_supplier_invoices_for_telegram(
-                            tool_result.data["invoices"],
-                            tool_result.data["limit"],
-                            tool_result.data["offset"],
+                    # ToolResult.error_message already handles 401/403 from Dolibarr
+                    response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                    if _audit_logger:
+                        await _audit_logger.log_from_context(
+                            ctx,
+                            action="supplier_invoice.list",
+                            resource_type="supplier_invoice",
+                            status_code=403 if tool_result.error_code == "DOLIBARR_PERMISSION_DENIED" else 500,
+                            success=False,
+                            error_code=tool_result.error_code,
+                            error_message=tool_result.error_message,
                         )
-                        if _audit_logger:
-                            await _audit_logger.log_from_context(
-                                ctx,
-                                action="supplier_invoice.list",
-                                resource_type="supplier_invoice",
-                                status_code=200,
-                                success=True,
-                                new_state={"count": tool_result.data["count"]},
-                            )
-                    else:
-                        response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
-                        if _audit_logger:
-                            await _audit_logger.log_from_context(
-                                ctx,
-                                action="supplier_invoice.list",
-                                resource_type="supplier_invoice",
-                                status_code=500,
-                                success=False,
-                                error_code=tool_result.error_code,
-                                error_message=tool_result.error_message,
-                            )
 
         elif text == "/productos":
             if not user_context:
@@ -924,61 +874,46 @@ async def telegram_webhook(
                         error_message="Telegram user not linked",
                     )
             else:
-                auth_service = AuthorizationService()
-                try:
-                    auth_service.require(user_context, "product.read")
-                except Exception as e:
-                    response_text = "No tienes permiso para consultar productos."
+                # ERP permission checked by Dolibarr via user's API key
+                tool_result = await tool_registry.execute_tool(
+                    instance_id=instance_id,
+                    name="list_products",
+                    company_context=ctx,
+                    user_context=user_context,
+                    limit=10,
+                    page=1,
+                    product_type="PRODUCT",
+                )
+
+                if tool_result.success:
+                    response_text = format_products_for_telegram(
+                        tool_result.data["products"],
+                        tool_result.data["limit"],
+                        tool_result.data["page"],
+                        ctx.currency if hasattr(ctx, "currency") else "EUR",
+                    )
                     if _audit_logger:
                         await _audit_logger.log_from_context(
                             ctx,
-                            action=AuditActions.AUTHORIZATION_DENIED,
-                            resource_type="tool",
-                            resource_id="list_products",
-                            status_code=403,
-                            success=False,
-                            error_code="PERMISSION_DENIED",
-                            error_message=str(e),
+                            action="product.list",
+                            resource_type="product",
+                            status_code=200,
+                            success=True,
+                            new_state={"count": tool_result.data["count"]},
                         )
                 else:
-                    tool_result = await tool_registry.execute_tool(
-                        instance_id=instance_id,
-                        name="list_products",
-                        company_context=ctx,
-                        user_context=user_context,
-                        limit=10,
-                        page=1,
-                        product_type="PRODUCT",
-                    )
-
-                    if tool_result.success:
-                        response_text = format_products_for_telegram(
-                            tool_result.data["products"],
-                            tool_result.data["limit"],
-                            tool_result.data["page"],
-                            ctx.currency if hasattr(ctx, "currency") else "EUR",
+                    # ToolResult.error_message already handles 401/403 from Dolibarr
+                    response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                    if _audit_logger:
+                        await _audit_logger.log_from_context(
+                            ctx,
+                            action="product.list",
+                            resource_type="product",
+                            status_code=403 if tool_result.error_code == "DOLIBARR_PERMISSION_DENIED" else 500,
+                            success=False,
+                            error_code=tool_result.error_code,
+                            error_message=tool_result.error_message,
                         )
-                        if _audit_logger:
-                            await _audit_logger.log_from_context(
-                                ctx,
-                                action="product.list",
-                                resource_type="product",
-                                status_code=200,
-                                success=True,
-                                new_state={"count": tool_result.data["count"]},
-                            )
-                    else:
-                        response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
-                        if _audit_logger:
-                            await _audit_logger.log_from_context(
-                                ctx,
-                                action="product.list",
-                                resource_type="product",
-                                status_code=500,
-                                success=False,
-                                error_code=tool_result.error_code,
-                                error_message=tool_result.error_message,
-                            )
 
         elif text == "/servicios":
             if not user_context:
@@ -995,61 +930,46 @@ async def telegram_webhook(
                         error_message="Telegram user not linked",
                     )
             else:
-                auth_service = AuthorizationService()
-                try:
-                    auth_service.require(user_context, "product.read")
-                except Exception as e:
-                    response_text = "No tienes permiso para consultar servicios."
+                # ERP permission checked by Dolibarr via user's API key
+                tool_result = await tool_registry.execute_tool(
+                    instance_id=instance_id,
+                    name="list_products",
+                    company_context=ctx,
+                    user_context=user_context,
+                    limit=10,
+                    page=1,
+                    product_type="SERVICE",
+                )
+
+                if tool_result.success:
+                    response_text = format_products_for_telegram(
+                        tool_result.data["products"],
+                        tool_result.data["limit"],
+                        tool_result.data["page"],
+                        ctx.currency if hasattr(ctx, "currency") else "EUR",
+                    )
                     if _audit_logger:
                         await _audit_logger.log_from_context(
                             ctx,
-                            action=AuditActions.AUTHORIZATION_DENIED,
-                            resource_type="tool",
-                            resource_id="list_products",
-                            status_code=403,
-                            success=False,
-                            error_code="PERMISSION_DENIED",
-                            error_message=str(e),
+                            action="product.list",
+                            resource_type="service",
+                            status_code=200,
+                            success=True,
+                            new_state={"count": tool_result.data["count"]},
                         )
                 else:
-                    tool_result = await tool_registry.execute_tool(
-                        instance_id=instance_id,
-                        name="list_products",
-                        company_context=ctx,
-                        user_context=user_context,
-                        limit=10,
-                        page=1,
-                        product_type="SERVICE",
-                    )
-
-                    if tool_result.success:
-                        response_text = format_products_for_telegram(
-                            tool_result.data["products"],
-                            tool_result.data["limit"],
-                            tool_result.data["page"],
-                            ctx.currency if hasattr(ctx, "currency") else "EUR",
+                    # ToolResult.error_message already handles 401/403 from Dolibarr
+                    response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
+                    if _audit_logger:
+                        await _audit_logger.log_from_context(
+                            ctx,
+                            action="product.list",
+                            resource_type="service",
+                            status_code=403 if tool_result.error_code == "DOLIBARR_PERMISSION_DENIED" else 500,
+                            success=False,
+                            error_code=tool_result.error_code,
+                            error_message=tool_result.error_message,
                         )
-                        if _audit_logger:
-                            await _audit_logger.log_from_context(
-                                ctx,
-                                action="product.list",
-                                resource_type="service",
-                                status_code=200,
-                                success=True,
-                                new_state={"count": tool_result.data["count"]},
-                            )
-                    else:
-                        response_text = tool_result.error_message or "No he podido consultar Dolibarr en este momento."
-                        if _audit_logger:
-                            await _audit_logger.log_from_context(
-                                ctx,
-                                action="product.list",
-                                resource_type="service",
-                                status_code=500,
-                                success=False,
-                                error_code=tool_result.error_code,
-                                error_message=tool_result.error_message,
-                            )
 
         # =====================================================================
         # QUERY LAYER V2: Procesar lenguaje natural con IntentInterpreter
@@ -1087,6 +1007,9 @@ async def telegram_webhook(
 
                         # Check permissions for QUERY actions
                         is_query_action = False
+                        auth_service = AuthorizationService()
+
+                        # Check permissions for QUERY actions using CapabilityResolver
                         if action in (
                             ThirdpartyAction.LIST,
                             ThirdpartyAction.SEARCH,
@@ -1102,34 +1025,8 @@ async def telegram_webhook(
                             InvoiceAction.COUNT_SUPPLIER_INVOICES,
                         ):
                             is_query_action = True
-                            try:
-                                if isinstance(action, ThirdpartyAction):
-                                    has_perm = (user_context.has_permission("societe.thirdparty_customer.read") or
-                                               user_context.has_permission("societe.thirdparty_supplier.read"))
-                                    required_perm = "societe.thirdparty_customer.read / societe.thirdparty_supplier.read"
-                                else:
-                                    has_perm = user_context.has_permission("customer_invoice.read")
-                                    required_perm = "customer_invoice.read"
-                                
-                                if not has_perm:
-                                    raise PermissionError(f"Falta permiso: {required_perm}")
-                            except PermissionError as e:
-                                response_text = f"No tienes permiso para {required_perm}."
-                                if _audit_logger:
-                                    await _audit_logger.log_from_context(
-                                        ctx,
-                                        action=AuditActions.AUTHORIZATION_DENIED,
-                                        resource_type="tool",
-                                        resource_id=action.value,
-                                        status_code=403,
-                                        success=False,
-                                        error_code="PERMISSION_DENIED",
-                                        error_message=str(e),
-                                    )
-                                # Skip execution
-                                action = None  # Mark as handled
 
-                        # EJECUTAR TOOL o INSIGHT via Hermes (si autorizado)
+                        # EJECUTAR TOOL o INSIGHT via Hermes
                         if action is not None:
                             if action in (
                                 ThirdpartyAction.LIST,
@@ -1273,13 +1170,13 @@ async def telegram_webhook(
                                     response_text = format_thirdparties_for_telegram(
                                         tool_result.data["thirdparties"],
                                         tool_result.data["limit"],
-                                        tool_result.data["offset"],
+                                        tool_result.data["page"],
                                     )
                                 elif action == ThirdpartyAction.SEARCH:
                                     response_text = format_thirdparties_for_telegram(
                                         tool_result.data["thirdparties"],
                                         tool_result.data["limit"],
-                                        tool_result.data["offset"],
+                                        tool_result.data["page"],
                                     )
                                 elif action == ThirdpartyAction.GET:
                                     response_text = format_thirdparty_detail_for_telegram(
@@ -1296,13 +1193,13 @@ async def telegram_webhook(
                                     response_text = format_customer_invoices_for_telegram(
                                         tool_result.data["invoices"],
                                         tool_result.data["limit"],
-                                        tool_result.data["offset"],
+                                        tool_result.data["page"],
                                     )
                                 elif action == InvoiceAction.SEARCH_CUSTOMER_INVOICES:
                                     response_text = format_customer_invoices_for_telegram(
                                         tool_result.data["invoices"],
                                         tool_result.data["limit"],
-                                        tool_result.data["offset"],
+                                        tool_result.data["page"],
                                     )
                                 elif action == InvoiceAction.GET_CUSTOMER_INVOICE:
                                     response_text = format_customer_invoice_detail_for_telegram(
@@ -1318,13 +1215,13 @@ async def telegram_webhook(
                                     response_text = format_supplier_invoices_for_telegram(
                                         tool_result.data["invoices"],
                                         tool_result.data["limit"],
-                                        tool_result.data["offset"],
+                                        tool_result.data["page"],
                                     )
                                 elif action == InvoiceAction.SEARCH_SUPPLIER_INVOICES:
                                     response_text = format_supplier_invoices_for_telegram(
                                         tool_result.data["invoices"],
                                         tool_result.data["limit"],
-                                        tool_result.data["offset"],
+                                        tool_result.data["page"],
                                     )
                                 elif action == InvoiceAction.GET_SUPPLIER_INVOICE:
                                     response_text = format_supplier_invoice_detail_for_telegram(

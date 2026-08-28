@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
+from core.hermes.authorization import AuthorizationService
 from core.hermes.context import CompanyContext
 from core.hermes.identity import UserContext
 
@@ -94,8 +95,9 @@ class Tool(ABC):
         pass
 
     def check_permissions(self, user_context: UserContext) -> bool:
-        """Verificar si el usuario tiene los permisos requeridos."""
-        return all(user_context.has_permission(p) for p in self.required_permissions)
+        """Verificar si el usuario tiene los permisos requeridos usando AuthorizationService."""
+        auth = AuthorizationService()
+        return all(auth.can(user_context, p) for p in self.required_permissions)
 
 
 class ToolRegistry:
