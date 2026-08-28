@@ -115,6 +115,11 @@ class DolibarrClient:
                 data=data,
             )
 
+            # Dolibarr devuelve 404 en listas vacías (comportamiento conocido de Dolibarr)
+            # Para GET en endpoints de lista, 404 = lista vacía, no error
+            if response.status_code == 404 and method == "GET":
+                return {"data": []}
+
             # Dolibarr devuelve 200/201 en éxito, 400+ en error
             if response.status_code >= 400:
                 try:
@@ -268,13 +273,13 @@ class DolibarrClient:
     async def list_thirdparties(
         self,
         limit: int = 100,
-        page: int = 1,
+        page: int = 0,
         sortfield: str = "rowid",
         sortorder: str = "ASC",
         sqlfilters: str | None = None,
     ) -> list[dict[str, Any]]:
-        if page < 1:
-            page = 1
+        if page < 0:
+            page = 0
         if limit < 1 or limit > 100:
             limit = 100
 
@@ -365,7 +370,7 @@ class DolibarrClient:
 
         Args:
             limit: Número máximo de resultados por página (default 100, max 100)
-            page: Número de página 1-based (default 1)
+            page: Número de página 0-based (default 0)
             sortfield: Campo de ordenación (rowid, ref, label, type, status, price, etc.)
             sortorder: Orden (ASC, DESC)
             type: Filtrar por tipo (0=PRODUCT, 1=SERVICE)
@@ -376,8 +381,8 @@ class DolibarrClient:
         Returns:
             Lista de productos, o dict con 'data' y 'pagination' si pagination_data=True
         """
-        if page < 1:
-            page = 1
+        if page < 0:
+            page = 0
         if limit < 1 or limit > 100:
             limit = 100
 

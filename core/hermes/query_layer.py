@@ -58,7 +58,7 @@ class ThirdpartyIntent:
     thirdparty_id: int | None = None  # Para get por ID
     limit: int = 20
     offset: int = 0
-    sort_field: str = "name"
+    sort_field: str = "nom"
     sort_order: str = "ASC"
 
     def to_tool_call(self) -> tuple[str, dict[str, Any]]:

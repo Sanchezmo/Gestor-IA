@@ -22,7 +22,7 @@ from core.integrations.dolibarr.client import DolibarrException
 ALLOWED_THIRDPARTY_SORT_FIELDS: frozenset[str] = frozenset(
     {
         "rowid",  # ID interno
-        "name",  # Nombre
+        "nom",  # Nombre (Dolibarr usa 'nom' para terceros)
         "ref",  # Referencia
         "date_creation",  # Fecha creación
         "date_modification",  # Fecha modificación
@@ -60,12 +60,12 @@ class ListThirdpartiesParams:
     """Parámetros para list_thirdparties."""
 
     limit: int = 20
-    page: int = 1
+    page: int = 0
     filter_customer: bool | None = None  # True=clientes, False=proveedores, None=todos
     filter_status: int | None = None  # 0=borrador, 1=activo, etc.
     sort_field: Literal[
         "rowid",
-        "name",
+        "nom",
         "ref",
         "date_creation",
         "date_modification",
@@ -74,7 +74,7 @@ class ListThirdpartiesParams:
         "client",
         "fournisseur",
         "status",
-    ] = "name"
+    ] = "nom"
     sort_order: Literal["ASC", "DESC"] = "ASC"
 
     def __post_init__(self) -> None:
@@ -90,8 +90,8 @@ class ListThirdpartiesParams:
                 f"sort_order '{self.sort_order}' no permitido. "
                 f"Valores permitidos: {', '.join(sorted(ALLOWED_SORT_ORDERS))}"
             )
-        if self.page < 1:
-            raise ValueError("El parámetro 'page' debe ser >= 1")
+        if self.page < 0:
+            raise ValueError("El parámetro 'page' debe ser >= 0")
 
     def to_dolibarr_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -151,10 +151,10 @@ class SearchThirdpartiesParams:
     filter_customer: bool | None = None  # True=clientes, False=proveedores, None=todos
     filter_supplier: bool | None = None  # True=proveedores, False=no proveedores, None=todos
     limit: int = 20
-    page: int = 1
+    page: int = 0
     sort_field: Literal[
         "rowid",
-        "name",
+        "nom",
         "ref",
         "date_creation",
         "date_modification",
@@ -163,7 +163,7 @@ class SearchThirdpartiesParams:
         "client",
         "fournisseur",
         "status",
-    ] = "name"
+    ] = "nom"
     sort_order: Literal["ASC", "DESC"] = "ASC"
 
     def __post_init__(self) -> None:
@@ -187,8 +187,8 @@ class SearchThirdpartiesParams:
         # Validate limit
         if self.limit < 1 or self.limit > 100:
             raise ValueError("El parámetro 'limit' debe estar entre 1 y 100")
-        if self.page < 1:
-            raise ValueError("El parámetro 'page' debe ser >= 1")
+        if self.page < 0:
+            raise ValueError("El parámetro 'page' debe ser >= 0")
 
     def to_dolibarr_params(self) -> dict[str, Any]:
         """Convertir a parámetros Dolibarr con sqlfilters para búsqueda."""
@@ -254,7 +254,7 @@ class CountThirdpartiesParams:
 
     def to_dolibarr_params(self) -> dict[str, Any]:
         """Convertir a parámetros Dolibarr para conteo."""
-        params: dict[str, Any] = {"limit": 1, "page": 1}  # Solo necesitamos 1 para verificar existencia
+        params: dict[str, Any] = {"limit": 1, "page": 0}  # Solo necesitamos 1 para verificar existencia
         sqlfilters_parts: list[str] = []
 
         if self.filter_customer is not None:
@@ -274,7 +274,8 @@ class ListThirdpartiesTool(Tool):
     """
     Tool para listar terceros de Dolibarr.
 
-    Permiso requerido: thirdparty.read
+    Permiso ERP: Dolibarr decide (societe.thirdparty_customer.read / societe.thirdparty_supplier.read)
+    Permiso Hermes: Ninguno requerido (solo identidad válida y cross-instance check)
     Canales compatibles: Telegram, API, LLM, CLI
     """
 
@@ -298,7 +299,7 @@ class ListThirdpartiesTool(Tool):
                 },
                 "additionalProperties": False,
             },
-            required_permissions=frozenset(["thirdparty.read"]),
+            required_permissions=frozenset(),  # ERP permission checked by Dolibarr
             is_core=True,
         )
         super().__init__(definition)
@@ -324,10 +325,10 @@ class ListThirdpartiesTool(Tool):
                 error_code="INVALID_PARAMS",
                 error_message="El parámetro 'limit' debe estar entre 1 y 100",
             )
-        if list_params.page < 1:
+        if list_params.page < 0:
             return ToolResult.error(
                 error_code="INVALID_PARAMS",
-                error_message="El parámetro 'page' debe ser >= 1",
+                error_message="El parámetro 'page' debe ser >= 0",
             )
         if list_params.sort_order not in ("ASC", "DESC"):
             return ToolResult.error(
@@ -335,8 +336,13 @@ class ListThirdpartiesTool(Tool):
                 error_message="El parámetro 'sort_order' debe ser 'ASC' o 'DESC'",
             )
 
-        # Crear cliente Dolibarr para ESTA instancia
-        dolibarr = company_context.create_dolibarr_client()
+        # Obtener TelegramIdentity del user_context para usar su API key
+        from core.hermes.identity_store import IdentityStore
+        identity_store = IdentityStore(company_context.instance_id)
+        identity = identity_store.get(user_context.telegram_user_id)
+
+        # Crear cliente Dolibarr usando la API key DEL USUARIO
+        dolibarr = company_context.create_dolibarr_client_for_user(identity)
 
         try:
             async with dolibarr as client:
@@ -347,7 +353,7 @@ class ListThirdpartiesTool(Tool):
                 parties = [
                     ThirdpartySummary(
                         id=p.get("id", 0),
-                        name=p.get("name", "Sin nombre"),
+                        name=p.get("nom") or p.get("name", "Sin nombre"),
                         is_customer=bool(p.get("client", 0)),
                         is_supplier=bool(p.get("fournisseur", 0)),
                         email=p.get("email"),
@@ -383,20 +389,42 @@ class ListThirdpartiesTool(Tool):
                 )
 
         except DolibarrException as e:
-            # Error de Dolibarr - NO exponer detalles internos
-            return ToolResult.error(
-                error_code="DOLIBARR_ERROR",
-                error_message="No he podido consultar Dolibarr en este momento",
-                metadata={
-                    "endpoint": e.endpoint,
-                    "status_code": e.status_code,
-                },
-            )
+            # Error de Dolibarr - Mapear 401/403 a mensajes de usuario claros
+            metadata = {
+                "instance_id": company_context.instance_id,
+                "dolibarr_user_id": user_context.dolibarr_user_id,
+            }
+            if e.status_code == 401:
+                return ToolResult.error(
+                    error_code="DOLIBARR_AUTH_FAILED",
+                    error_message="No he podido autenticar tu usuario en Dolibarr",
+                    metadata=metadata,
+                )
+            elif e.status_code == 403:
+                return ToolResult.error(
+                    error_code="DOLIBARR_PERMISSION_DENIED",
+                    error_message="No tienes permisos en Dolibarr para realizar esta operación",
+                    metadata=metadata,
+                )
+            else:
+                return ToolResult.error(
+                    error_code="DOLIBARR_ERROR",
+                    error_message="No he podido consultar Dolibarr en este momento",
+                    metadata={
+                        **metadata,
+                        "endpoint": e.endpoint,
+                        "status_code": e.status_code,
+                    },
+                )
         except Exception:
             # Error inesperado
             return ToolResult.error(
                 error_code="INTERNAL_ERROR",
                 error_message="Error interno procesando la solicitud",
+                metadata={
+                    "instance_id": company_context.instance_id,
+                    "dolibarr_user_id": user_context.dolibarr_user_id,
+                },
             )
 
 
@@ -409,7 +437,8 @@ class SearchThirdpartiesTool(Tool):
     """
     Tool para buscar terceros de Dolibarr por texto libre.
 
-    Permiso requerido: thirdparty.read
+    Permiso ERP: Dolibarr decide (societe.thirdparty_customer.read / societe.thirdparty_supplier.read)
+    Permiso Hermes: Ninguno requerido (solo identidad válida y cross-instance check)
     Canales compatibles: Telegram, API, LLM, CLI
     """
 
@@ -443,7 +472,7 @@ class SearchThirdpartiesTool(Tool):
                 "required": ["query"],
                 "additionalProperties": False,
             },
-            required_permissions=frozenset(["thirdparty.read"]),
+            required_permissions=frozenset(),  # ERP permission checked by Dolibarr
             is_core=True,
         )
         super().__init__(definition)
@@ -463,8 +492,13 @@ class SearchThirdpartiesTool(Tool):
                 error_message=f"Parámetros inválidos: {e}",
             )
 
-        # Crear cliente Dolibarr para ESTA instancia
-        dolibarr = company_context.create_dolibarr_client()
+        # Obtener TelegramIdentity del user_context para usar su API key
+        from core.hermes.identity_store import IdentityStore
+        identity_store = IdentityStore(company_context.instance_id)
+        identity = identity_store.get(user_context.telegram_user_id)
+
+        # Crear cliente Dolibarr usando la API key DEL USUARIO
+        dolibarr = company_context.create_dolibarr_client_for_user(identity)
 
         try:
             async with dolibarr as client:
@@ -475,7 +509,7 @@ class SearchThirdpartiesTool(Tool):
                 parties = [
                     ThirdpartySummary(
                         id=p.get("id", 0),
-                        name=p.get("name", "Sin nombre"),
+                        name=p.get("nom") or p.get("name", "Sin nombre"),
                         is_customer=bool(p.get("client", 0)),
                         is_supplier=bool(p.get("fournisseur", 0)),
                         email=p.get("email"),
@@ -511,20 +545,42 @@ class SearchThirdpartiesTool(Tool):
                 )
 
         except DolibarrException as e:
-            # Error de Dolibarr - NO exponer detalles internos
-            return ToolResult.error(
-                error_code="DOLIBARR_ERROR",
-                error_message="No he podido consultar Dolibarr en este momento",
-                metadata={
-                    "endpoint": e.endpoint,
-                    "status_code": e.status_code,
-                },
-            )
+            # Error de Dolibarr - Mapear 401/403 a mensajes de usuario claros
+            metadata = {
+                "instance_id": company_context.instance_id,
+                "dolibarr_user_id": user_context.dolibarr_user_id,
+            }
+            if e.status_code == 401:
+                return ToolResult.error(
+                    error_code="DOLIBARR_AUTH_FAILED",
+                    error_message="No he podido autenticar tu usuario en Dolibarr",
+                    metadata=metadata,
+                )
+            elif e.status_code == 403:
+                return ToolResult.error(
+                    error_code="DOLIBARR_PERMISSION_DENIED",
+                    error_message="No tienes permisos en Dolibarr para realizar esta operación",
+                    metadata=metadata,
+                )
+            else:
+                return ToolResult.error(
+                    error_code="DOLIBARR_ERROR",
+                    error_message="No he podido consultar Dolibarr en este momento",
+                    metadata={
+                        **metadata,
+                        "endpoint": e.endpoint,
+                        "status_code": e.status_code,
+                    },
+                )
         except Exception:
             # Error inesperado
             return ToolResult.error(
                 error_code="INTERNAL_ERROR",
                 error_message="Error interno procesando la solicitud",
+                metadata={
+                    "instance_id": company_context.instance_id,
+                    "dolibarr_user_id": user_context.dolibarr_user_id,
+                },
             )
 
 
@@ -537,7 +593,8 @@ class GetThirdpartyTool(Tool):
     """
     Tool para obtener detalle de un tercero por ID.
 
-    Permiso requerido: thirdparty.read
+    Permiso ERP: Dolibarr decide (societe.thirdparty_customer.read / societe.thirdparty_supplier.read)
+    Permiso Hermes: Ninguno requerido (solo identidad válida y cross-instance check)
     Canales compatibles: Telegram, API, LLM, CLI
     """
 
@@ -553,7 +610,7 @@ class GetThirdpartyTool(Tool):
                 "required": ["thirdparty_id"],
                 "additionalProperties": False,
             },
-            required_permissions=frozenset(["thirdparty.read"]),
+            required_permissions=frozenset(),  # ERP permission checked by Dolibarr
             is_core=True,
         )
         super().__init__(definition)
@@ -573,8 +630,13 @@ class GetThirdpartyTool(Tool):
                 error_message=f"Parámetros inválidos: {e}",
             )
 
-        # Crear cliente Dolibarr para ESTA instancia
-        dolibarr = company_context.create_dolibarr_client()
+        # Obtener TelegramIdentity del user_context para usar su API key
+        from core.hermes.identity_store import IdentityStore
+        identity_store = IdentityStore(company_context.instance_id)
+        identity = identity_store.get(user_context.telegram_user_id)
+
+        # Crear cliente Dolibarr usando la API key DEL USUARIO
+        dolibarr = company_context.create_dolibarr_client_for_user(identity)
 
         try:
             async with dolibarr as client:
@@ -629,15 +691,25 @@ class GetThirdpartyTool(Tool):
                     error_code="NOT_FOUND",
                     error_message="Tercero no encontrado",
                 )
-            # Error de Dolibarr - NO exponer detalles internos
-            return ToolResult.error(
-                error_code="DOLIBARR_ERROR",
-                error_message="No he podido consultar Dolibarr en este momento",
-                metadata={
-                    "endpoint": e.endpoint,
-                    "status_code": e.status_code,
-                },
-            )
+            elif e.status_code == 401:
+                return ToolResult.error(
+                    error_code="DOLIBARR_AUTH_FAILED",
+                    error_message="No he podido autenticar tu usuario en Dolibarr",
+                )
+            elif e.status_code == 403:
+                return ToolResult.error(
+                    error_code="DOLIBARR_PERMISSION_DENIED",
+                    error_message="No tienes permisos en Dolibarr para realizar esta operación",
+                )
+            else:
+                return ToolResult.error(
+                    error_code="DOLIBARR_ERROR",
+                    error_message="No he podido consultar Dolibarr en este momento",
+                    metadata={
+                        "endpoint": e.endpoint,
+                        "status_code": e.status_code,
+                    },
+                )
         except Exception:
             # Error inesperado
             return ToolResult.error(
@@ -655,7 +727,8 @@ class CountThirdpartiesTool(Tool):
     """
     Tool para contar terceros de Dolibarr.
 
-    Permiso requerido: thirdparty.read
+    Permiso ERP: Dolibarr decide (societe.thirdparty_customer.read / societe.thirdparty_supplier.read)
+    Permiso Hermes: Ninguno requerido (solo identidad válida y cross-instance check)
     Canales compatibles: Telegram, API, LLM, CLI
     """
 
@@ -679,7 +752,7 @@ class CountThirdpartiesTool(Tool):
                 },
                 "additionalProperties": False,
             },
-            required_permissions=frozenset(["thirdparty.read"]),
+            required_permissions=frozenset(),  # ERP permission checked by Dolibarr
             is_core=True,
         )
         super().__init__(definition)
@@ -699,8 +772,13 @@ class CountThirdpartiesTool(Tool):
                 error_message=f"Parámetros inválidos: {e}",
             )
 
-        # Crear cliente Dolibarr para ESTA instancia
-        dolibarr = company_context.create_dolibarr_client()
+        # Obtener TelegramIdentity del user_context para usar su API key
+        from core.hermes.identity_store import IdentityStore
+        identity_store = IdentityStore(company_context.instance_id)
+        identity = identity_store.get(user_context.telegram_user_id)
+
+        # Crear cliente Dolibarr usando la API key DEL USUARIO
+        dolibarr = company_context.create_dolibarr_client_for_user(identity)
 
         try:
             async with dolibarr as client:
@@ -740,20 +818,42 @@ class CountThirdpartiesTool(Tool):
                 )
 
         except DolibarrException as e:
-            # Error de Dolibarr - NO exponer detalles internos
-            return ToolResult.error(
-                error_code="DOLIBARR_ERROR",
-                error_message="No he podido consultar Dolibarr en este momento",
-                metadata={
-                    "endpoint": e.endpoint,
-                    "status_code": e.status_code,
-                },
-            )
+            # Error de Dolibarr - Mapear 401/403 a mensajes de usuario claros
+            metadata = {
+                "instance_id": company_context.instance_id,
+                "dolibarr_user_id": user_context.dolibarr_user_id,
+            }
+            if e.status_code == 401:
+                return ToolResult.error(
+                    error_code="DOLIBARR_AUTH_FAILED",
+                    error_message="No he podido autenticar tu usuario en Dolibarr",
+                    metadata=metadata,
+                )
+            elif e.status_code == 403:
+                return ToolResult.error(
+                    error_code="DOLIBARR_PERMISSION_DENIED",
+                    error_message="No tienes permisos en Dolibarr para realizar esta operación",
+                    metadata=metadata,
+                )
+            else:
+                return ToolResult.error(
+                    error_code="DOLIBARR_ERROR",
+                    error_message="No he podido consultar Dolibarr en este momento",
+                    metadata={
+                        **metadata,
+                        "endpoint": e.endpoint,
+                        "status_code": e.status_code,
+                    },
+                )
         except Exception:
             # Error inesperado
             return ToolResult.error(
                 error_code="INTERNAL_ERROR",
                 error_message="Error interno procesando la solicitud",
+                metadata={
+                    "instance_id": company_context.instance_id,
+                    "dolibarr_user_id": user_context.dolibarr_user_id,
+                },
             )
 
 

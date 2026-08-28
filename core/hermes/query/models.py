@@ -39,7 +39,7 @@ class SortField(StrEnum):
     """Campos ordenables permitidos (allowlist)."""
 
     ROWID = "rowid"
-    NAME = "name"
+    NOM = "nom"
     REF = "ref"
     DATE_CREATION = "date_creation"
     DATE_MODIFICATION = "date_modification"
@@ -473,7 +473,7 @@ class ListThirdpartiesArgs(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
     party_type: ThirdpartyPartyType = ThirdpartyPartyType.ALL
-    sort_field: SortField = SortField.NAME
+    sort_field: SortField = SortField.NOM
     sort_order: SortOrder = SortOrder.ASC
 
 
@@ -486,7 +486,7 @@ class SearchThirdpartiesArgs(BaseModel):
     party_type: ThirdpartyPartyType = ThirdpartyPartyType.ALL
     limit: int = Field(default=20, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
-    sort_field: SortField = SortField.NAME
+    sort_field: SortField = SortField.NOM
     sort_order: SortOrder = SortOrder.ASC
 
 

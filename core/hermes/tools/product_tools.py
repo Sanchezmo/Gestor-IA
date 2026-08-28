@@ -1,7 +1,8 @@
 """
 Tools para consulta de catálogo de productos/servicios en Dolibarr - READ ONLY.
 
-Permiso requerido: product.read
+Permiso ERP: Dolibarr decide (produit.lire)
+Permiso Hermes: Ninguno requerido (solo identidad válida y cross-instance check)
 Canales compatibles: Telegram, API, LLM, CLI
 """
 
@@ -56,7 +57,7 @@ class ListProductsParams:
     """Parámetros para list_products."""
 
     limit: int = 20
-    page: int = 1
+    page: int = 0
     product_type: Literal["PRODUCT", "SERVICE"] | None = None
     status: int | None = None
     sort_field: Literal[
@@ -78,8 +79,8 @@ class ListProductsParams:
     def __post_init__(self) -> None:
         if self.limit < 1 or self.limit > 100:
             raise ValueError("El parámetro 'limit' debe estar entre 1 y 100")
-        if self.page < 1:
-            raise ValueError("El parámetro 'page' debe ser >= 1")
+        if self.page < 0:
+            raise ValueError("El parámetro 'page' debe ser >= 0")
         if self.sort_order not in ALLOWED_SORT_ORDERS:
             raise ValueError(f"sort_order debe ser ASC o DESC, recibido: {self.sort_order}")
         if self.sort_field not in ALLOWED_PRODUCT_SORT_FIELDS:
@@ -107,7 +108,7 @@ class SearchProductsParams:
 
     query: str
     limit: int = 20
-    page: int = 1
+    page: int = 0
     product_type: Literal["PRODUCT", "SERVICE"] | None = None
     status: int | None = None
     sort_field: Literal[
@@ -133,8 +134,8 @@ class SearchProductsParams:
             raise ValueError("El parámetro 'query' es demasiado largo (máx 200 caracteres)")
         if self.limit < 1 or self.limit > 100:
             raise ValueError("El parámetro 'limit' debe estar entre 1 y 100")
-        if self.page < 1:
-            raise ValueError("El parámetro 'page' debe ser >= 1")
+        if self.page < 0:
+            raise ValueError("El parámetro 'page' debe ser >= 0")
         if self.sort_order not in ALLOWED_SORT_ORDERS:
             raise ValueError(f"sort_order debe ser ASC o DESC, recibido: {self.sort_order}")
         if self.sort_field not in ALLOWED_PRODUCT_SORT_FIELDS:
@@ -191,7 +192,8 @@ class ListProductsTool(Tool):
     """
     Tool para listar productos/servicios de Dolibarr con paginación y filtros.
 
-    Permiso requerido: product.read
+    Permiso ERP: Dolibarr decide (produit.lire)
+    Permiso Hermes: Ninguno requerido (solo identidad válida y cross-instance check)
     """
 
     def __init__(self) -> None:
@@ -218,7 +220,7 @@ class ListProductsTool(Tool):
                 },
                 "additionalProperties": False,
             },
-            required_permissions=frozenset(["product.read"]),
+            required_permissions=frozenset(),  # ERP permission checked by Dolibarr
             is_core=True,
         )
         super().__init__(definition)
@@ -238,8 +240,13 @@ class ListProductsTool(Tool):
                 error_message=f"Parámetros inválidos: {e}",
             )
 
-        # Crear cliente Dolibarr para ESTA instancia
-        dolibarr = company_context.create_dolibarr_client()
+        # Obtener TelegramIdentity del user_context para usar su API key
+        from core.hermes.identity_store import IdentityStore
+        identity_store = IdentityStore(company_context.instance_id)
+        identity = identity_store.get(user_context.telegram_user_id)
+
+        # Crear cliente Dolibarr usando la API key DEL USUARIO
+        dolibarr = company_context.create_dolibarr_client_for_user(identity)
 
         try:
             async with dolibarr as client:
@@ -285,18 +292,42 @@ class ListProductsTool(Tool):
                 )
 
         except DolibarrException as e:
-            return ToolResult.error(
-                error_code="DOLIBARR_ERROR",
-                error_message="No he podido consultar Dolibarr en este momento",
-                metadata={
-                    "endpoint": e.endpoint,
-                    "status_code": e.status_code,
-                },
-            )
+            # Error de Dolibarr - Mapear 401/403 a mensajes de usuario claros
+            metadata = {
+                "instance_id": company_context.instance_id,
+                "dolibarr_user_id": user_context.dolibarr_user_id,
+            }
+            if e.status_code == 401:
+                return ToolResult.error(
+                    error_code="DOLIBARR_AUTH_FAILED",
+                    error_message="No he podido autenticar tu usuario en Dolibarr",
+                    metadata=metadata,
+                )
+            elif e.status_code == 403:
+                return ToolResult.error(
+                    error_code="DOLIBARR_PERMISSION_DENIED",
+                    error_message="No tienes permisos en Dolibarr para realizar esta operación",
+                    metadata=metadata,
+                )
+            else:
+                return ToolResult.error(
+                    error_code="DOLIBARR_ERROR",
+                    error_message="No he podido consultar Dolibarr en este momento",
+                    metadata={
+                        **metadata,
+                        "endpoint": e.endpoint,
+                        "status_code": e.status_code,
+                    },
+                )
         except Exception:
+            # Error inesperado
             return ToolResult.error(
                 error_code="INTERNAL_ERROR",
                 error_message="Error interno procesando la solicitud",
+                metadata={
+                    "instance_id": company_context.instance_id,
+                    "dolibarr_user_id": user_context.dolibarr_user_id,
+                },
             )
 
 
@@ -304,7 +335,8 @@ class SearchProductsTool(Tool):
     """
     Tool para buscar productos/servicios de Dolibarr por texto libre.
 
-    Permiso requerido: product.read
+    Permiso ERP: Dolibarr decide (produit.lire)
+    Permiso Hermes: Ninguno requerido (solo identidad válida y cross-instance check)
     """
 
     def __init__(self) -> None:
@@ -334,7 +366,7 @@ class SearchProductsTool(Tool):
                 "required": ["query"],
                 "additionalProperties": False,
             },
-            required_permissions=frozenset(["product.read"]),
+            required_permissions=frozenset(),  # ERP permission checked by Dolibarr
             is_core=True,
         )
         super().__init__(definition)
@@ -354,8 +386,13 @@ class SearchProductsTool(Tool):
                 error_message=f"Parámetros inválidos: {e}",
             )
 
-        # Crear cliente Dolibarr para ESTA instancia
-        dolibarr = company_context.create_dolibarr_client()
+        # Obtener TelegramIdentity del user_context para usar su API key
+        from core.hermes.identity_store import IdentityStore
+        identity_store = IdentityStore(company_context.instance_id)
+        identity = identity_store.get(user_context.telegram_user_id)
+
+        # Crear cliente Dolibarr usando la API key DEL USUARIO
+        dolibarr = company_context.create_dolibarr_client_for_user(identity)
 
         try:
             async with dolibarr as client:
@@ -409,18 +446,42 @@ class SearchProductsTool(Tool):
                 )
 
         except DolibarrException as e:
-            return ToolResult.error(
-                error_code="DOLIBARR_ERROR",
-                error_message="No he podido consultar Dolibarr en este momento",
-                metadata={
-                    "endpoint": e.endpoint,
-                    "status_code": e.status_code,
-                },
-            )
+            # Error de Dolibarr - Mapear 401/403 a mensajes de usuario claros
+            metadata = {
+                "instance_id": company_context.instance_id,
+                "dolibarr_user_id": user_context.dolibarr_user_id,
+            }
+            if e.status_code == 401:
+                return ToolResult.error(
+                    error_code="DOLIBARR_AUTH_FAILED",
+                    error_message="No he podido autenticar tu usuario en Dolibarr",
+                    metadata=metadata,
+                )
+            elif e.status_code == 403:
+                return ToolResult.error(
+                    error_code="DOLIBARR_PERMISSION_DENIED",
+                    error_message="No tienes permisos en Dolibarr para realizar esta operación",
+                    metadata=metadata,
+                )
+            else:
+                return ToolResult.error(
+                    error_code="DOLIBARR_ERROR",
+                    error_message="No he podido consultar Dolibarr en este momento",
+                    metadata={
+                        **metadata,
+                        "endpoint": e.endpoint,
+                        "status_code": e.status_code,
+                    },
+                )
         except Exception:
+            # Error inesperado
             return ToolResult.error(
                 error_code="INTERNAL_ERROR",
                 error_message="Error interno procesando la solicitud",
+                metadata={
+                    "instance_id": company_context.instance_id,
+                    "dolibarr_user_id": user_context.dolibarr_user_id,
+                },
             )
 
 
@@ -428,7 +489,8 @@ class GetProductTool(Tool):
     """
     Tool para obtener detalle de un producto/servicio por ID o referencia.
 
-    Permiso requerido: product.read
+    Permiso ERP: Dolibarr decide (produit.lire)
+    Permiso Hermes: Ninguno requerido (solo identidad válida y cross-instance check)
     """
 
     def __init__(self) -> None:
@@ -443,7 +505,7 @@ class GetProductTool(Tool):
                 },
                 "additionalProperties": False,
             },
-            required_permissions=frozenset(["product.read"]),
+            required_permissions=frozenset(),  # ERP permission checked by Dolibarr
             is_core=True,
         )
         super().__init__(definition)
@@ -463,8 +525,13 @@ class GetProductTool(Tool):
                 error_message=f"Parámetros inválidos: {e}",
             )
 
-        # Crear cliente Dolibarr para ESTA instancia
-        dolibarr = company_context.create_dolibarr_client()
+        # Obtener TelegramIdentity del user_context para usar su API key
+        from core.hermes.identity_store import IdentityStore
+        identity_store = IdentityStore(company_context.instance_id)
+        identity = identity_store.get(user_context.telegram_user_id)
+
+        # Crear cliente Dolibarr usando la API key DEL USUARIO
+        dolibarr = company_context.create_dolibarr_client_for_user(identity)
 
         try:
             async with dolibarr as client:
@@ -528,14 +595,25 @@ class GetProductTool(Tool):
                     error_code="NOT_FOUND",
                     error_message="Producto no encontrado",
                 )
-            return ToolResult.error(
-                error_code="DOLIBARR_ERROR",
-                error_message="No he podido consultar Dolibarr en este momento",
-                metadata={
-                    "endpoint": e.endpoint,
-                    "status_code": e.status_code,
-                },
-            )
+            elif e.status_code == 401:
+                return ToolResult.error(
+                    error_code="DOLIBARR_AUTH_FAILED",
+                    error_message="No he podido autenticar tu usuario en Dolibarr",
+                )
+            elif e.status_code == 403:
+                return ToolResult.error(
+                    error_code="DOLIBARR_PERMISSION_DENIED",
+                    error_message="No tienes permisos en Dolibarr para realizar esta operación",
+                )
+            else:
+                return ToolResult.error(
+                    error_code="DOLIBARR_ERROR",
+                    error_message="No he podido consultar Dolibarr en este momento",
+                    metadata={
+                        "endpoint": e.endpoint,
+                        "status_code": e.status_code,
+                    },
+                )
         except Exception:
             return ToolResult.error(
                 error_code="INTERNAL_ERROR",
@@ -547,7 +625,8 @@ class CountProductsTool(Tool):
     """
     Tool para contar productos/servicios de Dolibarr.
 
-    Permiso requerido: product.read
+    Permiso ERP: Dolibarr decide (produit.lire)
+    Permiso Hermes: Ninguno requerido (solo identidad válida y cross-instance check)
     """
 
     def __init__(self) -> None:
@@ -562,7 +641,7 @@ class CountProductsTool(Tool):
                 },
                 "additionalProperties": False,
             },
-            required_permissions=frozenset(["product.read"]),
+            required_permissions=frozenset(),  # ERP permission checked by Dolibarr
             is_core=True,
         )
         super().__init__(definition)
@@ -582,8 +661,13 @@ class CountProductsTool(Tool):
                 error_message=f"Parámetros inválidos: {e}",
             )
 
-        # Crear cliente Dolibarr para ESTA instancia
-        dolibarr = company_context.create_dolibarr_client()
+        # Obtener TelegramIdentity del user_context para usar su API key
+        from core.hermes.identity_store import IdentityStore
+        identity_store = IdentityStore(company_context.instance_id)
+        identity = identity_store.get(user_context.telegram_user_id)
+
+        # Crear cliente Dolibarr usando la API key DEL USUARIO
+        dolibarr = company_context.create_dolibarr_client_for_user(identity)
 
         try:
             async with dolibarr as client:
@@ -621,18 +705,42 @@ class CountProductsTool(Tool):
                 )
 
         except DolibarrException as e:
-            return ToolResult.error(
-                error_code="DOLIBARR_ERROR",
-                error_message="No he podido consultar Dolibarr en este momento",
-                metadata={
-                    "endpoint": e.endpoint,
-                    "status_code": e.status_code,
-                },
-            )
+            # Error de Dolibarr - Mapear 401/403 a mensajes de usuario claros
+            metadata = {
+                "instance_id": company_context.instance_id,
+                "dolibarr_user_id": user_context.dolibarr_user_id,
+            }
+            if e.status_code == 401:
+                return ToolResult.error(
+                    error_code="DOLIBARR_AUTH_FAILED",
+                    error_message="No he podido autenticar tu usuario en Dolibarr",
+                    metadata=metadata,
+                )
+            elif e.status_code == 403:
+                return ToolResult.error(
+                    error_code="DOLIBARR_PERMISSION_DENIED",
+                    error_message="No tienes permisos en Dolibarr para realizar esta operación",
+                    metadata=metadata,
+                )
+            else:
+                return ToolResult.error(
+                    error_code="DOLIBARR_ERROR",
+                    error_message="No he podido consultar Dolibarr en este momento",
+                    metadata={
+                        **metadata,
+                        "endpoint": e.endpoint,
+                        "status_code": e.status_code,
+                    },
+                )
         except Exception:
+            # Error inesperado
             return ToolResult.error(
                 error_code="INTERNAL_ERROR",
                 error_message="Error interno procesando la solicitud",
+                metadata={
+                    "instance_id": company_context.instance_id,
+                    "dolibarr_user_id": user_context.dolibarr_user_id,
+                },
             )
 
 
