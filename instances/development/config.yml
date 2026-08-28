@@ -1,0 +1,62 @@
+instance_id: development
+company_name: "Development Empresa SL"
+database:
+  host: mariadb-development
+  port: 3306
+  name: dolibarr_development
+  user: dolibarr_development
+  password: ***REMOVED***
+dolibarr:
+  version: "23.0.4"
+  internal_url: http://localhost:8081
+  public_url: https://dolibarr.development.local
+  api_key: ***REMOVED***
+  documents_path: /var/lib/dolibarr/documents/development
+telegram:
+  bot_token: ***REMOVED***
+  webhook_path: /webhook/empresa_a
+  webhook_secret: ***REMOVED***
+  webhook_secret_required: true
+  allowed_user_ids: []
+  max_file_size_mb: 10
+  update_idempotency_ttl_hours: 24
+domains:
+  base: development.local
+  dolibarr: dolibarr.development.local
+  hermes: bot.development.local
+  custom: {}
+ai:
+  default_policy: LOCAL_ONLY
+  ollama_endpoint: http://ollama-development:11434
+  ollama_model: qwen3.5:4b
+  ollama_vision_model: null
+  nvidia_api_key: null
+  nvidia_base_url: https://integrate.api.nvidia.com/v1
+  nvidia_text_model: null
+  nvidia_vision_model: null
+  openai_api_key: null
+  openai_base_url: https://api.openai.com/v1
+  openai_text_model: null
+  openai_vision_model: null
+  task_policies:
+    invoice_processing: LOCAL_ONLY
+    content_generation: CLOUD_ALLOWED
+    general_chat: CLOUD_ALLOWED
+enabled_agents:
+  - invoice_processing
+  - general_assistant
+enabled_workflows:
+  - invoice_approval
+enabled_tools:
+  - dolibarr_search
+  - pdf_extract
+secrets_refs:
+  dolibarr_db_password: env:DOLIBARR_DB_PASSWORD_DEVELOPMENT
+  dolibarr_api_key: env:DOLIBARR_API_KEY_DEVELOPMENT
+  telegram_bot_token: env:TELEGRAM_BOT_TOKEN_DEVELOPMENT
+  telegram_webhook_secret: env:TELEGRAM_WEBHOOK_SECRET_DEVELOPMENT
+documents_path: /var/lib/gestor-ia/development/documents
+backups_path: /var/backups/gestor-ia/development
+runtime_path: /var/lib/gestor-ia/development/runtime
+dolibarr_apache_port: 8081
+active: true

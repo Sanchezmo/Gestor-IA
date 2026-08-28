@@ -1,0 +1,103 @@
+version: '3.8'
+
+services:
+  # Dolibarr ERP para instancia development
+  dolibarr-development:
+    image: tuxgasy/dolibarr:latest
+    container_name: dolibarr-development
+    environment:
+      - DOLI_DB_HOST=mariadb-development
+      - DOLI_DB_NAME=dolibarr_development
+      - DOLI_DB_USER=dolibarr_development
+      - DOLI_DB_PASSWORD=${DOLIBARR_DB_PASSWORD_DEVELOPMENT:-***REMOVED***}
+      - DOLI_ADMIN_LOGIN=admin
+      - DOLI_ADMIN_PASSWORD=admin123
+      - DOLI_URL_ROOT=http://localhost:8081
+      - PHP_MEMORY_LIMIT=512M
+      - PHP_MAX_EXECUTION_TIME=300
+      - PHP_UPLOAD_MAX_FILESIZE=64M
+      - PHP_POST_MAX_SIZE=64M
+      - TZ=Europe/Madrid
+    ports:
+      - "8081:80"
+    volumes:
+      - dolibarr-development-docs:/var/www/documents
+      - dolibarr-development-custom:/var/www/html/custom
+    depends_on:
+      mariadb-development:
+        condition: service_healthy
+    networks:
+      - development-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/index.php"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # MariaDB para Dolibarr
+  mariadb-development:
+    image: mariadb:10.11
+    container_name: mariadb-development
+    ports:
+      - "3306:3306"
+    environment:
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD:-***REMOVED***}
+      - MARIADB_DATABASE=dolibarr_development
+      - MARIADB_USER=dolibarr_development
+      - MARIADB_PASSWORD=${DOLIBARR_DB_PASSWORD_DEVELOPMENT:-***REMOVED***}
+    volumes:
+      - mariadb-development-data:/var/lib/mysql
+    networks:
+      - development-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MARIADB_ROOT_PASSWORD:-***REMOVED***}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Redis para Hermes
+  redis-development:
+    image: redis:7-alpine
+    container_name: redis-development
+    command: redis-server --requirepass ${REDIS_PASSWORD:-***REMOVED***}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-development-data:/data
+    networks:
+      - development-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-***REMOVED***}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Ollama para IA local (opcional - para LOCAL_ONLY)
+  ollama-development:
+    image: ollama/ollama:latest
+    container_name: ollama-development
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-development-data:/root/.ollama
+    networks:
+      - development-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  dolibarr-development-docs:
+  dolibarr-development-custom:
+  mariadb-development-data:
+  redis-development-data:
+  ollama-development-data:
+
+networks:
+  development-network:
+    driver: bridge

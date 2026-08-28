@@ -2,7 +2,7 @@
 # Interfaz simple para gestión de infraestructura nativa
 # Uso: make help
 
-.PHONY: help install configure start stop restart status check backup restore test lint format type-check clean instance-create instance-list instance-status instance-enable instance-disable check-instance dev-install dev-start dev-stop dev-restart dev-logs docker-test-up docker-test-down
+.PHONY: help install configure start stop restart status check backup restore test lint format type-check clean instance-create instance-list instance-status instance-enable instance-disable check-instance dev-install dev-start dev-stop dev-restart dev-logs dev-status dev-health docker-test-up docker-test-down
 
 # Variables
 SCRIPTS_DIR = ./scripts
@@ -200,25 +200,33 @@ type-check: ## Verificación de tipos con mypy
 pre-commit: lint format type-check ## Ejecutar todos los checks pre-commit
 
 # =============================================================================
-# DESARROLLO
+# DEVELOPMENT (Docker Compose based)
 # =============================================================================
 
 dev-install: install-python install-hermes ## Instalación solo desarrollo (sin BD ni Apache)
 
-dev-start: ## Iniciar solo Hermes Core (requiere MariaDB/Redis corriendo)
-	@echo "$(GREEN)=== Iniciando Hermes Core ===$(NC)"
-	@sudo systemctl start gestor-ia
+dev-start: ## Iniciar entorno DEVELOPMENT completo (Docker + Hermes)
+	@echo "$(GREEN)=== Iniciando DEVELOPMENT GESTOR-IA ===$(NC)"
+	@./scripts/development/start-development.sh
 
-dev-stop: ## Detener solo Hermes Core
-	@echo "$(YELLOW)=== Deteniendo Hermes Core ===$(NC)"
-	@sudo systemctl stop gestor-ia
+dev-stop: ## Parar entorno DEVELOPMENT completo
+	@echo "$(YELLOW)=== Parando DEVELOPMENT GESTOR-IA ===$(NC)"
+	@./scripts/development/stop-development.sh
 
-dev-restart: ## Reiniciar solo Hermes Core
-	@echo "$(BLUE)=== Reiniciando Hermes Core ===$(NC)"
-	@sudo systemctl restart gestor-ia
+dev-restart: dev-stop dev-start ## Reiniciar entorno DEVELOPMENT completo
 
-dev-logs: ## Ver logs Hermes Core
-	@journalctl -u gestor-ia -f
+dev-status: ## Ver estado de servicios DEVELOPMENT
+	@echo "$(GREEN)=== Estado DEVELOPMENT ===$(NC)"
+	@docker compose -f docker-compose.development.yml ps
+	@echo ""
+	@curl -sf http://localhost:8000/health 2>/dev/null && echo "Hermes API: $(GREEN)OK$(NC)" || echo "Hermes API: $(RED)DOWN$(NC)"
+
+dev-health: ## Healthcheck completo DEVELOPMENT
+	@echo "$(GREEN)=== Healthcheck DEVELOPMENT ===$(NC)"
+	@if [ -f .venv/bin/activate ]; then source .venv/bin/activate; fi; python -m core.hermes.cli healthcheck
+
+dev-logs-docker: ## Ver logs Hermes DEVELOPMENT (Docker)
+	@tail -f /tmp/hermes-development.log 2>/dev/null || echo "Log no encontrado: /tmp/hermes-development.log"
 
 # =============================================================================
 # DOCKER (SOLO PARA TESTS/CI - NO PRODUCCIÓN)
