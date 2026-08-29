@@ -5,17 +5,17 @@ database:
   port: 3306
   name: dolibarr_development
   user: dolibarr_development
-  password: ***REMOVED***
+  password: nyKvdT4NC0tMV1tRQrwqP4NXWiD-ZuL6pTnT-xNszJI
 dolibarr:
   version: "23.0.4"
   internal_url: http://localhost:8081
   public_url: https://dolibarr.development.local
-  api_key: ***REMOVED***
+  api_key: 606b332e1eb183aedb4729b90d0ab4d0ff9b5ff0
   documents_path: /var/lib/dolibarr/documents/development
 telegram:
-  bot_token: ***REMOVED***
+  bot_token: 8819273281:AAG0wcvlKNGrOz8tDjXNVbwnlWCo42_wgBY
   webhook_path: /webhook/empresa_a
-  webhook_secret: ***REMOVED***
+  webhook_secret: b2fb51ae07c72ab2d9afe812fa38272d5bceb6ebe709a7adc70571162bb0588d
   webhook_secret_required: true
   allowed_user_ids: []
   max_file_size_mb: 10

@@ -1,0 +1,27 @@
+[Unit]
+Description=Gestor-IA Hermes DEVELOPMENT
+After=network.target mariadb.service redis.service apache2.service
+Wants=mariadb.service redis.service apache2.service
+
+[Service]
+Type=exec
+User=saulo
+Group=saulo
+WorkingDirectory=/home/saulo/Gestor-IA
+Environment=PATH=/home/saulo/Gestor-IA/.venv/bin:/usr/bin:/bin
+Environment=PYTHONPATH=/home/saulo/Gestor-IA
+ExecStart=/home/saulo/Gestor-IA/.venv/bin/python -m uvicorn core.hermes.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hermes-development
+
+# Security
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/saulo/Gestor-IA/instances/development /tmp
+
+[Install]
+WantedBy=multi-user.target

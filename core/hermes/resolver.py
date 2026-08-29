@@ -324,7 +324,7 @@ async def get_user_context(
     # Resolve identity using IdentityResolver
     identity_store = IdentityStore(company_context.instance_id)
 
-    def _client_factory(ctx: CompanyContext) -> DolibarrClient:
+    def _client_factory(ctx: CompanyContext, identity: TelegramIdentity) -> DolibarrClient:
         return DolibarrClient.from_instance_config(ctx.dolibarr_config)
 
     resolver = IdentityResolver(identity_store, _client_factory)
@@ -378,7 +378,7 @@ async def resolve_user_context_from_company_context(
     """
     identity_store = IdentityStore(company_context.instance_id)
 
-    def _client_factory(ctx: CompanyContext) -> DolibarrClient:
+    def _client_factory(ctx: CompanyContext, identity: TelegramIdentity) -> DolibarrClient:
         return DolibarrClient.from_instance_config(ctx.dolibarr_config)
 
     resolver = IdentityResolver(identity_store, _client_factory)
