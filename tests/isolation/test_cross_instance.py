@@ -255,7 +255,7 @@ class TestInstanceResolverIsolation:
     """Tests de que el resolver resuelve correctamente cada instancia."""
 
     @pytest.fixture(autouse=True)
-    def setup_domain_cache(self, instance_a_config, instance_b_config):
+    def setup_domain_cache(self, instance_a_config, instance_b_config, tmp_path):
         """Configurar cache de dominios para tests."""
         from core.hermes.resolver import _build_domain_index, invalidate_domain_cache
 
@@ -265,20 +265,25 @@ class TestInstanceResolverIsolation:
 
         _config_cache["empresa_a"] = instance_a_config
         _config_cache["empresa_b"] = instance_b_config
-        _build_domain_index()
+        # Use empty temp directory to prevent filesystem scanning of real instances
+        _build_domain_index(instances_root=tmp_path)
         yield
         invalidate_domain_cache()
 
     @pytest.fixture(autouse=True)
-    def setup_domain_index(self, instance_a_config, instance_b_config):
+    def setup_domain_index(self, instance_a_config, instance_b_config, tmp_path):
         """Configurar cache de dominios para tests."""
+        from core.hermes.resolver import invalidate_domain_cache
+
         invalidate_domain_cache()
         # Simular carga de configs
         from core.hermes.instance_config import _config_cache
 
         _config_cache["empresa_a"] = instance_a_config
         _config_cache["empresa_b"] = instance_b_config
-        _build_domain_index()
+        # Use empty temp directory to prevent filesystem scanning of real instances
+        from core.hermes.resolver import _build_domain_index
+        _build_domain_index(instances_root=tmp_path)
         yield
         invalidate_domain_cache()
 

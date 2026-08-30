@@ -51,10 +51,10 @@ enabled_tools:
 - dolibarr_search
 - pdf_extract
 secrets_refs:
-  dolibarr_db_password: env:DOLIBARR_DB_PASSWORD_EJEMPLO
-  dolibarr_api_key: env:DOLIBARR_API_KEY_EJEMPLO
-  telegram_bot_token: env:TELEGRAM_BOT_TOKEN_EJEMPLO
-  telegram_webhook_secret: env:TELEGRAM_WEBHOOK_SECRET_EJEMPLO
+  dolibarr_db_password: env:DOLIBARR_DB_PASSWORD
+  dolibarr_api_key: env:DOLIBARR_API_KEY
+  telegram_bot_token: env:TELEGRAM_BOT_TOKEN
+  telegram_webhook_secret: env:TELEGRAM_WEBHOOK_SECRET
 documents_path: /var/lib/gestor-ia/ejemplo/documents
 backups_path: /var/backups/gestor-ia/ejemplo
 runtime_path: /var/lib/gestor-ia/ejemplo/runtime

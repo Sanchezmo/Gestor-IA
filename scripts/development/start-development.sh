@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/development/start-development.sh
-# Iniciar entorno DEVELOPMENT completo: Docker Compose + Hermes
+# Iniciar entorno DEVELOPMENT nativo (systemd)
+# NOTA: Este script es un wrapper. La interfaz principal es: make dev-start
 
 set -euo pipefail
 
@@ -19,134 +20,74 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step()  { echo -e "${BLUE}[STEP]${NC} $*"; }
 
-check_docker() {
-    if ! command -v docker &> /dev/null; then
-        log_error "Docker no está instalado"
-        exit 1
-    fi
-    if ! docker compose version &> /dev/null; then
-        log_error "Docker Compose no está disponible"
+check_sudo() {
+    if ! sudo -n true 2>/dev/null; then
+        log_error "Se requiere sudo sin password para gestionar servicios systemd."
+        log_error "Instala el sudoers: sudo install -o root -g root -m 0440 .local/gestor-ia-development.sudoers /etc/sudoers.d/gestor-ia-development"
         exit 1
     fi
 }
 
-start_infrastructure() {
-    log_step "Iniciando infraestructura Docker (MariaDB, Redis, Dolibarr, Ollama)..."
-    cd "$PROJECT_ROOT"
+start_services() {
+    log_step "Iniciando servicios nativos (MariaDB, Redis, Apache, Cloudflare, Ollama, Hermes)..."
     
-    # Crear red si no existe
-    docker network create development-network 2>/dev/null || true
+    # Servicios de infraestructura
+    sudo -n systemctl start mariadb redis-server apache2 cloudflared ollama 2>/dev/null || true
     
-    # Levantar servicios
-    docker compose -f docker-compose.development.yml up -d
+    # Hermes (después de la infraestructura)
+    sudo -n systemctl start hermes-development
     
     log_info "Esperando a que los servicios estén listos..."
-    
-    # Esperar MariaDB
-    log_info "Esperando MariaDB..."
-    for i in {1..30}; do
-        if docker exec mariadb-development mysqladmin ping -h localhost -u root -p"${MARIADB_ROOT_PASSWORD:-***REMOVED***}" >/dev/null 2>&1; then
-            log_info "MariaDB listo"
-            break
-        fi
-        sleep 2
-    done
-    
-    # Esperar Redis
-    log_info "Esperando Redis..."
-    for i in {1..15}; do
-        if docker exec redis-development redis-cli -a "${REDIS_PASSWORD:-***REMOVED***}" ping >/dev/null 2>&1; then
-            log_info "Redis listo"
-            break
-        fi
-        sleep 1
-    done
-    
-    # Esperar Dolibarr
-    log_info "Esperando Dolibarr (puede tardar 60-120s en primera ejecución)..."
-    for i in {1..60}; do
-        if curl -sf http://localhost:8081/index.php >/dev/null 2>&1; then
-            log_info "Dolibarr listo"
-            break
-        fi
-        sleep 3
-    done
-    
-    # Esperar Ollama
-    log_info "Esperando Ollama..."
-    for i in {1..30}; do
-        if curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
-            log_info "Ollama listo"
-            break
-        fi
-        sleep 2
-    done
+    sleep 3
 }
 
-start_hermes() {
-    log_step "Iniciando Hermes Core..."
-    cd "$PROJECT_ROOT"
+check_health() {
+    log_step "Verificando salud de los servicios..."
     
-    # Activar virtualenv
-    if [[ -f ".venv/bin/activate" ]]; then
-        source .venv/bin/activate
+    local all_ok=true
+    
+    # Verificar Hermes API
+    if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+        log_info "Hermes API: OK"
     else
-        log_error "Virtualenv no encontrado. Ejecuta: make install-python"
-        exit 1
+        log_error "Hermes API: NO RESPONDE"
+        all_ok=false
     fi
     
-# Configurar variables de entorno para development
-    export GESTOR_IA_ADMIN_TOKEN="dev_admin_token_123"
-    export MARIADB_ROOT_PASSWORD="${MARIADB_ROOT_PASSWORD:-***REMOVED***}"
-    export MARIADB_HOST="127.0.0.1"
-    export MARIADB_PORT="3306"
-    export REDIS_PASSWORD="${REDIS_PASSWORD:-***REMOVED***}"
-    export REDIS_HOST="127.0.0.1"
-    export REDIS_PORT="6379"
-    
-    # Iniciar Hermes en background
-    log_info "Iniciando Hermes API en puerto 8000..."
-    nohup python -m uvicorn core.hermes.main:app --host 0.0.0.0 --port 8000 --reload > /tmp/hermes-development.log 2>&1 &
-    HERMES_PID=$!
-    echo $HERMES_PID > /tmp/hermes-development.pid
-    
-    # Esperar a que Hermes esté listo
-    log_info "Esperando Hermes API..."
-    for i in {1..15}; do
-        if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
-            log_info "Hermes API listo"
-            break
+    # Verificar servicios systemd
+    for svc in mariadb redis-server apache2 cloudflared ollama hermes-development; do
+        if sudo -n systemctl is-active "$svc" >/dev/null 2>&1; then
+            log_info "$svc: activo"
+        else
+            log_warn "$svc: inactivo"
+            all_ok=false
         fi
-        sleep 1
     done
-}
-
-run_healthcheck() {
-    log_step "Ejecutando healthcheck completo..."
-    cd "$PROJECT_ROOT"
-    if [[ -f ".venv/bin/activate" ]]; then
-        source .venv/bin/activate
+    
+    if [[ "$all_ok" == "true" ]]; then
+        log_info "Todos los servicios están saludables"
+        return 0
+    else
+        log_warn "Algunos servicios no están listos"
+        return 1
     fi
-    python -m core.hermes.cli healthcheck
 }
 
 show_status() {
     echo ""
     echo "=========================================="
-    echo "  DEVELOPMENT GESTOR-IA LISTO"
+    echo "  DEVELOPMENT GESTOR-IA LISTO (native)"
     echo "=========================================="
     echo ""
-    echo "Servicios:"
-    echo "  - Dolibarr ERP:     http://localhost:8081"
-    echo "    Usuario: admin / admin123"
+    echo "Servicios nativos:"
+    echo "  - Dolibarr ERP:     http://localhost:8081 (Apache + PHP nativo)"
     echo "  - Hermes API:       http://localhost:8000"
     echo "    Healthcheck:      http://localhost:8000/health"
     echo "    Docs (dev):       http://localhost:8000/docs"
-    echo "  - MariaDB:          localhost:3306"
-    echo "    Root: root / ***REMOVED***"
-    echo "    DB: dolibarr_development / ***REMOVED***"
-    echo "  - Redis:            localhost:6379 (password: ***REMOVED***)"
-    echo "  - Ollama:           http://localhost:11434"
+    echo "  - MariaDB:          localhost:3306 (nativo)"
+    echo "  - Redis:            localhost:6379 (nativo)"
+    echo "  - Ollama:           http://localhost:11434 (nativo)"
+    echo "  - cloudflared:      túnel nativo"
     echo ""
     echo "Instancia development:"
     echo "  - Instance ID: development"
@@ -155,23 +96,24 @@ show_status() {
     echo ""
     echo "Comandos útiles:"
     echo "  make dev-status          # Ver estado de servicios"
-    echo "  make dev-logs            # Ver logs de Hermes"
+    echo "  make dev-logs            # Ver logs de Hermes (journalctl)"
     echo "  make dev-health          # Healthcheck completo"
-    echo "  ./scripts/development/stop-development.sh  # Parar development"
+    echo "  make dev-stop            # Parar desarrollo"
+    echo "  make dev-restart         # Reiniciar desarrollo"
     echo ""
-    echo "Para Telegram: usa el bot token configurado en instances/development/config.yml"
+    echo "Para Telegram: usa el bot token configurado en instances/development/instance.env"
+    echo "(el config.yml usa secrets_refs y no contiene secretos reales)"
     echo ""
 }
 
 main() {
     echo ""
-    echo "=== INICIANDO DEVELOPMENT GESTOR-IA ==="
+    echo "=== INICIANDO DEVELOPMENT GESTOR-IA (NATIVO) ==="
     echo ""
     
-    check_docker
-    start_infrastructure
-    start_hermes
-    run_healthcheck
+    check_sudo
+    start_services
+    check_health
     show_status
 }
 

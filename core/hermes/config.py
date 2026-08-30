@@ -40,6 +40,7 @@ class GlobalSettings(BaseSettings):
     MARIADB_HOST: str = "127.0.0.1"
     MARIADB_PORT: int = 3306
     MARIADB_ROOT_PASSWORD: str  # Generar: openssl rand -base64 32
+    MARIADB_AUDIT_PASSWORD: str = ""  # Dedicated audit DB user password
 
     # =========================================================================
     # REDIS (Compartido - DBs separadas por instancia)

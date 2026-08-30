@@ -53,9 +53,9 @@ class CommandExecutor:
         if not handler:
             raise ValueError(f"No handler for {intent.command_type}")
 
-        # 2. Check permission BEFORE preview
+        # 2. Check permission BEFORE preview (skip if no Hermes permission required)
         required = handler.required_permission
-        if not self.auth.can(self.user, required):
+        if required and not self.auth.can(self.user, required):
             await self._audit_preview_denied(intent, required)
             raise PermissionError(f"Requiere permiso: {required}")
 
@@ -125,9 +125,10 @@ class CommandExecutor:
                 error_message="Confirmación no encontrada o expirada",
             )
 
-        # 2. RECHECK authorization
+        # 2. RECHECK authorization (skip if no Hermes permission required)
         handler = self.registry.get_handler(self.ctx.instance_id, pending.command_type)
-        if not self.auth.can(self.user, handler.required_permission):
+        required = handler.required_permission
+        if required and not self.auth.can(self.user, required):
             self.store.update_status(
                 command_id, CommandStatus.FAILED, error_code="PERMISSION_REVOKED", error_message="Permiso revocado"
             )

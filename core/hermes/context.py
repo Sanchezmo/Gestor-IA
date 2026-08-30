@@ -198,6 +198,11 @@ class CompanyContext:
             base_url=db.internal_url,
             api_key=api_key,
             timeout=30,
+            db_host=self.instance_config.database.host,
+            db_port=self.instance_config.database.port,
+            db_name=self.instance_config.database.name,
+            db_user=self.instance_config.database.user,
+            db_password=self.instance_config.database.password,
         )
 
     def create_telegram_client(self) -> TelegramClient:

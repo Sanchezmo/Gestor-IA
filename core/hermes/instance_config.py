@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator
 
+from core.hermes.secret_resolver import SecretResolver, SecretResolutionError
+
 
 class AIProviderType(StrEnum):
     """Proveedores de IA soportados."""
@@ -251,6 +253,9 @@ def load_instance_config(instance_id: str, instances_root: Path | None = None) -
 
     Returns:
         InstanceConfig o None si no existe
+
+    Raises:
+        SecretResolutionError: If required secrets are missing or cannot be resolved
     """
     global _config_cache
 
@@ -270,6 +275,13 @@ def load_instance_config(instance_id: str, instances_root: Path | None = None) -
 
     if not data:
         return None
+
+    # Resolve secrets if secrets_refs are present
+    secrets_refs = data.get("secrets_refs", {})
+    if secrets_refs:
+        resolver = SecretResolver(instance_id, instances_root)
+        resolver.validate_required_secrets(secrets_refs)
+        data = resolver.apply_secrets_to_config(data, secrets_refs)
 
     config = InstanceConfig(**data).resolve_paths()
 

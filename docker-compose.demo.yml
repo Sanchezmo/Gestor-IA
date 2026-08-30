@@ -1,5 +1,15 @@
 version: '3.8'
 
+# =============================================================================
+# DOCKER COMPOSE PARA DEMO/TESTS/CI - NO PARA RUNTIME DIARIO
+# =============================================================================
+# Este archivo es para entornos de demo, tests de integración, o CI.
+# NO se usa para el desarrollo diario.
+#
+# El runtime DEVELOPMENT diario usa servicios NATIVOS (systemd).
+# Ver docker-compose.development.yml para más detalles.
+# =============================================================================
+
 services:
   # Dolibarr ERP for demo instance
   dolibarr-demo:

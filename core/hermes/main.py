@@ -117,7 +117,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Audit logger global (para eventos de sistema)
     _audit_logger = create_audit_logger(
-        database_url=f"mysql+pymysql://root:{_global_settings.MARIADB_ROOT_PASSWORD}@"
+        database_url=f"mysql+pymysql://gestor_ia_audit:{_global_settings.MARIADB_AUDIT_PASSWORD}@"
         f"{_global_settings.MARIADB_HOST}:{_global_settings.MARIADB_PORT}/gestor_ia_audit"
     )
 
@@ -649,26 +649,127 @@ async def telegram_webhook(
         text = (message.get("text") or "").strip()
         telegram_user_id = message.get("from", {}).get("id")
 
-        if not text:
-            await telegram_client.send_message(chat_id=chat_id, text="Solo se procesan mensajes de texto.")
+        # =====================================================================
+        # RESOLVE USER CONTEXT EARLY (needed for both commands and documents)
+        # =====================================================================
+        user_context = None
+        if telegram_user_id:
+            user_context = await resolve_user_context_from_company_context(ctx, telegram_user_id)
+
+        # =====================================================================
+        # DOCUMENT/PHOTO HANDLING (Supplier Invoice Ingestion)
+        # =====================================================================
+        document = message.get("document")
+        photo = message.get("photo")
+
+        if document or photo:
+            # Process document/photo for supplier invoice ingestion
+            if not user_context:
+                if user_context is None:
+                    await telegram_client.send_message(
+                        chat_id=chat_id,
+                        text="No tienes acceso autorizado a este asistente."
+                    )
+                    r.set(idempotency_key, "completed", ex=86400)
+                    return {"success": True, "update_id": update_id, "unauthorized": True}
+
+            # Get file_id and file info
+            if document:
+                file_id = document.get("file_id")
+                filename = document.get("file_name") or "document.pdf"
+                mime_type = document.get("mime_type") or "application/pdf"
+            else:
+                # Photo - use largest size
+                largest_photo = max(photo, key=lambda p: p.get("file_size", 0))
+                file_id = largest_photo.get("file_id")
+                filename = "photo.jpg"
+                mime_type = "image/jpeg"
+
+            # Send processing message
+            processing_msg = await telegram_client.send_message(
+                chat_id=chat_id,
+                text="📥 Procesando factura... (esto puede tardar unos segundos)"
+            )
+
+            try:
+                # Import here to avoid circular imports
+                from core.hermes.invoices import create_document_ingestion_service
+
+                ingestion_service = create_document_ingestion_service(ctx, user_context, telegram_client)
+                result = await ingestion_service.ingest(file_id, filename, mime_type)
+
+                if result.success and result.preview_text:
+                    # Send preview with inline keyboard
+                    from core.hermes.commands.telegram import send_command_preview
+                    from core.hermes.commands.models import CommandPreview, CommandType
+                    from uuid import uuid4
+
+                    # Create a preview object for the invoice
+                    preview = CommandPreview(
+                        command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+                        summary=result.preview_text,
+                        structured_data={
+                            "draft_id": str(result.draft.correlation_id),
+                            "document_hash": result.draft.document_hash,
+                            "stored_path": result.stored_path,
+                        },
+                        command_id=uuid4(),
+                    )
+
+                    await send_command_preview(telegram_client, chat_id, preview)
+                    # Delete processing message
+                    try:
+                        await telegram_client.delete_message(chat_id, processing_msg.message_id)
+                    except Exception:
+                        pass
+
+                else:
+                    # Error - send error message
+                    error_text = f"❌ {result.error}"
+                    if result.error_code == "NOT_INVOICE":
+                        error_text = "📄 He recibido el documento, pero no parece una factura de proveedor."
+                    elif result.error_code == "MULTI_DOCUMENT":
+                        error_text = "📄 El documento parece contener varios documentos. Envíalos por separado."
+                    elif result.error_code == "DUPLICATE_DOCUMENT":
+                        error_text = "📄 Este documento ya fue procesado anteriormente."
+                    elif result.error_code == "LOCAL_MODEL_UNAVAILABLE":
+                        error_text = "⚙️ El modelo local no está disponible. Inténtalo más tarde."
+
+                    await telegram_client.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=processing_msg.message_id,
+                        text=error_text,
+                    )
+
+            except Exception as e:
+                logger.error("invoice_ingestion_failed", instance_id=instance_id, error=str(e))
+                await telegram_client.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=processing_msg.message_id,
+                    text="❌ Error procesando la factura. Inténtalo de nuevo.",
+                )
+
             r.set(idempotency_key, "completed", ex=86400)
             return {"success": True, "update_id": update_id}
 
-        # =====================================================================
-        # PIPELINE: Resolver identidad -> UserContext
-        # =====================================================================
-        user_context = None
-        auth_error = None
-
-        if telegram_user_id:
-            user_context = await resolve_user_context_from_company_context(ctx, telegram_user_id)
-            if user_context is None:
-                auth_error = "No tienes acceso autorizado a este asistente."
+        # Text-only messages continue to command processing
+        if not text:
+            if not user_context:
+                await telegram_client.send_message(chat_id=chat_id, text="No tienes acceso autorizado a este asistente.")
+            else:
+                await telegram_client.send_message(chat_id=chat_id, text="Solo se procesan mensajes de texto.")
+            r.set(idempotency_key, "completed", ex=86400)
+            return {"success": True, "update_id": update_id}
 
         # =====================================================================
         # ENRUTAMIENTO DE COMANDOS
         # =====================================================================
         response_text = ""
+
+        if not user_context:
+            auth_error = "No tienes acceso autorizado a este asistente."
+        else:
+            auth_error = None
 
         if text == "/start":
             response_text = (
@@ -695,7 +796,7 @@ async def telegram_webhook(
             response_text = f"Instancia: {ctx.instance_id}\nEmpresa: {ctx.company_name}\nAgentes: {agents_text}"
 
         elif text == "/terceros":
-            if not user_context:
+            if auth_error:
                 response_text = "No tienes acceso autorizado a este asistente."
                 # Auditoría: identidad desconocida
                 if _audit_logger:
@@ -752,7 +853,7 @@ async def telegram_webhook(
                         )
 
         elif text == "/facturas":
-            if not user_context:
+            if auth_error:
                 response_text = "No tienes acceso autorizado a este asistente."
                 if _audit_logger:
                     await _audit_logger.log_from_context(
@@ -806,7 +907,7 @@ async def telegram_webhook(
                         )
 
         elif text == "/facturas_proveedor":
-            if not user_context:
+            if auth_error:
                 response_text = "No tienes acceso autorizado a este asistente."
                 if _audit_logger:
                     await _audit_logger.log_from_context(
@@ -860,7 +961,7 @@ async def telegram_webhook(
                         )
 
         elif text == "/productos":
-            if not user_context:
+            if auth_error:
                 response_text = "No tienes acceso autorizado a este asistente."
                 if _audit_logger:
                     await _audit_logger.log_from_context(
@@ -916,7 +1017,7 @@ async def telegram_webhook(
                         )
 
         elif text == "/servicios":
-            if not user_context:
+            if auth_error:
                 response_text = "No tienes acceso autorizado a este asistente."
                 if _audit_logger:
                     await _audit_logger.log_from_context(
@@ -975,7 +1076,7 @@ async def telegram_webhook(
         # QUERY LAYER V2: Procesar lenguaje natural con IntentInterpreter
         # =====================================================================
         else:
-            if not user_context:
+            if auth_error:
                 response_text = "No tienes acceso autorizado a este asistente."
                 if _audit_logger:
                     await _audit_logger.log_from_context(
@@ -1334,9 +1435,13 @@ async def telegram_webhook(
                 finally:
                     await instance_interpreter.aclose()
 
-        # Enviar respuesta
+        # Enviar respuesta (no romper webhook si falla Telegram)
         if response_text:
-            await telegram_client.send_message(chat_id=chat_id, text=response_text)
+            try:
+                await telegram_client.send_message(chat_id=chat_id, text=response_text, parse_mode=None)
+            except Exception as e:
+                logger.warning("telegram_send_failed", chat_id=chat_id, error=str(e))
+                # No re-lanzar: webhook debe responder 200 a Telegram
 
         # Marcar completado (actualizar valor manteniendo TTL)
         r.set(idempotency_key, "completed", ex=86400)
@@ -1504,7 +1609,14 @@ async def list_thirdparties(
     if user_context.instance_id != instance_id:
         raise HTTPException(403, "Cross-instance access denied")
 
-    client = DolibarrClient.from_instance_config(ctx.dolibarr_config)
+    client = DolibarrClient.from_instance_config(
+        ctx.dolibarr_config,
+        db_host=ctx.instance_config.database.host,
+        db_port=ctx.instance_config.database.port,
+        db_name=ctx.instance_config.database.name,
+        db_user=ctx.instance_config.database.user,
+        db_password=ctx.instance_config.database.password,
+    )
     async with client as c:
         return await c.list_thirdparties(limit=limit, offset=offset)
 

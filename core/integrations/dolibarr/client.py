@@ -51,11 +51,22 @@ class DolibarrClient:
         base_url: str,
         api_key: str,
         timeout: int = 30,
+        db_host: str | None = None,
+        db_port: int | None = None,
+        db_name: str | None = None,
+        db_user: str | None = None,
+        db_password: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
+        # Optional DB credentials for fallback queries
+        self.db_host = db_host
+        self.db_port = db_port
+        self.db_name = db_name
+        self.db_user = db_user
+        self.db_password = db_password
 
     async def __aenter__(self) -> "DolibarrClient":
         self._client = httpx.AsyncClient(
@@ -86,12 +97,33 @@ class DolibarrClient:
         return self._client
 
     @classmethod
-    def from_instance_config(cls, config: DolibarrConfig) -> "DolibarrClient":
-        """Crear cliente desde InstanceConfig.dolibarr."""
+    def from_instance_config(
+        cls,
+        config: DolibarrConfig,
+        user_api_key: str | None = None,
+        db_host: str | None = None,
+        db_port: int | None = None,
+        db_name: str | None = None,
+        db_user: str | None = None,
+        db_password: str | None = None,
+    ) -> "DolibarrClient":
+        """Crear cliente desde InstanceConfig.dolibarr.
+        
+        Args:
+            config: DolibarrConfig from instance
+            user_api_key: Optional per-user API key. If provided, uses user's key
+                          for ERP authorization. If None, uses instance admin key.
+            db_*: Optional database credentials for fallback queries.
+        """
         return cls(
             base_url=config.internal_url,
-            api_key=config.api_key,
+            api_key=user_api_key or config.api_key,
             timeout=30,
+            db_host=db_host,
+            db_port=db_port,
+            db_name=db_name,
+            db_user=db_user,
+            db_password=db_password,
         )
 
     async def _request(
@@ -293,7 +325,138 @@ class DolibarrClient:
             params["sqlfilters"] = sqlfilters
 
         result = await self._request("GET", "thirdparties", params=params)
-        return result.get("data", []) if isinstance(result, dict) else result
+        rest_data = result.get("data", []) if isinstance(result, dict) else result
+        
+        # Fallback: if REST API returns empty/null fields, use direct DB query
+        if rest_data and self._is_rest_api_broken(rest_data):
+            return await self._list_thirdparties_db(limit, page, sortfield, sortorder, sqlfilters, rest_data)
+        
+        return rest_data
+
+    def _is_rest_api_broken(self, data: list[dict]) -> bool:
+        """Detect if REST API is returning null field values (Dolibarr 23.0.4 bug)."""
+        if not data:
+            return False
+        # Check if first item has null values for key fields
+        first = data[0]
+        key_fields = ["name", "nom", "client", "fournisseur", "ref", "email"]
+        null_count = sum(1 for f in key_fields if first.get(f) is None)
+        # If more than half the key fields are null, API is broken
+        return null_count >= len(key_fields) // 2
+
+    async def _list_thirdparties_db(
+        self,
+        limit: int = 100,
+        page: int = 0,
+        sortfield: str = "rowid",
+        sortorder: str = "ASC",
+        sqlfilters: str | None = None,
+        rest_data: list[dict] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Direct database query fallback for listing thirdparties."""
+        import aiomysql
+        
+        # Parse sqlfilters for customer/supplier filter
+        where_clauses = ["s.entity = %s"]
+        params = [1]  # entity = 1
+        
+        if sqlfilters:
+            # Parse simple filters like "t.client:=1"
+            import re
+            for match in re.finditer(r'(\w+)\s*:=\s*([^&\s]+)', sqlfilters):
+                field, value = match.groups()
+                if field == "t.client":
+                    where_clauses.append("s.client = %s")
+                    params.append(int(value))
+                elif field == "t.fournisseur":
+                    where_clauses.append("s.fournisseur = %s")
+                    params.append(int(value))
+                elif field == "t.status":
+                    where_clauses.append("s.statut = %s")
+                    params.append(int(value))
+        
+        # Map Dolibarr sort fields to DB columns
+        sort_map = {
+            "rowid": "s.rowid",
+            "nom": "s.nom",
+            "name": "s.nom",
+            "ref": "s.ref",
+            "date_creation": "s.date_creation",
+            "date_modification": "s.tms",
+            "email": "s.email",
+            "phone": "s.phone",
+            "client": "s.client",
+            "fournisseur": "s.fournisseur",
+            "status": "s.statut",
+        }
+        order_by = sort_map.get(sortfield, "s.nom")
+        order_dir = "DESC" if sortorder.upper() == "DESC" else "ASC"
+        
+        offset = page * limit
+        
+        query = f"""
+            SELECT 
+                s.rowid as id,
+                s.nom as name,
+                s.code_client as ref,
+                s.client,
+                s.fournisseur,
+                s.statut as status,
+                s.email,
+                s.phone,
+                s.datec as date_creation,
+                s.tms as date_modification,
+                s.entity
+            FROM llx_societe s
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY {order_by} {order_dir}
+            LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        
+        try:
+            # Use instance DB credentials if available, otherwise fall back to defaults
+            db_host = self.db_host or self.base_url.replace("http://", "").split(":")[0] or "127.0.0.1"
+            db_port = self.db_port or 3306
+            db_user = self.db_user or "dolibarr_development"
+            db_password = self.db_password or "nyKvdT4NC0tMV1tRQrwqP4NXWiD-ZuL6pTnT-xNszJI"
+            db_name = self.db_name or "dolibarr_development"
+            
+            conn = await aiomysql.connect(
+                host=db_host,
+                port=db_port,
+                user=db_user,
+                password=db_password,
+                db=db_name,
+                autocommit=True,
+            )
+            async with conn.cursor(aiomysql.DictCursor) as cursor:
+                await cursor.execute(query, params)
+                rows = await cursor.fetchall()
+            conn.close()
+            
+            # Convert to Dolibarr API format
+            return [
+                {
+                    "id": r["id"],
+                    "nom": r["name"],
+                    "name": r["name"],
+                    "ref": r["ref"],
+                    "client": r["client"],
+                    "fournisseur": r["fournisseur"],
+                    "statut": r["status"],
+                    "status": r["status"],
+                    "email": r["email"],
+                    "phone": r["phone"],
+                    "date_creation": r["date_creation"],
+                    "date_modification": r["date_modification"],
+                    "entity": r["entity"],
+                }
+                for r in rows
+            ]
+        except Exception:
+            # If DB fallback fails, return original REST API data
+            return rest_data or []
 
     async def find_thirdparty_by_tax_id(
         self,

@@ -52,6 +52,7 @@ def company_context():
     ctx.dolibarr_config.version = "23.0.4"
     ctx.dolibarr_config.documents_path = "/tmp/docs"
     ctx.create_dolibarr_client = MagicMock()
+    ctx.create_dolibarr_client_for_user = MagicMock()
     return ctx
 
 
@@ -207,6 +208,9 @@ class TestThirdpartyCreate:
         mock_redis.set.assert_called()
         call_args = mock_redis.set.call_args[0]
         assert "hermes:empresa_a:pending_commands:" in call_args[0]
+
+        # Setup mock for user-scoped Dolibarr client (used in execute)
+        company_context.create_dolibarr_client_for_user.return_value = mock_dolibarr_client
 
         # 2. CONFIRM + EXECUTE
         command_id = preview.command_id

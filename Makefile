@@ -200,33 +200,43 @@ type-check: ## Verificación de tipos con mypy
 pre-commit: lint format type-check ## Ejecutar todos los checks pre-commit
 
 # =============================================================================
-# DEVELOPMENT (Docker Compose based)
+# DEVELOPMENT (Native services via systemd)
 # =============================================================================
 
 dev-install: install-python install-hermes ## Instalación solo desarrollo (sin BD ni Apache)
 
-dev-start: ## Iniciar entorno DEVELOPMENT completo (Docker + Hermes)
-	@echo "$(GREEN)=== Iniciando DEVELOPMENT GESTOR-IA ===$(NC)"
-	@./scripts/development/start-development.sh
+dev-start: ## Iniciar entorno DEVELOPMENT nativo (systemd)
+	@echo "$(GREEN)=== Iniciando DEVELOPMENT GESTOR-IA (native) ===$(NC)"
+	@sudo -n systemctl start mariadb redis-server apache2 cloudflared ollama 2>/dev/null || true
+	@sudo -n systemctl start hermes-development
+	@echo "$(GREEN)Esperando servicios...$(NC)"
+	@sleep 3
+	@curl -sf http://localhost:8000/health 2>/dev/null && echo "Hermes API: $(GREEN)OK$(NC)" || echo "Hermes API: $(RED)DOWN$(NC)"
 
-dev-stop: ## Parar entorno DEVELOPMENT completo
-	@echo "$(YELLOW)=== Parando DEVELOPMENT GESTOR-IA ===$(NC)"
-	@./scripts/development/stop-development.sh
+dev-stop: ## Parar entorno DEVELOPMENT nativo
+	@echo "$(YELLOW)=== Parando DEVELOPMENT GESTOR-IA (native) ===$(NC)"
+	@sudo -n systemctl stop hermes-development
+	@sudo -n systemctl stop ollama cloudflared apache2 redis-server mariadb 2>/dev/null || true
 
-dev-restart: dev-stop dev-start ## Reiniciar entorno DEVELOPMENT completo
+dev-restart: dev-stop dev-start ## Reiniciar entorno DEVELOPMENT nativo
 
-dev-status: ## Ver estado de servicios DEVELOPMENT
-	@echo "$(GREEN)=== Estado DEVELOPMENT ===$(NC)"
-	@docker compose -f docker-compose.development.yml ps
+dev-status: ## Ver estado de servicios DEVELOPMENT nativos
+	@echo "$(GREEN)=== Estado DEVELOPMENT (native) ===$(NC)"
+	@sudo -n systemctl is-active mariadb >/dev/null 2>&1 && echo "MariaDB:    $(GREEN)active$(NC)" || echo "MariaDB:    $(RED)inactive$(NC)"
+	@sudo -n systemctl is-active redis-server >/dev/null 2>&1 && echo "Redis:      $(GREEN)active$(NC)" || echo "Redis:      $(RED)inactive$(NC)"
+	@sudo -n systemctl is-active apache2 >/dev/null 2>&1 && echo "Apache:     $(GREEN)active$(NC)" || echo "Apache:     $(RED)inactive$(NC)"
+	@sudo -n systemctl is-active cloudflared >/dev/null 2>&1 && echo "cloudflared:$(GREEN)active$(NC)" || echo "cloudflared:$(RED)inactive$(NC)"
+	@sudo -n systemctl is-active ollama >/dev/null 2>&1 && echo "Ollama:     $(GREEN)active$(NC)" || echo "Ollama:     $(RED)inactive$(NC)"
+	@sudo -n systemctl is-active hermes-development >/dev/null 2>&1 && echo "Hermes:     $(GREEN)active$(NC)" || echo "Hermes:     $(RED)inactive$(NC)"
 	@echo ""
 	@curl -sf http://localhost:8000/health 2>/dev/null && echo "Hermes API: $(GREEN)OK$(NC)" || echo "Hermes API: $(RED)DOWN$(NC)"
 
-dev-health: ## Healthcheck completo DEVELOPMENT
-	@echo "$(GREEN)=== Healthcheck DEVELOPMENT ===$(NC)"
-	@if [ -f .venv/bin/activate ]; then source .venv/bin/activate; fi; python -m core.hermes.cli healthcheck
+dev-health: ## Healthcheck completo DEVELOPMENT nativo
+	@echo "$(GREEN)=== Healthcheck DEVELOPMENT (native) ===$(NC)"
+	@.venv/bin/python -m core.hermes.cli healthcheck
 
-dev-logs-docker: ## Ver logs Hermes DEVELOPMENT (Docker)
-	@tail -f /tmp/hermes-development.log 2>/dev/null || echo "Log no encontrado: /tmp/hermes-development.log"
+dev-logs: ## Ver logs Hermes DEVELOPMENT (systemd journal)
+	@sudo -n journalctl -u hermes-development -f
 
 # =============================================================================
 # DOCKER (SOLO PARA TESTS/CI - NO PRODUCCIÓN)

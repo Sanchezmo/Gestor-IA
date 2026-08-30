@@ -325,7 +325,15 @@ async def get_user_context(
     identity_store = IdentityStore(company_context.instance_id)
 
     def _client_factory(ctx: CompanyContext, identity: TelegramIdentity) -> DolibarrClient:
-        return DolibarrClient.from_instance_config(ctx.dolibarr_config)
+        # Use user's own Dolibarr API key for ERP authorization (FAIL CLOSED if missing)
+        user_api_key = identity.dolibarr_api_key
+        if not user_api_key:
+            raise DolibarrAuthError(
+                company_context.instance_id,
+                identity.telegram_user_id,
+                DolibarrException("User has no Dolibarr API key configured", status_code=401)
+            )
+        return DolibarrClient.from_instance_config(ctx.dolibarr_config, user_api_key)
 
     resolver = IdentityResolver(identity_store, _client_factory)
 
@@ -379,7 +387,16 @@ async def resolve_user_context_from_company_context(
     identity_store = IdentityStore(company_context.instance_id)
 
     def _client_factory(ctx: CompanyContext, identity: TelegramIdentity) -> DolibarrClient:
-        return DolibarrClient.from_instance_config(ctx.dolibarr_config)
+        # Use user's own Dolibarr API key for ERP authorization
+        user_api_key = identity.dolibarr_api_key
+        if not user_api_key:
+            # Return None will be handled as auth failure upstream
+            raise DolibarrAuthError(
+                company_context.instance_id,
+                identity.telegram_user_id,
+                DolibarrException("User has no Dolibarr API key configured", status_code=401)
+            )
+        return DolibarrClient.from_instance_config(ctx.dolibarr_config, user_api_key)
 
     resolver = IdentityResolver(identity_store, _client_factory)
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/development/stop-development.sh
-# Parar entorno DEVELOPMENT completo
+# Parar entorno DEVELOPMENT nativo (systemd)
+# NOTA: Este script es un wrapper. La interfaz principal es: make dev-stop
 
 set -euo pipefail
 
@@ -19,50 +20,33 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step()  { echo -e "${BLUE}[STEP]${NC} $*"; }
 
-stop_hermes() {
-    log_step "Parando Hermes..."
-    if [[ -f /tmp/hermes-development.pid ]]; then
-        HERMES_PID=$(cat /tmp/hermes-development.pid)
-        if kill -0 "$HERMES_PID" 2>/dev/null; then
-            kill "$HERMES_PID"
-            log_info "Hermes parado (PID: $HERMES_PID)"
-        else
-            log_warn "Hermes ya no estaba corriendo"
-        fi
-        rm -f /tmp/hermes-development.pid
-    else
-        log_warn "No se encontró PID file de Hermes"
-    fi
-    
-    # Asegurar que no quede ningún proceso en puerto 8000
-    if lsof -ti:8000 >/dev/null 2>&1; then
-        log_warn "Matando procesos restantes en puerto 8000..."
-        lsof -ti:8000 | xargs kill -9 2>/dev/null || true
+check_sudo() {
+    if ! sudo -n true 2>/dev/null; then
+        log_error "Se requiere sudo sin password para gestionar servicios systemd."
+        log_error "Instala el sudoers: sudo install -o root -g root -m 0440 .local/gestor-ia-development.sudoers /etc/sudoers.d/gestor-ia-development"
+        exit 1
     fi
 }
 
-stop_infrastructure() {
-    log_step "Parando infraestructura Docker..."
-    cd "$PROJECT_ROOT"
+stop_services() {
+    log_step "Parando servicios nativos..."
     
-    docker compose -f docker-compose.development.yml down
+    # Parar Hermes primero
+    sudo -n systemctl stop hermes-development
     
-    log_info "Infraestructura parada"
-}
-
-cleanup() {
-    log_step "Limpiando archivos temporales..."
-    rm -f /tmp/hermes-development.log /tmp/hermes-development.pid
+    # Parar infraestructura (orden inverso)
+    sudo -n systemctl stop ollama cloudflared apache2 redis-server mariadb 2>/dev/null || true
+    
+    log_info "Servicios nativos parados"
 }
 
 main() {
     echo ""
-    echo "=== PARANDO DEVELOPMENT GESTOR-IA ==="
+    echo "=== PARANDO DEVELOPMENT GESTOR-IA (NATIVO) ==="
     echo ""
     
-    stop_hermes
-    stop_infrastructure
-    cleanup
+    check_sudo
+    stop_services
     
     echo ""
     log_info "DEVELOPMENT GESTOR-IA detenido correctamente"

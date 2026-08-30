@@ -572,7 +572,7 @@ def create_audit_logger(instance_config: InstanceConfig | None = None, database_
 
         settings = get_global_settings()
         return AuditLogger(
-            f"mysql+pymysql://root:{settings.MARIADB_ROOT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/gestor_ia_audit"
+            f"mysql+pymysql://gestor_ia_audit:{settings.MARIADB_AUDIT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/gestor_ia_audit"
         )
 
     # Fallback: global audit DB (separada)
@@ -580,5 +580,5 @@ def create_audit_logger(instance_config: InstanceConfig | None = None, database_
 
     settings = get_global_settings()
     return AuditLogger(
-        f"mysql+pymysql://root:{settings.MARIADB_ROOT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/gestor_ia_audit"
+        f"mysql+pymysql://gestor_ia_audit:{settings.MARIADB_AUDIT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/gestor_ia_audit"
     )

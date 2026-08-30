@@ -1,5 +1,26 @@
 version: '3.8'
 
+# =============================================================================
+# DOCKER COMPOSE PARA TESTS/CI/INTEGRACIÓN - NO PARA RUNTIME DEVELOPMENT DIARIO
+# =============================================================================
+# Este archivo NO se usa para el desarrollo diario.
+# El runtime DEVELOPMENT diario usa servicios NATIVOS (systemd):
+#   - MariaDB nativa (puerto 3306)
+#   - Redis nativa (puerto 6379)
+#   - Apache + PHP nativo (puerto 8081 para Dolibarr)
+#   - cloudflared nativo (túnel Cloudflare)
+#   - Ollama nativo (puerto 11434)
+#   - Hermes via systemd (puerto 8000)
+#
+# Uso de este compose:
+#   - Tests de integración que requieren entorno aislado
+#   - CI/CD pipelines
+#   - Entornos efímeros temporales
+#   - Futuro deployment opcional en VPS
+#
+# Para desarrollo diario usar: make dev-start / make dev-stop / make dev-status
+# =============================================================================
+
 services:
   # Dolibarr ERP para instancia development
   dolibarr-development:

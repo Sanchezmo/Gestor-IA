@@ -1,21 +1,21 @@
 instance_id: development
 company_name: "Development Empresa SL"
 database:
-  host: mariadb-development
+  host: 127.0.0.1
   port: 3306
   name: dolibarr_development
   user: dolibarr_development
-  password: nyKvdT4NC0tMV1tRQrwqP4NXWiD-ZuL6pTnT-xNszJI
+  password: null
 dolibarr:
   version: "23.0.4"
-  internal_url: http://localhost:8081
+  internal_url: http://127.0.0.1:8081
   public_url: https://dolibarr.development.local
-  api_key: 606b332e1eb183aedb4729b90d0ab4d0ff9b5ff0
+  api_key: null
   documents_path: /var/lib/dolibarr/documents/development
 telegram:
-  bot_token: 8819273281:AAG0wcvlKNGrOz8tDjXNVbwnlWCo42_wgBY
-  webhook_path: /webhook/empresa_a
-  webhook_secret: b2fb51ae07c72ab2d9afe812fa38272d5bceb6ebe709a7adc70571162bb0588d
+  bot_token: null
+  webhook_path: /webhook/development
+  webhook_secret: null
   webhook_secret_required: true
   allowed_user_ids: []
   max_file_size_mb: 10
@@ -27,7 +27,7 @@ domains:
   custom: {}
 ai:
   default_policy: LOCAL_ONLY
-  ollama_endpoint: http://ollama-development:11434
+  ollama_endpoint: http://127.0.0.1:11434
   ollama_model: qwen3.5:4b
   ollama_vision_model: null
   nvidia_api_key: null
