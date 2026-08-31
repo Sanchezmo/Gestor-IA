@@ -14,6 +14,7 @@ Adapted for Gestor-IA:
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -133,26 +134,33 @@ def normalize_tax_data(draft: SupplierInvoiceDraft) -> SupplierInvoiceDraft:
 
     # --- Step 5: Normalize withholding breakdown ---
     normalized_withholding = []
-    for wh in withholding_breakdown:
-        rate = wh.rate
-        amount = wh.amount
-        base = wh.base
 
-        if rate is not None and rate > 0 and (amount is None or amount == 0):
-            if base is None:
-                # Withholding base is typically the taxable base (subtotal)
-                base = draft.subtotal or Decimal("0")
-            amount = (base * rate / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if withholding_breakdown:
+        # Existing breakdown - normalize each item
+        for wh in withholding_breakdown:
+            rate = wh.rate
+            amount = wh.amount
+            base = wh.base
+            concept = wh.concept
 
-        if amount is None:
-            amount = Decimal("0")
+            if rate is not None and rate > 0 and (amount is None or amount == 0):
+                if base is None:
+                    # Withholding base is typically the taxable base (subtotal)
+                    base = draft.subtotal or Decimal("0")
+                amount = (base * rate / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-        normalized_withholding.append(WithholdingBreakdownItem(
-            rate=rate,
-            base=base or Decimal("0"),
-            amount=amount,
-            source=wh.source,
-        ))
+            if amount is None:
+                amount = Decimal("0")
+
+            normalized_withholding.append(WithholdingBreakdownItem(
+                concept=concept,
+                rate=rate,
+                base=base or Decimal("0"),
+                amount=amount,
+                source=wh.source,
+            ))
+    
+    
 
     # --- Step 6: Ensure tax_total consistency with computed tax amounts ---
     computed_tax_total = sum(t.amount for t in normalized_tax_breakdown)
@@ -180,27 +188,9 @@ def normalize_tax_data(draft: SupplierInvoiceDraft) -> SupplierInvoiceDraft:
         final_total = final_subtotal + final_tax_total - (final_withholding_total or Decimal("0"))
         final_total = final_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    # Return new draft with normalized data
-    return SupplierInvoiceDraft(
-        document_hash=draft.document_hash,
-        document_filename=draft.document_filename,
-        document_mime_type=draft.document_mime_type,
-        document_size_bytes=draft.document_size_bytes,
-        page_count=draft.page_count,
-        classification=draft.classification,
-        classification_confidence=draft.classification_confidence,
-        classification_signals=draft.classification_signals,
-        supplier=draft.supplier,
-        invoice_number=draft.invoice_number,
-        invoice_number_source=draft.invoice_number_source,
-        invoice_date=draft.invoice_date,
-        invoice_date_source=draft.invoice_date_source,
-        due_date=draft.due_date,
-        due_date_source=draft.due_date_source,
-        currency=draft.currency,
-        payment_terms=draft.payment_terms,
-        payment_method=draft.payment_method,
-        notes=draft.notes,
+    # Return new draft with normalized data using replace for cleaner updates
+    return replace(
+        draft,
         lines=lines,
         tax_breakdown=normalized_tax_breakdown,
         withholding_breakdown=normalized_withholding,
@@ -212,19 +202,6 @@ def normalize_tax_data(draft: SupplierInvoiceDraft) -> SupplierInvoiceDraft:
         withholding_total_source=draft.withholding_total_source if draft.withholding_total is not None else InvoiceFieldSource.INFERRED,
         total=final_total,
         total_source=draft.total_source if draft.total is not None else InvoiceFieldSource.INFERRED,
-        supplier_resolution_status=draft.supplier_resolution_status,
-        supplier_dolibarr_id=draft.supplier_dolibarr_id,
-        supplier_candidates=draft.supplier_candidates,
-        validation_status=draft.validation_status,
-        validation_errors=draft.validation_errors,
-        validation_warnings=draft.validation_warnings,
-        extraction_confidence=draft.extraction_confidence,
-        extraction_model=draft.extraction_model,
-        extraction_raw_text_chars=draft.extraction_raw_text_chars,
-        inference_count=draft.inference_count,
-        instance_id=draft.instance_id,
-        received_at=draft.received_at,
-        correlation_id=draft.correlation_id,
     )
 
 
@@ -251,9 +228,33 @@ REVIEW_WARNING_CODES = {
 }
 
 
+def _can_reconstruct_tax_breakdown(draft: SupplierInvoiceDraft) -> bool:
+    """
+    Check if tax_breakdown can be deterministically reconstructed from line items.
+    
+    Returns True if:
+    - Lines exist with vat_rate > 0
+    - line_total_excl_tax and vat_amount are computable
+    - Grouping by rate is unambiguous
+    """
+    if not draft.lines:
+        return False
+    
+    # Check if we have at least one line with valid vat_rate and amounts
+    valid_lines = [
+        line for line in draft.lines 
+        if line.vat_rate > 0 and line.line_total_excl_tax is not None and line.vat_amount is not None
+    ]
+    
+    return len(valid_lines) > 0
+
+
 def validate_invoice(draft: SupplierInvoiceDraft) -> ValidationResult:
     """
     Perform deterministic validations on a supplier invoice draft.
+
+    IMPORTANT: Caller MUST normalize the draft first using normalize_tax_data()
+    and infer_missing_totals() before calling this function.
 
     Returns ValidationResult with:
     - status: VALID, REVIEW_REQUIRED, or INVALID
@@ -264,7 +265,7 @@ def validate_invoice(draft: SupplierInvoiceDraft) -> ValidationResult:
     warnings = []
 
     # =========================================================================
-    # STRUCTURAL CHECKS (run on original draft, before normalization)
+    # STRUCTURAL CHECKS (run on normalized draft)
     # These check what was actually extracted, not what we can infer
     # =========================================================================
 
@@ -302,22 +303,18 @@ def validate_invoice(draft: SupplierInvoiceDraft) -> ValidationResult:
             "message": "Proveedor sin CIF/NIF identificado",
         })
 
-    # --- Tax breakdown missing check (structural - based on what was extracted) ---
-    # Check if tax_breakdown was originally missing AND tax_total exists
+    # --- Tax breakdown missing check (only if cannot be reconstructed) ---
+    # Check if tax_breakdown was originally missing AND tax_total exists AND cannot reconstruct
     if not draft.tax_breakdown and (draft.tax_total or Decimal("0")) > 0:
-        warnings.append({
-            "code": "tax_breakdown_missing",
-            "check": "tax_breakdown",
-            "tax_total": str(draft.tax_total.quantize(Decimal("0.01"))) if draft.tax_total else "0.00",
-            "breakdown_total": "0.00",
-            "severity": "warning",
-            "message": "Falta desglose de IVA por tipos (el total IVA sí existe)",
-        })
-
-    # =========================================================================
-    # NORMALIZE TAX DATA (fills in computable fields)
-    # =========================================================================
-    normalized = normalize_tax_data(draft)
+        if not _can_reconstruct_tax_breakdown(draft):
+            warnings.append({
+                "code": "tax_breakdown_missing",
+                "check": "tax_breakdown",
+                "tax_total": str(draft.tax_total.quantize(Decimal("0.01"))) if draft.tax_total else "0.00",
+                "breakdown_total": "0.00",
+                "severity": "warning",
+                "message": "Falta desglose de IVA por tipos (el total IVA sí existe) y no se puede reconstruir",
+            })
 
     # =========================================================================
     # MATHEMATICAL CHECKS (run on normalized data)
@@ -325,69 +322,77 @@ def validate_invoice(draft: SupplierInvoiceDraft) -> ValidationResult:
 
     # --- A) Check line net amounts sum to subtotal ---
     line_net_sum = Decimal("0")
-    for line in normalized.lines:
+    for line in draft.lines:
         if line.line_total_excl_tax is not None:
             line_net_sum += line.line_total_excl_tax
 
-    if normalized.subtotal is not None and abs(line_net_sum - normalized.subtotal) > Decimal("0.01"):
+    if draft.subtotal is not None and abs(line_net_sum - draft.subtotal) > Decimal("0.01"):
         errors.append({
             "code": "line_subtotal_mismatch",
             "check": "line_subtotal",
-            "expected": str(normalized.subtotal.quantize(Decimal("0.01"))),
+            "expected": str(draft.subtotal.quantize(Decimal("0.01"))),
             "actual": str(line_net_sum.quantize(Decimal("0.01"))),
-            "message": f"La suma de bases de líneas ({line_net_sum:.2f}) no coincide con subtotal ({normalized.subtotal:.2f})",
+            "message": f"La suma de bases de líneas ({line_net_sum:.2f}) no coincide con subtotal ({draft.subtotal:.2f})",
         })
 
     # --- B) Check global total: subtotal + tax_total - withholding = total ---
-    withholding_total = normalized.withholding_total or Decimal("0")
+    withholding_total = draft.withholding_total or Decimal("0")
 
-    if normalized.subtotal is not None and normalized.tax_total is not None and normalized.total is not None:
-        expected_total = normalized.subtotal + normalized.tax_total - withholding_total
-        if abs(expected_total - normalized.total) > Decimal("0.01"):
+    if draft.subtotal is not None and draft.tax_total is not None and draft.total is not None:
+        expected_total = draft.subtotal + draft.tax_total - withholding_total
+        if abs(expected_total - draft.total) > Decimal("0.01"):
             errors.append({
                 "code": "invoice_total_mismatch",
                 "check": "invoice_total",
-                "subtotal": str(normalized.subtotal.quantize(Decimal("0.01"))),
-                "tax_total": str(normalized.tax_total.quantize(Decimal("0.01"))),
+                "subtotal": str(draft.subtotal.quantize(Decimal("0.01"))),
+                "tax_total": str(draft.tax_total.quantize(Decimal("0.01"))),
                 "withholding_total": str(withholding_total.quantize(Decimal("0.01"))),
                 "expected": str(expected_total.quantize(Decimal("0.01"))),
-                "actual": str(normalized.total.quantize(Decimal("0.01"))),
-                "message": f"Total no cuadra: base {normalized.subtotal:.2f} + IVA {normalized.tax_total:.2f} - Ret. {withholding_total:.2f} = {expected_total:.2f}, pero total es {normalized.total:.2f}",
+                "actual": str(draft.total.quantize(Decimal("0.01"))),
+                "message": f"Total no cuadra: base {draft.subtotal:.2f} + IVA {draft.tax_total:.2f} - Ret. {withholding_total:.2f} = {expected_total:.2f}, pero total es {draft.total:.2f}",
             })
 
     # --- C) Check tax breakdown consistency ---
-    if normalized.tax_breakdown:
-        tax_breakdown_sum = sum(t.amount for t in normalized.tax_breakdown)
-        if normalized.tax_total is not None and abs(tax_breakdown_sum - normalized.tax_total) > Decimal("0.01"):
+    if draft.tax_breakdown:
+        tax_breakdown_sum = sum(t.amount for t in draft.tax_breakdown)
+        if draft.tax_total is not None and abs(tax_breakdown_sum - draft.tax_total) > Decimal("0.01"):
             errors.append({
                 "code": "tax_breakdown_incomplete",
                 "check": "tax_breakdown",
-                "tax_total": str(normalized.tax_total.quantize(Decimal("0.01"))),
+                "tax_total": str(draft.tax_total.quantize(Decimal("0.01"))),
                 "breakdown_total": str(tax_breakdown_sum.quantize(Decimal("0.01"))),
-                "message": f"Desglose IVA suma {tax_breakdown_sum:.2f} pero tax_total es {normalized.tax_total:.2f}",
+                "message": f"Desglose IVA suma {tax_breakdown_sum:.2f} pero tax_total es {draft.tax_total:.2f}",
             })
 
         # Check for invalid/missing tax rates when tax_total > 0
-        if (normalized.tax_total or Decimal("0")) > 0:
-            invalid_rates = [t for t in normalized.tax_breakdown if t.rate is None or t.rate <= 0]
+        # 0% VAT is valid (exempt operations, reverse charge), only None or negative are invalid
+        if (draft.tax_total or Decimal("0")) > 0:
+            invalid_rates = [t for t in draft.tax_breakdown if t.rate is None or t.rate < 0]
             if invalid_rates:
                 warnings.append({
                     "code": "tax_rate_missing",
                     "check": "tax_breakdown",
-                    "tax_total": str(normalized.tax_total.quantize(Decimal("0.01"))),
+                    "tax_total": str(draft.tax_total.quantize(Decimal("0.01"))),
                     "invalid_count": len(invalid_rates),
                     "message": f"{len(invalid_rates)} tipo(s) de IVA sin rate válido",
                 })
     else:
-        # No taxes breakdown at all after normalization - structural check already caught missing
-        pass
+        # No tax breakdown at all after normalization - check if it's an error
+        if (draft.tax_total or Decimal("0")) > 0 and not _can_reconstruct_tax_breakdown(draft):
+            errors.append({
+                "code": "tax_breakdown_incomplete",
+                "check": "tax_breakdown",
+                "tax_total": str(draft.tax_total.quantize(Decimal("0.01"))) if draft.tax_total else "0.00",
+                "breakdown_total": "0.00",
+                "message": f"Desglose IVA no disponible y no se puede reconstruir (tax_total={draft.tax_total})",
+            })
 
     # --- D) Check withholding breakdown if applicable ---
-    if (normalized.withholding_total or Decimal("0")) > 0 and not normalized.withholding_breakdown:
+    if (draft.withholding_total or Decimal("0")) > 0 and not draft.withholding_breakdown:
         warnings.append({
             "code": "withholding_breakdown_missing",
             "check": "withholding_breakdown",
-            "withholding_total": str(normalized.withholding_total.quantize(Decimal("0.01"))),
+            "withholding_total": str(draft.withholding_total.quantize(Decimal("0.01"))),
             "message": "Hay retenciones pero sin desglose",
         })
 
@@ -459,50 +464,15 @@ def infer_missing_totals(draft: SupplierInvoiceDraft) -> SupplierInvoiceDraft:
             new_inference_count += 1
 
     if updates:
-        return SupplierInvoiceDraft(
-            document_hash=draft.document_hash,
-            document_filename=draft.document_filename,
-            document_mime_type=draft.document_mime_type,
-            document_size_bytes=draft.document_size_bytes,
-            page_count=draft.page_count,
-            classification=draft.classification,
-            classification_confidence=draft.classification_confidence,
-            classification_signals=draft.classification_signals,
-            supplier=draft.supplier,
-            invoice_number=draft.invoice_number,
-            invoice_number_source=draft.invoice_number_source,
-            invoice_date=draft.invoice_date,
-            invoice_date_source=draft.invoice_date_source,
-            due_date=draft.due_date,
-            due_date_source=draft.due_date_source,
-            currency=draft.currency,
-            payment_terms=draft.payment_terms,
-            payment_method=draft.payment_method,
-            notes=draft.notes,
-            lines=draft.lines,
-            tax_breakdown=draft.tax_breakdown,
-            withholding_breakdown=draft.withholding_breakdown,
+        return replace(
+            draft,
             subtotal=updates.get("subtotal", draft.subtotal),
             subtotal_source=updates.get("subtotal_source", draft.subtotal_source),
             tax_total=updates.get("tax_total", draft.tax_total),
             tax_total_source=updates.get("tax_total_source", draft.tax_total_source),
-            withholding_total=draft.withholding_total,
-            withholding_total_source=draft.withholding_total_source,
             total=updates.get("total", draft.total),
             total_source=updates.get("total_source", draft.total_source),
-            supplier_resolution_status=draft.supplier_resolution_status,
-            supplier_dolibarr_id=draft.supplier_dolibarr_id,
-            supplier_candidates=draft.supplier_candidates,
-            validation_status=draft.validation_status,
-            validation_errors=draft.validation_errors,
-            validation_warnings=draft.validation_warnings,
-            extraction_confidence=draft.extraction_confidence,
-            extraction_model=draft.extraction_model,
-            extraction_raw_text_chars=draft.extraction_raw_text_chars,
             inference_count=new_inference_count,
-            instance_id=draft.instance_id,
-            received_at=draft.received_at,
-            correlation_id=draft.correlation_id,
         )
 
     return draft

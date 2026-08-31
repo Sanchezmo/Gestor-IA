@@ -13,16 +13,18 @@ Adapted for Gestor-IA:
 - LOCAL_ONLY extraction via InvoiceExtractor
 - Deterministic validation via SupplierInvoiceValidator
 - File storage with instance_id/document_hash isolation
-- Idempotency via document hash + Redis
+- Idempotency via document hash + Redis with state-based workflow tracking
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import structlog
-from datetime import datetime
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -31,18 +33,30 @@ import redis
 from core.hermes.context import CompanyContext
 from core.hermes.identity import UserContext
 from core.hermes.config import get_global_settings
+from core.hermes.audit import DocumentIdempotencyManager
 from .models import (
     SupplierInvoiceDraft,
     DocumentClassification,
     SupplierResolutionStatus,
     ValidationStatus,
     InvoiceFieldSource,
+    DocumentState,
+    DocumentStateData,
 )
 from .extractor import InvoiceExtractor, LocalModelUnavailableError
-from .validator import validate_invoice, infer_missing_totals
+from .validator import validate_invoice, infer_missing_totals, normalize_tax_data
 from .supplier_resolver import SupplierResolver
 
 logger = structlog.get_logger()
+
+
+# =========================================================================
+# CONFIGURATION
+# =========================================================================
+
+MAX_AUTO_RETRIES = 3
+PROCESSING_STALE_THRESHOLD_SECONDS = 300  # 5 minutes
+DOCUMENT_STATE_TTL_SECONDS = 86400 * 7  # 7 days (solo estados transitorios en Redis)
 
 
 # =========================================================================
@@ -80,7 +94,7 @@ class DocumentIngestionService:
     Flow:
     1. Download document from Telegram (file_id → bytes)
     2. Compute SHA-256 hash
-    3. Check idempotency (hash already processed)
+    3. State-based idempotency check (workflow-aware)
     4. Store original document (instance-isolated)
     5. Classify document (invoice vs not invoice)
     6. Extract structured data (LOCAL_ONLY Ollama)
@@ -104,7 +118,7 @@ class DocumentIngestionService:
         self.validator = validate_invoice  # function
         self.supplier_resolver = SupplierResolver(company_context, user_context)
 
-        # Redis for idempotency
+        # Redis for document state tracking (transient states, TTL 7 days)
         settings = get_global_settings()
         self.redis = redis.Redis(
             host=settings.REDIS_HOST,
@@ -112,6 +126,11 @@ class DocumentIngestionService:
             password=settings.REDIS_PASSWORD or None,
             db=company_context.instance_config.get_redis_db(),
             decode_responses=True,
+        )
+
+        # Durable idempotency manager (MariaDB - permanent storage)
+        self.idempotency_manager = DocumentIdempotencyManager(
+            database_url=f"mysql+pymysql://{settings.MARIADB_ROOT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/{company_context.instance_config.database.name}",
         )
 
         # Document storage paths
@@ -174,36 +193,51 @@ class DocumentIngestionService:
         # 4. Compute SHA-256 hash
         document_hash = hashlib.sha256(file_content).hexdigest()
 
-        # 5. Check idempotency (document hash already processed)
-        idempotency_key = f"invoice:doc:{document_hash}"
-        existing = self.redis.get(idempotency_key)
-        if existing:
-            logger.info(
-                "duplicate_document_rejected",
-                instance_id=self.company_context.instance_id,
-                document_hash=document_hash[:16],
-                existing_status=existing,
-            )
-            return IngestionResult(
-                success=False,
-                error="Este documento ya fue procesado anteriormente",
-                error_code="DUPLICATE_DOCUMENT",
-            )
+        # 5. DURABLE IDEMPOTENCY CHECK (MariaDB - permanent)
+        # Check if this invoice was already fully processed in Dolibarr
+        if draft_has_supplier_info_later := True:  # We'll check after supplier resolution
+            pass  # Will check after supplier resolution
+        
+        # 5b. TRANSIENT STATE CHECK (Redis - workflow tracking, TTL 7 days)
+        existing_state = await self._get_document_state(document_hash)
+        
+        if existing_state:
+            return await self._handle_existing_document(existing_state, file_content, filename, mime_type)
 
+        # New document - create initial state
+        correlation_id = str(datetime.now(timezone.utc).timestamp()).replace(".", "")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        
+        new_state = DocumentStateData(
+            document_hash=document_hash,
+            status=DocumentState.RECEIVED,
+            instance_id=self.company_context.instance_id,
+            correlation_id=correlation_id,
+            filename=filename,
+            mime_type=mime_type,
+            file_size_bytes=len(file_content),
+            created_at=datetime.now(timezone.utc).isoformat(),
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        
+        await self._save_document_state(new_state)
+        
         # 6. Store original document (pending)
         stored_path = await self._store_document(
             file_content=file_content,
             filename=filename,
             document_hash=document_hash,
         )
-
+        
         try:
+            # Update state to PROCESSING
+            await self._update_document_status(document_hash, DocumentState.PROCESSING)
+            
             # 7. Extract invoice data
             extraction_result = await self.extractor.extract(file_content, filename, mime_type)
 
             if not extraction_result.success:
-                # Clean up stored file on extraction failure
-                self._cleanup_stored_file(stored_path)
+                await self._handle_extraction_failure(document_hash, stored_path, extraction_result)
                 return IngestionResult(
                     success=False,
                     error=extraction_result.error,
@@ -215,57 +249,21 @@ class DocumentIngestionService:
             # 8. Infer missing totals (mathematically safe)
             draft = infer_missing_totals(draft)
 
-            # 9. Deterministic validation
+            # 8b. Normalize tax data (reconstruct tax_breakdown from lines if possible)
+            draft = normalize_tax_data(draft)
+
+            # 10. Deterministic validation (on normalized draft)
             validation_result = self.validator(draft)
 
-            # Update draft with validation results
-            draft = SupplierInvoiceDraft(
-                document_hash=draft.document_hash,
-                document_filename=draft.document_filename,
-                document_mime_type=draft.document_mime_type,
-                document_size_bytes=draft.document_size_bytes,
-                page_count=draft.page_count,
-                classification=draft.classification,
-                classification_confidence=draft.classification_confidence,
-                classification_signals=draft.classification_signals,
-                supplier=draft.supplier,
-                invoice_number=draft.invoice_number,
-                invoice_number_source=draft.invoice_number_source,
-                invoice_date=draft.invoice_date,
-                invoice_date_source=draft.invoice_date_source,
-                due_date=draft.due_date,
-                due_date_source=draft.due_date_source,
-                currency=draft.currency,
-                payment_terms=draft.payment_terms,
-                payment_method=draft.payment_method,
-                notes=draft.notes,
-                lines=draft.lines,
-                tax_breakdown=draft.tax_breakdown,
-                withholding_breakdown=draft.withholding_breakdown,
-                subtotal=draft.subtotal,
-                subtotal_source=draft.subtotal_source,
-                tax_total=draft.tax_total,
-                tax_total_source=draft.tax_total_source,
-                withholding_total=draft.withholding_total,
-                withholding_total_source=draft.withholding_total_source,
-                total=draft.total,
-                total_source=draft.total_source,
-                supplier_resolution_status=draft.supplier_resolution_status,
-                supplier_dolibarr_id=draft.supplier_dolibarr_id,
-                supplier_candidates=draft.supplier_candidates,
+            # Update draft with validation results using replace
+            draft = replace(
+                draft,
                 validation_status=validation_result.status,
                 validation_errors=validation_result.errors,
                 validation_warnings=validation_result.warnings,
-                extraction_confidence=draft.extraction_confidence,
-                extraction_model=draft.extraction_model,
-                extraction_raw_text_chars=draft.extraction_raw_text_chars,
-                inference_count=draft.inference_count,
-                instance_id=draft.instance_id,
-                received_at=draft.received_at,
-                correlation_id=draft.correlation_id,
             )
 
-            # 10. Resolve supplier if we have tax_id
+            # 11. Resolve supplier if we have tax_id
             if draft.has_supplier():
                 resolution = await self.supplier_resolver.resolve(
                     tax_id=draft.supplier.tax_id,
@@ -273,57 +271,68 @@ class DocumentIngestionService:
                     address=draft.supplier.address,
                 )
 
-                draft = SupplierInvoiceDraft(
-                    document_hash=draft.document_hash,
-                    document_filename=draft.document_filename,
-                    document_mime_type=draft.document_mime_type,
-                    document_size_bytes=draft.document_size_bytes,
-                    page_count=draft.page_count,
-                    classification=draft.classification,
-                    classification_confidence=draft.classification_confidence,
-                    classification_signals=draft.classification_signals,
-                    supplier=draft.supplier,
-                    invoice_number=draft.invoice_number,
-                    invoice_number_source=draft.invoice_number_source,
-                    invoice_date=draft.invoice_date,
-                    invoice_date_source=draft.invoice_date_source,
-                    due_date=draft.due_date,
-                    due_date_source=draft.due_date_source,
-                    currency=draft.currency,
-                    payment_terms=draft.payment_terms,
-                    payment_method=draft.payment_method,
-                    notes=draft.notes,
-                    lines=draft.lines,
-                    tax_breakdown=draft.tax_breakdown,
-                    withholding_breakdown=draft.withholding_breakdown,
-                    subtotal=draft.subtotal,
-                    subtotal_source=draft.subtotal_source,
-                    tax_total=draft.tax_total,
-                    tax_total_source=draft.tax_total_source,
-                    withholding_total=draft.withholding_total,
-                    withholding_total_source=draft.withholding_total_source,
-                    total=draft.total,
-                    total_source=draft.total_source,
+                draft = replace(
+                    draft,
                     supplier_resolution_status=resolution.status,
                     supplier_dolibarr_id=resolution.supplier_dolibarr_id,
                     supplier_candidates=resolution.candidates,
-                    validation_status=draft.validation_status,
-                    validation_errors=draft.validation_errors,
-                    validation_warnings=draft.validation_warnings,
-                    extraction_confidence=draft.extraction_confidence,
-                    extraction_model=draft.extraction_model,
-                    extraction_raw_text_chars=draft.extraction_raw_text_chars,
-                    inference_count=draft.inference_count,
-                    instance_id=draft.instance_id,
-                    received_at=draft.received_at,
-                    correlation_id=draft.correlation_id,
                 )
+                
+                # Update state with supplier info
+                if resolution.supplier_dolibarr_id:
+                    await self._update_document_state(document_hash, {
+                        "supplier_dolibarr_id": resolution.supplier_dolibarr_id
+                    })
 
-            # 11. Generate preview text
+                # DURABLE IDEMPOTENCY CHECK: Check if this invoice was already completed in Dolibarr
+                if draft.has_supplier() and draft.invoice_number and draft.invoice_date:
+                    existing_durable = await self.idempotency_manager.check_duplicate(
+                        instance_id=self.company_context.instance_id,
+                        supplier_tax_id=draft.supplier.tax_id,
+                        supplier_invoice_number=draft.invoice_number,
+                    )
+                    
+                    if existing_durable:
+                        logger.info("duplicate_detected_durable_after_resolution",
+                            document_hash=document_hash[:16],
+                            supplier_tax_id=draft.supplier.tax_id,
+                            supplier_invoice_number=draft.invoice_number,
+                            existing_state=existing_durable.final_state)
+                        
+                        # Document already completed in Dolibarr - return appropriate response
+                        if existing_durable.final_state == "COMPLETED":
+                            return IngestionResult(
+                                success=False,
+                                error="Esta factura ya fue procesada completamente y está registrada en Dolibarr",
+                                error_code="DOCUMENT_COMPLETED",
+                            )
+                        elif existing_durable.final_state == "INVOICE_CREATED":
+                            if existing_durable.attachment_uploaded:
+                                return IngestionResult(
+                                    success=False,
+                                    error="Esta factura ya fue procesada completamente",
+                                    error_code="DOCUMENT_COMPLETED",
+                                )
+                            return IngestionResult(
+                                success=False,
+                                error="La factura ya existe en Dolibarr. Adjunto pendiente.",
+                                error_code="INVOICE_EXISTS_ATTACHMENT_PENDING",
+                            )
+                        elif existing_durable.final_state == "SUPPLIER_CREATED":
+                            return IngestionResult(
+                                success=False,
+                                error="El proveedor ya existe. Factura pendiente de creación.",
+                                error_code="SUPPLIER_EXISTS_INVOICE_PENDING",
+                            )
+
+            # Generate preview text
             preview_text = self._generate_preview(draft)
-
-            # 12. Mark document as processed in Redis (TTL 24h)
-            self.redis.setex(idempotency_key, 86400, "preview_ready")
+            
+            # Update state to REVIEW (preview ready for user confirmation)
+            await self._update_document_status(document_hash, DocumentState.REVIEW)
+            await self._update_document_state(document_hash, {
+                "preview_text": preview_text
+            })
 
             logger.info(
                 "document_ingestion_completed",
@@ -344,7 +353,8 @@ class DocumentIngestionService:
             )
 
         except LocalModelUnavailableError:
-            self._cleanup_stored_file(stored_path)
+            await self._handle_extraction_failure(document_hash, stored_path, 
+                IngestionResult(success=False, error="Modelo local no disponible", error_code="LOCAL_MODEL_UNAVAILABLE"))
             return IngestionResult(
                 success=False,
                 error="Modelo local no disponible para procesar facturas",
@@ -357,7 +367,7 @@ class DocumentIngestionService:
                 document_hash=document_hash[:16],
                 error=str(e),
             )
-            self._cleanup_stored_file(stored_path)
+            await self._handle_processing_failure(document_hash, stored_path, str(e))
             return IngestionResult(
                 success=False,
                 error=f"Error procesando documento: {type(e).__name__}",
@@ -496,6 +506,355 @@ class DocumentIngestionService:
         lines.append("• <b>Cancelar</b> - Descartar")
 
         return "\n".join(lines)
+
+    # =========================================================================
+    # DOCUMENT STATE MANAGEMENT (Idempotency & Workflow Tracking)
+    # =========================================================================
+
+    def _state_key(self, document_hash: str) -> str:
+        """Generate Redis key for document state."""
+        return f"hermes:{self.company_context.instance_id}:invoice_documents:{document_hash}"
+
+    async def _get_document_state(self, document_hash: str) -> DocumentStateData | None:
+        """Retrieve document state from Redis."""
+        key = self._state_key(document_hash)
+        data = self.redis.hgetall(key)
+        if not data:
+            return None
+        return DocumentStateData.from_dict(data)
+
+    async def _save_document_state(self, state: DocumentStateData) -> None:
+        """Save document state to Redis with TTL."""
+        key = self._state_key(state.document_hash)
+        self.redis.hset(key, mapping=state.to_dict())
+        self.redis.expire(key, DOCUMENT_STATE_TTL_SECONDS)
+
+    async def _update_document_status(self, document_hash: str, status: DocumentState) -> None:
+        """Update document status and updated_at timestamp."""
+        key = self._state_key(document_hash)
+        self.redis.hset(key, mapping={
+            "status": status.value,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        self.redis.expire(key, DOCUMENT_STATE_TTL_SECONDS)
+
+    async def _update_document_state(self, document_hash: str, updates: dict[str, Any]) -> None:
+        """Update multiple fields in document state."""
+        key = self._state_key(document_hash)
+        str_updates = {k: str(v) for k, v in updates.items()}
+        str_updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.redis.hset(key, mapping=str_updates)
+        self.redis.expire(self._state_key(document_hash), DOCUMENT_STATE_TTL_SECONDS)
+
+    async def _handle_existing_document(self, state: DocumentStateData, file_content: bytes, filename: str, mime_type: str) -> IngestionResult:
+        """Handle document that already exists in the system based on its state."""
+        status = state.status
+        
+        if status == DocumentState.COMPLETED:
+            logger.info("document_already_completed", document_hash=state.document_hash[:16])
+            return IngestionResult(
+                success=False,
+                error="Esta factura ya fue procesada completamente y está registrada en Dolibarr",
+                error_code="DOCUMENT_COMPLETED",
+            )
+        
+        elif status == DocumentState.INVOICE_CREATED:
+            logger.info("document_invoice_exists", document_hash=state.document_hash[:16])
+            if state.attachment_uploaded:
+                return IngestionResult(
+                    success=False,
+                    error="Esta factura ya fue procesada completamente",
+                    error_code="DOCUMENT_COMPLETED",
+                )
+            return IngestionResult(
+                success=False,
+                error="La factura ya existe en Dolibarr. Adjunto pendiente.",
+                error_code="INVOICE_EXISTS_ATTACHMENT_PENDING",
+            )
+        
+        elif status == DocumentState.SUPPLIER_CREATED:
+            logger.info("supplier_exists_invoice_pending", document_hash=state.document_hash[:16])
+            return IngestionResult(
+                success=False,
+                error="El proveedor ya existe. Factura pendiente de creación.",
+                error_code="SUPPLIER_EXISTS_INVOICE_PENDING",
+            )
+        
+        elif status == DocumentState.ATTACHMENT_PENDING:
+            logger.info("attachment_retry", document_hash=state.document_hash[:16])
+            return IngestionResult(
+                success=False,
+                error="Factura creada. Adjunto pendiente de subida.",
+                error_code="ATTACHMENT_PENDING",
+            )
+        
+        elif status == DocumentState.REVIEW:
+            logger.info("document_in_review", document_hash=state.document_hash[:16])
+            return IngestionResult(
+                success=False,
+                error="Esta factura ya está pendiente de confirmación",
+                error_code="DOCUMENT_IN_REVIEW",
+            )
+        
+        elif status == DocumentState.PENDING_CONFIRMATION:
+            logger.info("document_pending_confirmation", document_hash=state.document_hash[:16])
+            return IngestionResult(
+                success=False,
+                error="Factura pendiente de confirmación de creación",
+                error_code="PENDING_CONFIRMATION",
+            )
+        
+        elif status == DocumentState.CONFIRMING:
+            logger.info("document_confirming", document_hash=state.document_hash[:16])
+            return IngestionResult(
+                success=False,
+                error="Factura en proceso de confirmación",
+                error_code="CONFIRMING_IN_PROGRESS",
+            )
+        
+        elif status == DocumentState.FAILED_RETRYABLE:
+            if state.retry_count >= MAX_AUTO_RETRIES:
+                logger.warning("max_retries_exceeded", document_hash=state.document_hash[:16], retry_count=state.retry_count)
+                await self._update_document_state(state.document_hash, {
+                    "status": DocumentState.FAILED_FINAL.value,
+                    "last_error": "Max auto retries exceeded",
+                    "retry_count": state.retry_count
+                })
+                return IngestionResult(
+                    success=False,
+                    error="Límite de reintentos automáticos alcanzado. Requiere intervención manual.",
+                    error_code="MAX_RETRIES_EXCEEDED",
+                )
+            
+            logger.info("retrying_failed_document", document_hash=state.document_hash[:16], retry_count=state.retry_count + 1)
+            await self._update_document_state(state.document_hash, {
+                "status": DocumentState.RECEIVED.value,
+                "retry_count": state.retry_count + 1,
+                "last_error": state.last_error
+            })
+            return await self._retry_ingestion(state.document_hash, state.correlation_id)
+        
+        elif status == DocumentState.FAILED_FINAL:
+            logger.warning("document_failed_final", document_hash=state.document_hash[:16])
+            return IngestionResult(
+                success=False,
+                error="Este documento falló definitivamente. Requiere intervención manual.",
+                error_code="FAILED_FINAL",
+            )
+        
+        elif status == DocumentState.CANCELLED:
+            logger.info("cancelled_document_reingestion", document_hash=state.document_hash[:16])
+            await self._update_document_state(state.document_hash, {
+                "status": DocumentState.RECEIVED.value,
+                "retry_count": 0,
+                "last_error": None
+            })
+            return await self.ingest(state.document_hash, filename, mime_type)
+        
+        elif status == DocumentState.EXPIRED:
+            logger.info("expired_document_reingestion", document_hash=state.document_hash[:16])
+            await self._update_document_state(state.document_hash, {
+                "status": DocumentState.RECEIVED.value,
+                "retry_count": 0,
+                "last_error": None
+            })
+            return await self.ingest(state.document_hash, filename, mime_type)
+        
+        elif status == DocumentState.PROCESSING:
+            try:
+                updated = datetime.fromisoformat(state.updated_at.replace('Z', '+00:00'))
+                now = datetime.now(timezone.utc)
+                if (now - updated).total_seconds() > PROCESSING_STALE_THRESHOLD_SECONDS:
+                    logger.warning("stale_processing_detected", document_hash=state.document_hash[:16])
+                    await self._update_document_state(state.document_hash, {
+                        "status": DocumentState.FAILED_RETRYABLE.value,
+                        "last_error": "Processing stale, marked for retry"
+                    })
+                    return await self._retry_ingestion(state.document_hash, state.correlation_id)
+                else:
+                    logger.info("document_currently_processing", document_hash=state.document_hash[:16])
+                    return IngestionResult(
+                        success=False,
+                        error="Este documento ya se está procesando",
+                        error_code="ALREADY_PROCESSING",
+                    )
+            except Exception:
+                logger.warning("invalid_timestamp_retry", document_hash=state.document_hash[:16])
+                return await self._retry_ingestion(state.document_hash, state.correlation_id)
+        
+        else:
+            logger.warning("unknown_document_state", document_hash=state.document_hash[:16], status=status.value)
+            return await self.ingest(state.document_hash, filename, mime_type)
+
+    async def _retry_ingestion(self, document_hash: str, correlation_id: str) -> IngestionResult:
+        """Retry ingestion for a document that was previously failed or stale."""
+        state = await self._get_document_state(document_hash)
+        if not state:
+            return IngestionResult(success=False, error="Estado no encontrado para reintento", error_code="STATE_NOT_FOUND")
+        
+        await self._update_document_state(document_hash, {
+            "status": DocumentState.RECEIVED.value,
+            "retry_count": state.retry_count + 1,
+            "correlation_id": correlation_id
+        })
+        
+        return IngestionResult(
+            success=False,
+            error="Reintento requerido. Reenvíe el documento.",
+            error_code="RETRY_REQUIRED",
+        )
+
+    async def _handle_extraction_failure(self, document_hash: str, stored_path: str, extraction_result: IngestionResult) -> None:
+        """Handle extraction failure - mark document as failed retryable."""
+        self._cleanup_stored_file(stored_path)
+        await self._update_document_state(document_hash, {
+            "status": DocumentState.FAILED_RETRYABLE.value,
+            "last_error": extraction_result.error or "Extraction failed",
+            "retry_count": 0
+        })
+
+    async def _handle_processing_failure(self, document_hash: str, stored_path: str | None, error: str) -> None:
+        """Handle general processing failure - mark as failed retryable."""
+        if stored_path:
+            self._cleanup_stored_file(stored_path)
+        await self._update_document_state(document_hash, {
+            "status": DocumentState.FAILED_RETRYABLE.value,
+            "last_error": error,
+            "retry_count": 0
+        })
+
+    async def mark_supplier_created(self, document_hash: str, supplier_dolibarr_id: int) -> None:
+        """Mark supplier as created in Dolibarr."""
+        await self._update_document_state(document_hash, {
+            "status": DocumentState.SUPPLIER_CREATED.value,
+            "supplier_dolibarr_id": supplier_dolibarr_id
+        })
+
+    async def mark_invoice_created(self, document_hash: str, invoice_dolibarr_id: int, dolibarr_invoice_ref: str, dolibarr_invoice_id: int) -> None:
+        """Mark invoice as created in Dolibarr."""
+        await self._update_document_state(document_hash, {
+            "status": DocumentState.INVOICE_CREATED.value,
+            "invoice_dolibarr_id": invoice_dolibarr_id,
+            "dolibarr_invoice_ref": dolibarr_invoice_ref,
+            "dolibarr_invoice_id": dolibarr_invoice_id
+        })
+
+    async def mark_attachment_uploaded(self, document_hash: str) -> None:
+        """Mark attachment as uploaded."""
+        await self._update_document_state(document_hash, {
+            "status": DocumentState.COMPLETED.value,
+            "attachment_uploaded": True
+        })
+
+    async def mark_completed(self, document_hash: str) -> None:
+        """Mark document as fully completed."""
+        await self._update_document_state(document_hash, {
+            "status": DocumentState.COMPLETED.value,
+            "attachment_uploaded": True
+        })
+
+    async def mark_cancelled(self, document_hash: str) -> None:
+        """Mark document as cancelled."""
+        await self._update_document_status(document_hash, DocumentState.CANCELLED)
+
+    async def check_duplicate_in_dolibarr(self, draft: SupplierInvoiceDraft) -> bool:
+        """Check if invoice already exists in Dolibarr to prevent duplicates."""
+        if not draft.has_supplier() or not draft.invoice_number or not draft.invoice_date:
+            return False
+        
+        try:
+            resolution = await self.supplier_resolver.resolve(
+                tax_id=draft.supplier.tax_id,
+                name=draft.supplier.name,
+                address=draft.supplier.address,
+            )
+            
+            if not resolution.supplier_dolibarr_id:
+                return False
+            
+            from core.integrations.dolibarr.client import DolibarrClient
+            from core.hermes.identity_store import IdentityStore
+            
+            identity_store = IdentityStore(self.company_context.instance_id)
+            identity = identity_store.get(self.user_context.telegram_user_id)
+            
+            if not identity:
+                return False
+            
+            dolibarr = self.company_context.create_dolibarr_client_for_user(identity)
+            
+            async with dolibarr as client:
+                invoices = await client.list_supplier_invoices(
+                    thirdparty_id=resolution.supplier_dolibarr_id,
+                    limit=500,
+                )
+                
+                invoice_number_upper = draft.invoice_number.upper()
+                for invoice in invoices:
+                    ref = (invoice.get("ref") or "").upper()
+                    ref_supplier = (invoice.get("ref_supplier") or "").upper()
+                    if ref == invoice_number_upper or ref_supplier == invoice_number_upper:
+                        logger.warning("duplicate_invoice_detected_in_dolibarr",
+                            supplier_id=resolution.supplier_dolibarr_id,
+                            invoice_number=draft.invoice_number)
+                        return True
+                
+                return False
+        except Exception as e:
+            logger.warning("duplicate_check_failed", error=str(e))
+            return False
+
+    async def reconcile_with_dolibarr(self, draft: SupplierInvoiceDraft) -> dict[str, Any] | None:
+        """Attempt to find existing invoice in Dolibarr for reconciliation."""
+        if not draft.has_supplier() or not draft.invoice_number or not draft.invoice_date:
+            return None
+        
+        try:
+            resolution = await self.supplier_resolver.resolve(
+                tax_id=draft.supplier.tax_id,
+                name=draft.supplier.name,
+                address=draft.supplier.address,
+            )
+            
+            if not resolution.supplier_dolibarr_id:
+                return None
+            
+            from core.hermes.identity_store import IdentityStore
+            identity_store = IdentityStore(self.company_context.instance_id)
+            identity = identity_store.get(self.user_context.telegram_user_id)
+            
+            if not identity:
+                return None
+            
+            dolibarr = self.company_context.create_dolibarr_client_for_user(identity)
+            
+            async with dolibarr as client:
+                invoices = await client.list_supplier_invoices(
+                    thirdparty_id=resolution.supplier_dolibarr_id,
+                    limit=500,
+                )
+                
+                invoice_number_upper = draft.invoice_number.upper()
+                for invoice in invoices:
+                    ref = (invoice.get("ref") or "").upper()
+                    ref_supplier = (invoice.get("ref_supplier") or "").upper()
+                    if ref == invoice_number_upper or ref_supplier == invoice_number_upper:
+                        logger.info("reconciliation_found_existing_invoice",
+                            supplier_id=resolution.supplier_dolibarr_id,
+                            invoice_number=draft.invoice_number,
+                            dolibarr_id=invoice.get("id") or invoice.get("rowid"))
+                        return {
+                            "dolibarr_id": invoice.get("id") or invoice.get("rowid"),
+                            "ref": invoice.get("ref"),
+                            "ref_supplier": invoice.get("ref_supplier"),
+                            "status": invoice.get("status"),
+                            "total": invoice.get("total"),
+                        }
+            
+            return None
+        except Exception as e:
+            logger.warning("reconciliation_failed", error=str(e))
+            return None
 
 
 # =========================================================================

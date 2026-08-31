@@ -64,6 +64,23 @@ class ValidationStatus(StrEnum):
     INVALID = "invalid"
 
 
+class DocumentState(StrEnum):
+    """Document processing state for idempotency and workflow tracking."""
+    RECEIVED = "received"                    # Document received, not yet processed
+    PROCESSING = "processing"                # Currently being processed
+    REVIEW = "review"                        # Preview generated, awaiting user confirmation
+    PENDING_CONFIRMATION = "pending_confirmation"  # User confirmed, awaiting execution
+    CONFIRMING = "confirming"                # Currently executing confirmation (creating invoice)
+    SUPPLIER_CREATED = "supplier_created"    # Supplier created in Dolibarr, invoice not yet created
+    INVOICE_CREATED = "invoice_created"      # Invoice created in Dolibarr
+    ATTACHMENT_PENDING = "attachment_pending"  # Invoice created, attachment upload pending
+    COMPLETED = "completed"                  # Fully processed and stored in Dolibarr
+    FAILED_RETRYABLE = "failed_retryable"    # Failed, can retry (transient error)
+    FAILED_FINAL = "failed_final"            # Failed permanently, requires manual intervention
+    CANCELLED = "cancelled"                  # Cancelled by user
+    EXPIRED = "expired"                      # Expired (TTL exceeded)
+
+
 @dataclass(frozen=True, slots=True)
 class SupplierInfo:
     """Supplier information extracted from invoice."""
@@ -114,6 +131,7 @@ class TaxBreakdownItem:
 @dataclass(frozen=True, slots=True)
 class WithholdingBreakdownItem:
     """Withholding (retención) breakdown."""
+    concept: str                  # Tipo de retención: IRPF, IVA soportado, etc.
     rate: Decimal
     base: Decimal
     amount: Decimal
@@ -223,6 +241,11 @@ class SupplierInvoiceDraft:
         unknown = []
         for field_name in ["invoice_number", "invoice_date", "due_date", "subtotal", "tax_total", "withholding_total", "total"]:
             source = getattr(self, f"{field_name}_source", InvoiceFieldSource.UNKNOWN)
+            # Special case: withholding_total is not "unknown" if there's no withholding
+            if field_name == "withholding_total":
+                has_withholding = (self.withholding_total or Decimal("0")) > 0 or bool(self.withholding_breakdown)
+                if not has_withholding:
+                    continue  # Skip withholding_total when no withholding exists
             if source == InvoiceFieldSource.UNKNOWN:
                 unknown.append(field_name)
         return unknown
@@ -340,6 +363,101 @@ def format_date(d: date | None) -> str:
         return "—"
     return d.strftime("%d/%m/%Y")
 
+
+class DocumentState(StrEnum):
+    """Document processing state for idempotency and workflow tracking."""
+    RECEIVED = "received"                    # Document received, not yet processed
+    PROCESSING = "processing"                # Currently being processed
+    REVIEW = "review"                        # Preview generated, awaiting user confirmation
+    PENDING_CONFIRMATION = "pending_confirmation"  # User confirmed, awaiting execution
+    CONFIRMING = "confirming"                # Currently executing confirmation (creating invoice)
+    SUPPLIER_CREATED = "supplier_created"    # Supplier created in Dolibarr, invoice not yet created
+    INVOICE_CREATED = "invoice_created"      # Invoice created in Dolibarr
+    ATTACHMENT_PENDING = "attachment_pending"  # Invoice created, attachment upload pending
+    COMPLETED = "completed"                  # Fully processed and stored in Dolibarr
+    FAILED_RETRYABLE = "failed_retryable"    # Failed, can retry (transient error)
+    FAILED_FINAL = "failed_final"            # Failed permanently, requires manual intervention
+    CANCELLED = "cancelled"                  # Cancelled by user
+    EXPIRED = "expired"                      # Expired (TTL exceeded)
+
+
+# =========================================================================
+# DOCUMENT STATE DATA (for idempotency and workflow tracking)
+# =========================================================================
+
+@dataclass(frozen=True, slots=True)
+class DocumentStateData:
+    """Document state metadata for idempotency and workflow tracking."""
+    document_hash: str
+    status: DocumentState
+    instance_id: str
+    correlation_id: str
+    filename: str
+    mime_type: str
+    file_size_bytes: int
+    created_at: str  # ISO timestamp
+    updated_at: str  # ISO timestamp
+    retry_count: int = 0
+    last_error: str | None = None
+    supplier_dolibarr_id: int | None = None
+    invoice_dolibarr_id: int | None = None
+    attachment_uploaded: bool = False
+    pending_command_id: str | None = None
+    dolibarr_supplier_invoice_ref: str | None = None  # ref_supplier from Dolibarr
+    dolibarr_invoice_ref: str | None = None  # ref from Dolibarr
+    dolibarr_invoice_id: int | None = None
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for Redis storage."""
+        return {
+            "document_hash": self.document_hash,
+            "status": self.status.value,
+            "instance_id": self.instance_id,
+            "correlation_id": self.correlation_id,
+            "filename": self.filename,
+            "mime_type": self.mime_type,
+            "file_size_bytes": self.file_size_bytes,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "retry_count": self.retry_count,
+            "last_error": self.last_error or "",
+            "supplier_dolibarr_id": str(self.supplier_dolibarr_id) if self.supplier_dolibarr_id else "",
+            "invoice_dolibarr_id": str(self.invoice_dolibarr_id) if self.invoice_dolibarr_id else "",
+            "attachment_uploaded": str(self.attachment_uploaded).lower(),
+            "pending_command_id": self.pending_command_id or "",
+            "dolibarr_supplier_invoice_ref": self.dolibarr_supplier_invoice_ref or "",
+            "dolibarr_invoice_ref": self.dolibarr_invoice_ref or "",
+            "dolibarr_invoice_id": str(self.dolibarr_invoice_id) if self.dolibarr_invoice_id else "",
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DocumentStateData":
+        """Create from dict (Redis storage)."""
+        return cls(
+            document_hash=data.get("document_hash", ""),
+            status=DocumentState(data.get("status", "received")),
+            instance_id=data.get("instance_id", ""),
+            correlation_id=data.get("correlation_id", ""),
+            filename=data.get("filename", ""),
+            mime_type=data.get("mime_type", ""),
+            file_size_bytes=int(data.get("file_size_bytes", 0)),
+            created_at=data.get("created_at", ""),
+            updated_at=data.get("updated_at", ""),
+            retry_count=int(data.get("retry_count", 0)),
+            last_error=data.get("last_error") or None,
+            supplier_dolibarr_id=int(data["supplier_dolibarr_id"]) if data.get("supplier_dolibarr_id") else None,
+            invoice_dolibarr_id=int(data["invoice_dolibarr_id"]) if data.get("invoice_dolibarr_id") else None,
+            attachment_uploaded=data.get("attachment_uploaded", "false").lower() == "true",
+            pending_command_id=data.get("pending_command_id") or None,
+            dolibarr_supplier_invoice_ref=data.get("dolibarr_supplier_invoice_ref") or None,
+            dolibarr_invoice_ref=data.get("dolibarr_invoice_ref") or None,
+            dolibarr_invoice_id=int(data["dolibarr_invoice_id"]) if data.get("dolibarr_invoice_id") else None,
+        )
+
+
+# =========================================================================
+# HELPER FUNCTIONS
+# =========================================================================
 
 def normalize_tax_id(tax_id: str) -> str:
     """Normalize tax ID for comparison (remove spaces, uppercase)."""

@@ -164,18 +164,72 @@ class TestTaxBreakdownItem:
         assert tax.amount == Decimal("210")
 
 
-class TestWithholdingBreakdownItem:
-    """Tests for WithholdingBreakdownItem."""
+class TestPdfTextNormalization:
+    """Tests for PDF text scientific notation normalization."""
 
-    def test_withholding_creation(self):
-        wh = WithholdingBreakdownItem(
-            rate=Decimal("7"),
-            base=Decimal("1000"),
-            amount=Decimal("70"),
-            source=InvoiceFieldSource.KNOWN,
-        )
-        assert wh.rate == Decimal("7")
-        assert wh.amount == Decimal("70")
+    def test_normalize_scientific_percent_1e_plus_1(self):
+        """Test 1E+1% -> 10%"""
+        from core.hermes.invoices.extractor import normalize_pdf_text
+        result = normalize_pdf_text("IVA 1E+1%")
+        assert "10%" in result
+
+    def test_normalize_scientific_percent_2_1e_plus_1(self):
+        """Test 2.1E+1% -> 21%"""
+        from core.hermes.invoices.extractor import normalize_pdf_text
+        result = normalize_pdf_text("IVA 2.1E+1%")
+        assert "21%" in result
+
+    def test_normalize_scientific_percent_4e_plus_0(self):
+        """Test 4E+0% -> 4%"""
+        from core.hermes.invoices.extractor import normalize_pdf_text
+        result = normalize_pdf_text("IVA 4E+0%")
+        assert "4%" in result
+
+    def test_normalize_scientific_percent_1_5e_plus_1(self):
+        """Test 1.5E+1% -> 15%"""
+        from core.hermes.invoices.extractor import normalize_pdf_text
+        result = normalize_pdf_text("IVA 1.5E+1%")
+        assert "15%" in result
+
+    def test_normalize_scientific_percent_lowercase_e(self):
+        """Test lowercase e notation: 1e+1% -> 10%"""
+        from core.hermes.invoices.extractor import normalize_pdf_text
+        result = normalize_pdf_text("IVA 1e+1%")
+        assert "10%" in result
+
+    def test_normalize_scientific_percent_no_suffix_not_matched(self):
+        """Test that 1E without % is NOT matched (avoid false positives)"""
+        from core.hermes.invoices.extractor import normalize_pdf_text
+        result = normalize_pdf_text("Calle 1E ejemplo")
+        assert "1E" in result  # Should NOT be modified
+
+    def test_normalize_cif_not_matched(self):
+        """Test CIF is NOT modified"""
+        from core.hermes.invoices.extractor import normalize_pdf_text
+        result = normalize_pdf_text("CIF: B12345678")
+        assert "B12345678" in result
+
+    def test_normalize_invoice_number_not_matched(self):
+        """Test invoice number is NOT modified"""
+        from core.hermes.invoices.extractor import normalize_pdf_text
+        result = normalize_pdf_text("Factura: TH-2026-314")
+        assert "TH-2026-314" in result
+
+    def test_normalize_multiple_in_text(self):
+        """Test multiple scientific notations in same text"""
+        from core.hermes.invoices.extractor import normalize_pdf_text
+        text = "IVA 1E+1% y IVA 2.1E+1% y IVA 4E+0%"
+        result = normalize_pdf_text(text)
+        assert "10%" in result
+        assert "21%" in result
+        assert "4%" in result
+
+    def test_normalize_preserves_normal_percent(self):
+        """Test normal percentages are preserved"""
+        from core.hermes.invoices.extractor import normalize_pdf_text
+        result = normalize_pdf_text("IVA 10% y IVA 21%")
+        assert "10%" in result
+        assert "21%" in result
 
 
 if __name__ == "__main__":

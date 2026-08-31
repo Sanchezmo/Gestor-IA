@@ -21,7 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import pymupdf as fitz
+import pymupdf
 import structlog
 
 from core.hermes.ai import AIProvider, create_ai_provider
@@ -40,6 +40,64 @@ from .models import (
 )
 
 logger = structlog.get_logger()
+
+
+# =========================================================================
+# PDF TEXT NORMALIZATION (Scientific Notation in Percentages)
+# =========================================================================
+#
+# PyMuPDF sometimes extracts percentages like "10%" as "1E+1%" (scientific notation).
+# This function normalizes scientific notation in percentage contexts ONLY,
+# avoiding false positives on alphanumeric references.
+#
+# Examples:
+#   "1E+1%"    -> "10%"
+#   "2.1E+1%"  -> "21%"
+#   "4E+0%"    -> "4%"
+#   "1.5E+1%"  -> "15%"
+#   "1e+1%"    -> "10%"
+#   "1E1%"     -> "10%"
+#   "1.0E+1%"  -> "10%"
+#
+# Does NOT match:
+#   "B12345678" (CIF)
+#   "TH-2026-314" (invoice number)
+#   "1E calle ejemplo" (no % suffix)
+#   "referencias alfanuméricas" (no scientific notation)
+
+import re
+from decimal import Decimal
+
+_SCIENTIFIC_PERCENT_PATTERN = re.compile(
+    r'(\d+(?:\.\d+)?)E([+-]?\d+)%',
+    re.IGNORECASE
+)
+
+
+def normalize_pdf_text(text: str) -> str:
+    """
+    Normalize scientific notation in percentage contexts within extracted PDF text.
+
+    Args:
+        text: Raw text extracted from PDF
+
+    Returns:
+        Text with scientific notation percentages normalized (e.g., "1E+1%" -> "10%")
+    """
+    if not text:
+        return text
+
+    def _replace_scientific_percent(match: re.Match) -> str:
+        mantissa = Decimal(match.group(1))
+        exponent = int(match.group(2))
+        value = mantissa * (Decimal(10) ** exponent)
+        # Format without scientific notation, remove trailing .0
+        if value == value.to_integral_value():
+            return f"{value:.0f}%"
+        return f"{value}%"
+
+    normalized = _SCIENTIFIC_PERCENT_PATTERN.sub(_replace_scientific_percent, text)
+    return normalized
 
 
 # =========================================================================
@@ -97,18 +155,19 @@ INVOICE_JSON_SCHEMA = {
                 },
                 "required": ["rate", "amount"],
             },
+            "minItems": 1,
         },
         "withholdings": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "type": {"type": "string"},
+                    "concept": {"type": "string", "description": "Tipo de retención: IRPF, IVA soportado, etc."},
                     "rate": {"type": "number"},
                     "base": {"type": "number"},
                     "amount": {"type": "number"},
                 },
-                "required": ["rate", "amount"],
+                "required": ["concept", "rate", "base", "amount"],
             },
         },
         "subtotal": {"type": "number"},
@@ -120,7 +179,7 @@ INVOICE_JSON_SCHEMA = {
         "payment_method": {"type": ["string", "null"]},
         "notes": {"type": ["string", "null"]},
     },
-    "required": ["supplier", "invoice", "lines", "subtotal", "tax_total", "total", "currency"],
+    "required": ["supplier", "invoice", "lines", "taxes", "withholdings", "subtotal", "tax_total", "withholding_total", "total", "currency"],
 }
 
 
@@ -364,13 +423,13 @@ class InvoiceExtractor:
         page_count = 0
 
         try:
-            doc = fitz.open(file_path)
+            doc = pymupdf.open(file_path)
             page_count = len(doc)
 
             # Limit pages
             if page_count > self.max_pages:
                 page_count = self.max_pages
-                doc = fitz.open(file_path)  # Reopen for limited processing
+                doc = pymupdf.open(file_path)  # Reopen for limited processing
 
             # Try native text extraction first
             text_parts = []
@@ -390,7 +449,7 @@ class InvoiceExtractor:
                 logger.info("pdf_no_text_layer_rendering_for_ocr", pages=page_count)
                 for page_num in range(page_count):
                     page = doc[page_num]
-                    mat = fitz.Matrix(self.ocr_dpi / 72.0, self.ocr_dpi / 72.0)
+                    mat = pymupdf.Matrix(self.ocr_dpi / 72.0, self.ocr_dpi / 72.0)
                     pix = page.get_pixmap(matrix=mat, alpha=False)
                     page_images.append(pix.tobytes("png"))
 
@@ -590,10 +649,22 @@ Múltiples facturas = varios números/encabezados distintos.
 
     async def _extract_structured_data(self, raw_text: str) -> dict[str, Any]:
         """Extract structured data via Ollama with native JSON Schema."""
+        # Normalize scientific notation in percentages BEFORE sending to LLM
+        normalized_text = normalize_pdf_text(raw_text)
+
         prompt = f"""
 Extrae la información de la factura de proveedor del siguiente texto y devuelve JSON según el esquema.
+
+REGLAS IMPORTANTES:
+- Fechas: DEVUELVE SIEMPRE en formato ISO YYYY-MM-DD (ej: 2026-08-27). NO uses DD/MM/YYYY ni concatenes día+mes.
+- Líneas: EXTRAE TODAS las líneas de detalle, incluidas líneas con IVA 0%, ajustes negativos y líneas de continuación en páginas posteriores.
+- Impuestos: DEVUELVE array "taxes" con TODOS los tipos de IVA (21%, 10%, 4%, 0%) incluyendo base, rate, amount.
+- Retenciones: Si hay retenciones (IRPF, etc.), extrae CADA UNA en "withholdings" con: concept (IRPF/IVA soportado...), rate, base, amount (POSITIVO).
+- NO omitas "withholdings" ni "taxes" si existen en el documento.
+- Si NO hay retenciones, devuelve "withholdings": []. "withholding_total" es la suma de amounts.
+
 Texto:
-\"\"\"{raw_text}\"\"\"
+\"\"\"{normalized_text}\"\"\"
 Devuelve SOLO el JSON válido, sin texto adicional.
 """
 
@@ -601,7 +672,7 @@ Devuelve SOLO el JSON válido, sin texto adicional.
             result = await self.provider.generate(
                 prompt=prompt,
                 temperature=0.1,
-                num_predict=2048,
+                num_predict=4096,
                 think=False,
                 format=json.dumps(INVOICE_JSON_SCHEMA),
                 request_timeout=self.ollama_timeout,
@@ -740,15 +811,33 @@ Devuelve SOLO el JSON válido, sin texto adicional.
                 source=InvoiceFieldSource.KNOWN,
             ))
 
-        # Withholding breakdown - defensive
+        # Withholding breakdown - defensive with support for alternative field names
+        # Model might use: withholdings, retentions, irpf, retencion, retenciones
         withholding_breakdown = []
         wh_data_list = self._ensure_list(extracted_data.get("withholdings"))
+        if not wh_data_list:
+            wh_data_list = self._ensure_list(extracted_data.get("retentions"))
+        if not wh_data_list:
+            wh_data_list = self._ensure_list(extracted_data.get("irpf"))
+        if not wh_data_list:
+            wh_data_list = self._ensure_list(extracted_data.get("retencion"))
+        if not wh_data_list:
+            wh_data_list = self._ensure_list(extracted_data.get("retenciones"))
         if isinstance(extracted_data.get("withholdings"), dict):
             wh_data_list = [extracted_data.get("withholdings")]
+        elif isinstance(extracted_data.get("retentions"), dict):
+            wh_data_list = [extracted_data.get("retentions")]
+        elif isinstance(extracted_data.get("irpf"), dict):
+            wh_data_list = [extracted_data.get("irpf")]
+        elif isinstance(extracted_data.get("retencion"), dict):
+            wh_data_list = [extracted_data.get("retencion")]
+        elif isinstance(extracted_data.get("retenciones"), dict):
+            wh_data_list = [extracted_data.get("retenciones")]
         
         for wh_data in wh_data_list:
             wh_data = self._ensure_dict(wh_data)
             withholding_breakdown.append(WithholdingBreakdownItem(
+                concept=wh_data.get("concept") or wh_data.get("type") or "IRPF",
                 rate=Decimal(str(wh_data.get("rate", 0))),
                 base=Decimal(str(wh_data.get("base", 0))),
                 amount=Decimal(str(wh_data.get("amount", 0))),
@@ -758,7 +847,16 @@ Devuelve SOLO el JSON válido, sin texto adicional.
         # Totals
         subtotal = Decimal(str(extracted_data.get("subtotal", 0)))
         tax_total = Decimal(str(extracted_data.get("tax_total", 0)))
-        withholding_total = Decimal(str(extracted_data.get("withholding_total", 0)))
+        # Support alternative field names for withholding_total
+        withholding_total_raw = (
+            extracted_data.get("withholding_total") or
+            extracted_data.get("withholdings_total") or
+            extracted_data.get("retentions_total") or
+            extracted_data.get("irpf_total") or
+            extracted_data.get("retencion_total") or
+            extracted_data.get("retenciones_total")
+        )
+        withholding_total = Decimal(str(withholding_total_raw)) if withholding_total_raw is not None else Decimal("0")
         total = Decimal(str(extracted_data.get("total", 0)))
         currency = extracted_data.get("currency", "EUR")
 
@@ -807,19 +905,28 @@ Devuelve SOLO el JSON válido, sin texto adicional.
         )
 
     def _parse_date(self, date_str: str | None) -> Any:
-        """Parse date string to date object."""
+        """Parse date string to date object with plausibility validation."""
         if not date_str:
             return None
         try:
             # Try ISO format first
             from datetime import date
-            return date.fromisoformat(date_str)
+            parsed = date.fromisoformat(date_str)
+            # Validate plausibility: year between 2000 and 2100
+            if parsed.year < 2000 or parsed.year > 2100:
+                logger.warning("implausible_date_year", raw=date_str, year=parsed.year)
+                return None
+            return parsed
         except Exception:
             # Try common formats
             for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%d.%m.%Y"):
                 try:
                     from datetime import datetime
-                    return datetime.strptime(date_str, fmt).date()
+                    parsed = datetime.strptime(date_str, fmt).date()
+                    if parsed.year < 2000 or parsed.year > 2100:
+                        logger.warning("implausible_date_year", raw=date_str, year=parsed.year)
+                        return None
+                    return parsed
                 except Exception:
                     continue
         return None

@@ -153,15 +153,85 @@ class TestInvoiceValidator:
         hard_errors = [e for e in result.errors if e["code"] == "no_lines"]
         assert len(hard_errors) == 1
 
-    def test_tax_breakdown_missing_is_review_warning(self):
-        """Test that missing tax breakdown with tax_total > 0 is review warning."""
+    def test_tax_breakdown_reconstructable_from_lines_is_valid(self):
+        """Test that missing tax breakdown with valid line vat_rates is reconstructed and VALID."""
+        from core.hermes.invoices.validator import normalize_tax_data
+        
+        # tax_breakdown initially empty, but lines have valid vat_rate > 0
         draft = self._create_base_draft(tax_breakdown=[])
-        result = validate_invoice(draft)
-
-        assert result.status == ValidationStatus.REVIEW_REQUIRED
+        # Base draft has lines with vat_rate=21, so it CAN reconstruct
+        
+        # Normalize first (as ingestion pipeline does)
+        normalized = normalize_tax_data(draft)
+        
+        # Tax breakdown should be reconstructed from lines
+        assert len(normalized.tax_breakdown) == 1
+        assert normalized.tax_breakdown[0].rate == Decimal("21")
+        assert normalized.tax_breakdown[0].source == InvoiceFieldSource.INFERRED
+        
+        # Validation should be VALID (no tax_breakdown_missing warning)
+        result = validate_invoice(normalized)
+        assert result.status == ValidationStatus.VALID
         warnings = [w for w in result.warnings if w["code"] == "tax_breakdown_missing"]
+        assert len(warnings) == 0
+
+    def test_tax_breakdown_non_reconstructable_is_review_warning(self):
+        """Test that missing tax breakdown with NO valid line vat_rates triggers REVIEW_REQUIRED."""
+        from core.hermes.invoices.validator import normalize_tax_data
+        
+        # tax_total > 0, tax_breakdown already has invalid rate (-1) from extraction
+        # This simulates model returning an invalid rate that normalizer preserves
+        draft_invalid_rate = SupplierInvoiceDraft(
+            document_hash="abc123",
+            document_filename="test.pdf",
+            document_mime_type="application/pdf",
+            document_size_bytes=1024,
+            supplier=SupplierInfo(name="Test Supplier", tax_id="B12345678"),
+            invoice_number="FAC-001",
+            invoice_number_source=InvoiceFieldSource.KNOWN,
+            invoice_date=date(2024, 1, 15),
+            invoice_date_source=InvoiceFieldSource.KNOWN,
+            currency="EUR",
+            lines=[
+                InvoiceLine(
+                    description="Product A",
+                    quantity=Decimal("1"),
+                    unit_price=Decimal("100"),
+                    vat_rate=Decimal("21"),
+                ),
+            ],
+            tax_breakdown=[
+                TaxBreakdownItem(
+                    rate=Decimal("-1"),  # Invalid rate from model
+                    base=Decimal("100"),
+                    amount=Decimal("21"),
+                    source=InvoiceFieldSource.KNOWN,
+                ),
+            ],
+            withholding_breakdown=[],
+            subtotal=Decimal("100"),
+            subtotal_source=InvoiceFieldSource.KNOWN,
+            tax_total=Decimal("21"),
+            tax_total_source=InvoiceFieldSource.KNOWN,
+            withholding_total=Decimal("0"),
+            withholding_total_source=InvoiceFieldSource.KNOWN,
+            total=Decimal("121"),
+            total_source=InvoiceFieldSource.KNOWN,
+            extraction_confidence=Decimal("0.8"),
+            extraction_model="test",
+            extraction_raw_text_chars=100,
+            inference_count=0,
+            instance_id="test",
+            received_at="2024-01-15T00:00:00",
+        )
+        # Normalize first (as ingestion pipeline does)
+        normalized = normalize_tax_data(draft_invalid_rate)
+        result = validate_invoice(normalized)
+        assert result.status == ValidationStatus.REVIEW_REQUIRED
+        # Warning is tax_rate_missing because normalized breakdown has rate=-1 which is invalid
+        warnings = [w for w in result.warnings if w["code"] == "tax_rate_missing"]
         assert len(warnings) == 1
-        assert warnings[0].get("severity") == "warning"
+        assert "sin rate válido" in warnings[0].get("message", "")
 
     def test_tax_breakdown_incomplete_is_error(self):
         """Test that tax breakdown sum not matching tax_total is error."""
@@ -186,7 +256,7 @@ class TestInvoiceValidator:
         draft = self._create_base_draft(
             tax_breakdown=[
                 TaxBreakdownItem(
-                    rate=Decimal("0"),  # Invalid rate
+                    rate=Decimal("-1"),  # Invalid rate (negative)
                     base=Decimal("100"),
                     amount=Decimal("21"),
                     source=InvoiceFieldSource.KNOWN,
@@ -199,16 +269,73 @@ class TestInvoiceValidator:
         warnings = [w for w in result.warnings if w["code"] == "tax_rate_missing"]
         assert len(warnings) == 1
 
-    def test_withholding_breakdown_missing_is_warning(self):
-        """Test that missing withholding breakdown is warning."""
+    def test_withholding_breakdown_explicit_is_valid(self):
+        """Test that explicit withholding breakdown with concept/rate/base/amount is VALID."""
+        from core.hermes.invoices.validator import normalize_tax_data
+        
+        draft = self._create_base_draft(
+            withholding_total=Decimal("15"),
+            withholding_total_source=InvoiceFieldSource.KNOWN,
+            withholding_breakdown=[
+                WithholdingBreakdownItem(
+                    concept="IRPF",
+                    rate=Decimal("15"),
+                    base=Decimal("100"),
+                    amount=Decimal("15"),
+                    source=InvoiceFieldSource.KNOWN,
+                ),
+            ],
+            total=Decimal("106"),  # 100 + 21 - 15 = 106
+        )
+        normalized = normalize_tax_data(draft)
+        
+        # Breakdown preserved
+        assert len(normalized.withholding_breakdown) == 1
+        assert normalized.withholding_breakdown[0].concept == "IRPF"
+        assert normalized.withholding_breakdown[0].rate == Decimal("15")
+        assert normalized.withholding_breakdown[0].base == Decimal("100")
+        assert normalized.withholding_breakdown[0].amount == Decimal("15")
+        
+        # Validation should be VALID
+        result = validate_invoice(normalized)
+        assert result.status == ValidationStatus.VALID
+        warnings = [w for w in result.warnings if w["code"] == "withholding_breakdown_missing"]
+        assert len(warnings) == 0
+
+    def test_withholding_breakdown_only_math_is_review_required(self):
+        """Test that only mathematical difference (no explicit breakdown) is REVIEW_REQUIRED."""
+        from core.hermes.invoices.validator import normalize_tax_data
+        
+        # subtotal=100, tax=21, withholding_total=15, but NO explicit breakdown
         draft = self._create_base_draft(
             withholding_total=Decimal("15"),
             withholding_total_source=InvoiceFieldSource.KNOWN,
             withholding_breakdown=[],
             total=Decimal("106"),  # 100 + 21 - 15 = 106
         )
-        result = validate_invoice(draft)
+        normalized = normalize_tax_data(draft)
+        result = validate_invoice(normalized)
+        
+        # Should be REVIEW_REQUIRED because no explicit breakdown
+        assert result.status == ValidationStatus.REVIEW_REQUIRED
+        warnings = [w for w in result.warnings if w["code"] == "withholding_breakdown_missing"]
+        assert len(warnings) == 1
 
+    def test_withholding_breakdown_missing_non_standard_rate_is_warning(self):
+        """Test that missing withholding breakdown with non-standard rate is REVIEW_REQUIRED."""
+        from core.hermes.invoices.validator import normalize_tax_data
+        
+        # withholding_total=17 on subtotal=100 -> rate=17% (not standard)
+        draft = self._create_base_draft(
+            withholding_total=Decimal("17"),
+            withholding_total_source=InvoiceFieldSource.KNOWN,
+            withholding_breakdown=[],
+            total=Decimal("104"),  # 100 + 21 - 17 = 104
+        )
+        normalized = normalize_tax_data(draft)
+        result = validate_invoice(normalized)
+        
+        # Should still warn because rate is not standard
         assert result.status == ValidationStatus.REVIEW_REQUIRED
         warnings = [w for w in result.warnings if w["code"] == "withholding_breakdown_missing"]
         assert len(warnings) == 1
@@ -247,7 +374,7 @@ class TestInvoiceValidator:
         """Test invoice with withholding (retención)."""
         draft = self._create_base_draft(
             withholding_breakdown=[
-                WithholdingBreakdownItem(rate=Decimal("7"), base=Decimal("100"), amount=Decimal("7"), source=InvoiceFieldSource.KNOWN),
+                WithholdingBreakdownItem(concept="IRPF", rate=Decimal("7"), base=Decimal("100"), amount=Decimal("7"), source=InvoiceFieldSource.KNOWN),
             ],
             withholding_total=Decimal("7"),
             withholding_total_source=InvoiceFieldSource.KNOWN,

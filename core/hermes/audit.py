@@ -70,6 +70,83 @@ class AuditActions:
     )
 
 
+# =========================================================================
+# DURABLE IDEMPOTENCY RECORDS (Persistente - Sin TTL)
+# =========================================================================
+#
+# Registro permanente de operaciones completadas para idempotencia ERP.
+# Almacena de forma duradera:
+# - instance_id: Aislamiento multi-empresa
+# - document_hash: SHA256 del documento original
+# - supplier_tax_id: CIF/NIF del proveedor
+# - supplier_invoice_number: Número de factura del proveedor
+# - supplier_dolibarr_id: ID del proveedor en Dolibarr
+# - invoice_dolibarr_id: ID de la factura en Dolibarr
+# - final_state: Estado final (COMPLETED, INVOICE_CREATED, SUPPLIER_CREATED)
+# - attachment_uploaded: Si el PDF se subió a Dolibarr
+# - created_at / completed_at: Timestamps
+#
+# Clave de deduplicación compuesta:
+# (instance_id, supplier_tax_id, supplier_invoice_number)
+# =========================================================================
+
+class DocumentIdempotencyRecord(Base):
+    """Registro permanente de idempotencia para operaciones ERP completadas.
+    
+    Almacena de forma duradera (sin TTL) el registro de operaciones completadas
+    para evitar duplicados en Dolibarr. Redis maneja estados transitorios con TTL;
+    esto es el almacenamiento duradero de verdad.
+    
+    Clave de deduplicación compuesta:
+    (instance_id, supplier_tax_id, supplier_invoice_number)
+    """
+    __tablename__ = "document_idempotency_record"
+
+    id = Column(String(36), primary_key=True)  # UUID
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    completed_at = Column(DateTime, nullable=True, index=True)
+
+    # Aislamiento multi-empresa
+    instance_id = Column(String(100), nullable=False, index=True)
+
+    # Identificación del documento
+    document_hash = Column(String(64), nullable=False, index=True)  # SHA256
+
+    # Datos fiscales del proveedor (clave de deduplicación)
+    supplier_tax_id = Column(String(50), nullable=False, index=True)
+    supplier_invoice_number = Column(String(100), nullable=False, index=True)
+
+    # IDs en Dolibarr
+    supplier_dolibarr_id = Column(Integer, nullable=True, index=True)
+    invoice_dolibarr_id = Column(Integer, nullable=True, index=True)
+
+    # Estado final del workflow
+    final_state = Column(String(50), nullable=False, index=True)  # COMPLETED, INVOICE_CREATED, SUPPLIER_CREATED
+
+    # Adjunto
+    attachment_uploaded = Column(Boolean, nullable=False, default=False)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    completed_at = Column(DateTime, nullable=True, index=True)
+
+    # Metadatos adicionales
+    document_filename = Column(String(255), nullable=True)
+    document_mime_type = Column(String(100), nullable=True)
+    document_size_bytes = Column(Integer, nullable=True)
+    correlation_id = Column(String(36), nullable=True, index=True)
+
+    # Índices compuestos para deduplicación eficiente
+    __table_args__ = (
+        # Clave única de deduplicación: una factura por proveedor+num_factura por instancia
+        Index("ux_idempotency_dedup", "instance_id", "supplier_tax_id", "supplier_invoice_number", unique=True),
+        Index("ix_idempotency_instance_hash", "instance_id", "document_hash"),
+        Index("ix_idempotency_instance_supplier", "instance_id", "supplier_tax_id"),
+        Index("ix_idempotency_instance_state", "instance_id", "final_state"),
+        Index("ix_idempotency_completed", "completed_at"),
+    )
+
+
 class AuditLog(Base):
     """Tabla de auditoría inmutable (append-only)."""
 
@@ -263,9 +340,7 @@ class AuditLogger:
         try:
             # Obtener hash anterior real
             previous_hash = self._get_last_hash(session)
-            current_hash = hashlib.sha256(
-                f"{previous_hash}{audit_id}{datetime.utcnow().isoformat()}".encode()
-            ).hexdigest()
+            current_hash = hashlib.sha256(f"{previous_hash}{audit_id}{datetime.utcnow().isoformat()}".encode()).hexdigest()
 
             stmt = text("""
                 INSERT INTO audit_log (
@@ -548,6 +623,250 @@ class AuditLogger:
             session.rollback()
             logger.error("audit_cleanup_failed", error=str(e), instance_id=instance_id)
             return 0
+        finally:
+            session.close()
+
+    def close(self):
+        """Cerrar conexiones."""
+        self.engine.dispose()
+
+
+# =========================================================================
+# DURABLE IDEMPOTENCY MANAGER (Registro permanente de idempotencia ERP)
+# =========================================================================
+
+class DocumentIdempotencyManager:
+    """
+    Gestor de registros de idempotencia duraderos para operaciones ERP.
+
+    Almacena de forma PERMANENTE (sin TTL) el registro de operaciones completadas
+    para evitar duplicados en Dolibarr. Redis maneja estados transitorios con TTL;
+    esto es el almacenamiento duradero de verdad.
+
+    Clave de deduplicación: (instance_id, supplier_tax_id, supplier_invoice_number)
+    """
+
+    def __init__(self, database_url: str, pool_size: int = 5):
+        """
+        Args:
+            database_url: URL MariaDB (ej: mysql://user:pass@host/db)
+            pool_size: Tamaño del pool de conexiones
+        """
+        # Usar pymysql para MariaDB
+        engine_url = database_url if database_url.startswith("mysql+pymysql://") else database_url.replace("mysql://", "mysql+pymysql://")
+        self.engine = create_engine(
+            engine_url,
+            pool_size=pool_size,
+            max_overflow=10,
+            pool_pre_ping=True,
+            pool_recycle=3600,
+            echo=False,
+        )
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
+
+        # Crear tabla si no existe
+        Base.metadata.create_all(self.engine)
+
+    def _generate_id(self) -> str:
+        """Generar UUID v4."""
+        return str(uuid4())
+
+    async def record_completed(
+        self,
+        *,
+        instance_id: str,
+        document_hash: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+        supplier_dolibarr_id: int | None = None,
+        invoice_dolibarr_id: int | None = None,
+        final_state: str = "COMPLETED",
+        attachment_uploaded: bool = False,
+        document_filename: str | None = None,
+        document_mime_type: str | None = None,
+        document_size_bytes: int | None = None,
+        correlation_id: str | None = None,
+    ) -> str:
+        """
+        Registrar operación completada para idempotencia duradera.
+
+        Args:
+            instance_id: ID de la instancia (aislamiento multi-empresa)
+            document_hash: SHA256 del documento original
+            supplier_tax_id: CIF/NIF del proveedor
+            supplier_invoice_number: Número de factura del proveedor
+            supplier_dolibarr_id: ID del proveedor en Dolibarr
+            invoice_dolibarr_id: ID de la factura en Dolibarr
+            final_state: COMPLETED | INVOICE_CREATED | SUPPLIER_CREATED
+            attachment_uploaded: Si se subió el PDF a Dolibarr
+            document_filename: Nombre del archivo original
+            document_mime_type: MIME type
+            document_size_bytes: Tamaño en bytes
+            correlation_id: ID de correlación
+
+        Returns:
+            id del registro creado
+
+        Raises:
+            IntegrityError: Si ya existe registro con misma clave de deduplicación
+        """
+        record_id = str(uuid4())
+        now = datetime.utcnow()
+
+        session = self.Session()
+        try:
+            record = DocumentIdempotencyRecord(
+                id=str(uuid4()),
+                created_at=datetime.utcnow(),
+                completed_at=datetime.utcnow(),
+                instance_id=instance_id,
+                document_hash=document_hash,
+                supplier_tax_id=supplier_tax_id,
+                supplier_invoice_number=supplier_invoice_number,
+                supplier_dolibarr_id=supplier_dolibarr_id,
+                invoice_dolibarr_id=invoice_dolibarr_id,
+                final_state=final_state,
+                attachment_uploaded=attachment_uploaded,
+                document_filename=document_filename,
+                document_mime_type=document_mime_type,
+                document_size_bytes=document_size_bytes,
+                correlation_id=correlation_id,
+            )
+
+            session = self.Session()
+            session.add(record)
+            session.commit()
+
+            logger.info(
+                "idempotency_recorded",
+                record_id=record.id,
+                instance_id=instance_id,
+                supplier_tax_id=supplier_tax_id,
+                supplier_invoice_number=supplier_invoice_number,
+                final_state=final_state,
+            )
+
+            return record.id
+
+        except Exception as e:
+            session.rollback()
+            logger.error(
+                "idempotency_record_failed",
+                error=str(e),
+                instance_id=instance_id,
+                supplier_tax_id=supplier_tax_id,
+                supplier_invoice_number=supplier_invoice_number,
+            )
+            raise
+        finally:
+            session.close()
+
+    async def check_duplicate(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> DocumentIdempotencyRecord | None:
+        """
+        Verificar si ya existe un registro completado para esta factura.
+
+        Returns:
+            DocumentIdempotencyRecord si existe, None si no
+        """
+        session = self.Session()
+        try:
+            result = session.query(DocumentIdempotencyRecord).filter(
+                DocumentIdempotencyRecord.instance_id == instance_id,
+                DocumentIdempotencyRecord.supplier_tax_id == supplier_tax_id,
+                DocumentIdempotencyRecord.supplier_invoice_number == supplier_invoice_number,
+                DocumentIdempotencyRecord.final_state.in_(["COMPLETED", "INVOICE_CREATED", "SUPPLIER_CREATED"]),
+            ).first()
+
+            if result:
+                logger.info(
+                    "duplicate_detected_durable",
+                    instance_id=instance_id,
+                    supplier_tax_id=supplier_tax_id,
+                    supplier_invoice_number=supplier_invoice_number,
+                    existing_id=result.id,
+                    final_state=result.final_state,
+                )
+
+            return result
+        finally:
+            session.close()
+
+    async def get_by_document_hash(
+        self,
+        instance_id: str,
+        document_hash: str,
+    ) -> DocumentIdempotencyRecord | None:
+        """Buscar registro por hash de documento."""
+        session = self.Session()
+        try:
+            return session.query(DocumentIdempotencyRecord).filter(
+                DocumentIdempotencyRecord.instance_id == instance_id,
+                DocumentIdempotencyRecord.document_hash == document_hash,
+            ).first()
+        finally:
+            session.close()
+
+    async def mark_invoice_created(
+        self,
+        instance_id: str,
+        document_hash: str,
+        invoice_dolibarr_id: int,
+        dolibarr_invoice_ref: str,
+        dolibarr_invoice_id: int,
+    ) -> None:
+        """Marcar factura como creada en Dolibarr."""
+        session = self.Session()
+        try:
+            record = session.query(DocumentIdempotencyRecord).filter(
+                DocumentIdempotencyRecord.document_hash == document_hash,
+                DocumentIdempotencyRecord.instance_id == instance_id,
+            ).first()
+
+            if record:
+                record.final_state = "INVOICE_CREATED"
+                record.invoice_dolibarr_id = invoice_dolibarr_id
+                record.dolibarr_invoice_ref = str(invoice_dolibarr_id)
+                record.dolibarr_invoice_id = dolibarr_invoice_id
+                session.commit()
+        finally:
+            session.close()
+
+    async def mark_attachment_uploaded(self, instance_id: str, document_hash: str) -> None:
+        """Marcar adjunto como subido."""
+        session = self.Session()
+        try:
+            record = session.query(DocumentIdempotencyRecord).filter(
+                DocumentIdempotencyRecord.instance_id == instance_id,
+                DocumentIdempotencyRecord.document_hash == document_hash,
+            ).first()
+
+            if record:
+                record.attachment_uploaded = True
+                record.completed_at = datetime.utcnow()
+                record.final_state = "COMPLETED"
+                session.commit()
+        finally:
+            session.close()
+
+    async def mark_completed(self, instance_id: str, document_hash: str) -> None:
+        """Marcar documento como completamente procesado."""
+        session = self.Session()
+        try:
+            record = session.query(DocumentIdempotencyRecord).filter(
+                DocumentIdempotencyRecord.instance_id == instance_id,
+                DocumentIdempotencyRecord.document_hash == document_hash,
+            ).first()
+
+            if record:
+                record.final_state = "COMPLETED"
+                record.attachment_uploaded = True
+                record.completed_at = datetime.utcnow()
+                session.commit()
         finally:
             session.close()
 
