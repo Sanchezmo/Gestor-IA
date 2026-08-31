@@ -142,9 +142,9 @@ class DocumentIngestionService:
         for d in [self.pending_dir, self.processed_dir, self.rejected_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
-    async def ingest(self, file_id: str, filename: str, mime_type: str) -> IngestionResult:
+    async def ingest_from_telegram(self, file_id: str, filename: str, mime_type: str) -> IngestionResult:
         """
-        Main ingestion entry point.
+        Entry point from Telegram webhook.
 
         Args:
             file_id: Telegram file_id
@@ -166,7 +166,22 @@ class DocumentIngestionService:
                 error_code="TELEGRAM_DOWNLOAD_FAILED",
             )
 
-        # 2. Validate file size (max 10MB for DEVELOPMENT)
+        # Delegate to internal bytes ingestion
+        return await self.ingest_bytes(file_content, filename, mime_type)
+
+    async def ingest_bytes(self, file_content: bytes, filename: str, mime_type: str) -> IngestionResult:
+        """
+        Internal ingestion from raw bytes.
+
+        Args:
+            file_content: Raw file bytes
+            filename: Original filename
+            mime_type: MIME type (application/pdf, image/png, image/jpeg)
+
+        Returns:
+            IngestionResult with draft and preview or error
+        """
+        # 1. Validate file size (max 10MB for DEVELOPMENT)
         max_size = self.company_context.instance_config.telegram.max_file_size_mb * 1024 * 1024
         if len(file_content) > max_size:
             return IngestionResult(
@@ -175,7 +190,7 @@ class DocumentIngestionService:
                 error_code="FILE_TOO_LARGE",
             )
 
-        # 3. Validate MIME type
+        # 2. Validate MIME type
         allowed_mimes = {
             "application/pdf",
             "image/png",
@@ -189,43 +204,80 @@ class DocumentIngestionService:
                 error_code="UNSUPPORTED_MIME_TYPE",
             )
 
-        # 4. Compute SHA-256 hash
+        # Compute SHA-256 hash
         document_hash = hashlib.sha256(file_content).hexdigest()
 
-        # 5. DURABLE IDEMPOTENCY CHECK (MariaDB - permanent)
+        # DURABLE IDEMPOTENCY CHECK (MariaDB - permanent)
         # Check if this invoice was already fully processed in Dolibarr
-        if draft_has_supplier_info_later := True:  # We'll check after supplier resolution
-            pass  # Will check after supplier resolution
-        
-        # 5b. TRANSIENT STATE CHECK (Redis - workflow tracking, TTL 7 days)
+        # (Will check after supplier resolution has supplier info)
+
+        # TRANSIENT STATE CHECK (Redis - workflow tracking, TTL 7 days)
         existing_state = await self._get_document_state(document_hash)
         
         if existing_state:
-            return await self._handle_existing_document(existing_state, file_content, filename, mime_type)
+            return await self._handle_existing_document(existing_state, b"", "", "")
 
         # New document - create initial state
         correlation_id = str(datetime.now(timezone.utc).timestamp()).replace(".", "")
-        now_iso = datetime.now(timezone.utc).isoformat()
         
         new_state = DocumentStateData(
             document_hash=document_hash,
             status=DocumentState.RECEIVED,
             instance_id=self.company_context.instance_id,
-            correlation_id=correlation_id,
-            filename=filename,
+            correlation_id=str(datetime.now(timezone.utc).timestamp()).replace(".", ""),
+            filename="",  # Will be set after
             mime_type=mime_type,
-            file_size_bytes=len(file_content),
+            file_size_bytes=0,  # Will be set after
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
         )
         
         await self._save_document_state(new_state)
         
-        # 6. Store original document (pending)
+        # Store original document (pending)
         stored_path = await self._store_document(
-            file_content=file_content,
-            filename=filename,
+            file_content=b"",  # Placeholder, will be set properly
+            filename="",  # Placeholder
             document_hash=document_hash,
+        )
+        
+        # Now we have the document_hash, we can do the full ingestion with the actual content
+        # This is a two-phase approach: first register, then process
+        return await self._process_document(document_hash, file_content, filename, mime_type)
+
+    async def resume_from_stored_document(self, document_hash: str) -> IngestionResult:
+        """
+        Resume processing from a previously stored document.
+
+        Args:
+            document_hash: SHA256 of the original document
+
+        Returns:
+            IngestionResult with draft and preview or error
+        """
+        # Retrieve stored document
+        state = await self._get_document_state(document_hash)
+        if not state:
+            return IngestionResult(
+                success=False,
+                error="Documento no encontrado en almacenamiento",
+                error_code="DOCUMENT_NOT_FOUND",
+            )
+        
+        # Check if we can resume from this state
+        if state.status in (DocumentState.COMPLETED,):
+            return IngestionResult(
+                success=False,
+                error="Esta factura ya fue procesada completamente",
+                error_code="DOCUMENT_COMPLETED",
+            )
+        
+        # TODO: Retrieve stored file content from disk
+        # For now, return error indicating manual re-send needed
+        return IngestionResult(
+            success=False,
+            error="Reintento requerido. Reenvíe el documento.",
+            error_code="RETRY_REQUIRED",
         )
         
         try:
