@@ -830,7 +830,7 @@ class DocumentIdempotencyManager:
             if record:
                 record.final_state = "INVOICE_CREATED"
                 record.invoice_dolibarr_id = invoice_dolibarr_id
-                record.dolibarr_invoice_ref = str(invoice_dolibarr_id)
+                record.dolibarr_invoice_ref = dolibarr_invoice_ref
                 record.dolibarr_invoice_id = dolibarr_invoice_id
                 session.commit()
         finally:
@@ -899,5 +899,31 @@ def create_audit_logger(instance_config: InstanceConfig | None = None, database_
 
     settings = get_global_settings()
     return AuditLogger(
+        f"mysql+pymysql://gestor_ia_audit:{settings.MARIADB_AUDIT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/gestor_ia_audit"
+    )
+
+
+def create_document_idempotency_manager(instance_config: InstanceConfig | None = None, database_url: str | None = None) -> DocumentIdempotencyManager:
+    """Crear DocumentIdempotencyManager para una instancia o global.
+    
+    IMPORTANTE: Siempre usa la BD de auditoría (gestor_ia_audit), NO la BD de Dolibarr de la instancia.
+    """
+    if database_url:
+        return DocumentIdempotencyManager(database_url)
+
+    if instance_config:
+        # Usar BD de auditoría global (no la BD de Dolibarr de la instancia)
+        from core.hermes.config import get_global_settings
+
+        settings = get_global_settings()
+        return DocumentIdempotencyManager(
+            f"mysql+pymysql://gestor_ia_audit:{settings.MARIADB_AUDIT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/gestor_ia_audit"
+        )
+
+    # Fallback: global audit DB (separada)
+    from core.hermes.config import get_global_settings
+
+    settings = get_global_settings()
+    return DocumentIdempotencyManager(
         f"mysql+pymysql://gestor_ia_audit:{settings.MARIADB_AUDIT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/gestor_ia_audit"
     )

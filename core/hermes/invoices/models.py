@@ -364,23 +364,6 @@ def format_date(d: date | None) -> str:
     return d.strftime("%d/%m/%Y")
 
 
-class DocumentState(StrEnum):
-    """Document processing state for idempotency and workflow tracking."""
-    RECEIVED = "received"                    # Document received, not yet processed
-    PROCESSING = "processing"                # Currently being processed
-    REVIEW = "review"                        # Preview generated, awaiting user confirmation
-    PENDING_CONFIRMATION = "pending_confirmation"  # User confirmed, awaiting execution
-    CONFIRMING = "confirming"                # Currently executing confirmation (creating invoice)
-    SUPPLIER_CREATED = "supplier_created"    # Supplier created in Dolibarr, invoice not yet created
-    INVOICE_CREATED = "invoice_created"      # Invoice created in Dolibarr
-    ATTACHMENT_PENDING = "attachment_pending"  # Invoice created, attachment upload pending
-    COMPLETED = "completed"                  # Fully processed and stored in Dolibarr
-    FAILED_RETRYABLE = "failed_retryable"    # Failed, can retry (transient error)
-    FAILED_FINAL = "failed_final"            # Failed permanently, requires manual intervention
-    CANCELLED = "cancelled"                  # Cancelled by user
-    EXPIRED = "expired"                      # Expired (TTL exceeded)
-
-
 # =========================================================================
 # DOCUMENT STATE DATA (for idempotency and workflow tracking)
 # =========================================================================

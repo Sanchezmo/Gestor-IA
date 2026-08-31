@@ -128,10 +128,9 @@ class DocumentIngestionService:
             decode_responses=True,
         )
 
-        # Durable idempotency manager (MariaDB - permanent storage)
-        self.idempotency_manager = DocumentIdempotencyManager(
-            database_url=f"mysql+pymysql://{settings.MARIADB_ROOT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/{company_context.instance_config.database.name}",
-        )
+        # Durable idempotency manager (MariaDB - permanent storage, audit DB)
+        from core.hermes.audit import create_document_idempotency_manager
+        self.idempotency_manager = create_document_idempotency_manager(instance_config=company_context.instance_config)
 
         # Document storage paths
         self.documents_root = Path(company_context.instance_config.documents_path)
