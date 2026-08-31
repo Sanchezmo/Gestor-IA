@@ -1,5 +1,5 @@
 """
-Supplier Resolver - Dolibarr supplier lookup/creation.
+Supplier Resolver - Dolibarr supplier lookup (READ-ONLY during preview).
 
 Ported from Transvega Animal:
 - services/integration-api/app/services/invoice_integration_service.py: _ensure_supplier, find_supplier_or_thirdparty
@@ -9,6 +9,7 @@ Adapted for Gestor-IA:
 - NO admin API key fallback
 - Returns structured SupplierResolutionResult
 - Respects Dolibarr 401/403 as auth/permission errors
+- READ-ONLY during preview phase (no auto-enable supplier flag)
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import Any
 
 from core.hermes.context import CompanyContext
 from core.hermes.identity import UserContext
+from core.hermes.identity_store import IdentityStore
 from core.integrations.dolibarr.client import DolibarrClient, DolibarrException
 from .models import (
     SupplierResolutionResult,
@@ -32,22 +34,24 @@ class SupplierResolver:
     """
     Resolves suppliers in Dolibarr using user's API key.
 
-    Flow:
+    Flow (READ-ONLY during preview):
     1. Search by normalized tax_id (CIF/NIF/VAT)
-    2. If found and is supplier -> return
-    3. If found but not supplier -> enable fournisseur flag (preserve client)
+    2. If found and is supplier -> return FOUND
+    3. If found but not supplier -> return FOUND_NOT_SUPPLIER (READ-ONLY)
     4. If not found -> return NOT_FOUND (creation happens via Command Layer)
 
     ALL operations use user's Dolibarr API key - NO admin fallback.
+    NO writes during preview phase.
     """
 
     def __init__(self, company_context: CompanyContext, user_context: UserContext):
         self.company_context = company_context
         self.user_context = user_context
+        self.identity_store = IdentityStore(company_context.instance_id)
 
     async def resolve(self, tax_id: str, name: str | None = None, address: str | None = None) -> SupplierResolutionResult:
         """
-        Find or enable supplier by tax_id.
+        Find supplier by tax_id (READ-ONLY).
 
         Args:
             tax_id: Normalized CIF/NIF/VAT
@@ -56,6 +60,7 @@ class SupplierResolver:
 
         Returns:
             SupplierResolutionResult with status, dolibarr_id, and candidates
+            Status can be: FOUND, FOUND_NOT_SUPPLIER, NOT_FOUND, AMBIGUOUS
         """
         normalized_tax_id = normalize_tax_id(tax_id)
         if not normalized_tax_id:
@@ -64,10 +69,21 @@ class SupplierResolver:
                 error="Tax ID vacío",
             )
 
+        # Get identity from store
+        identity = self.identity_store.get(self.user_context.telegram_user_id)
+        if not identity:
+            logger.warning(
+                "identity_not_found",
+                instance_id=self.company_context.instance_id,
+                telegram_user_id=self.user_context.telegram_user_id,
+            )
+            return SupplierResolutionResult(
+                status=SupplierResolutionStatus.NOT_FOUND,
+                error="Identidad no encontrada",
+            )
+
         # Create user-scoped Dolibarr client
-        dolibarr = self.company_context.create_dolibarr_client_for_user(
-            self.user_context.telegram_user_id
-        )
+        dolibarr = self.company_context.create_dolibarr_client_for_user(identity)
 
         try:
             async with dolibarr as client:
@@ -91,35 +107,18 @@ class SupplierResolver:
                             supplier_data=party,
                         )
 
-                    # Exists but not a supplier - enable fournisseur flag
+                    # Exists but not a supplier - READ-ONLY: return special status
                     logger.info(
-                        "supplier_enable_started",
+                        "supplier_found_not_supplier",
                         instance_id=self.company_context.instance_id,
                         thirdparty_id=party_id,
+                        tax_id_present=bool(normalized_tax_id),
                     )
-                    try:
-                        await client.update_thirdparty(party_id, {
-                            "fournisseur": 1,
-                            "client": party.get("client", 1),  # Preserve client status
-                        })
-                        updated = await client.get_thirdparty(party_id)
-                        logger.info(
-                            "supplier_enable_completed",
-                            instance_id=self.company_context.instance_id,
-                            thirdparty_id=party_id,
-                        )
-                        return SupplierResolutionResult(
-                            status=SupplierResolutionStatus.FOUND,
-                            supplier_dolibarr_id=party_id,
-                            supplier_data=updated,
-                        )
-                    except DolibarrException as e:
-                        if e.status_code in (401, 403):
-                            return SupplierResolutionResult(
-                                status=SupplierResolutionStatus.NOT_FOUND,
-                                error="Sin permisos para habilitar proveedor",
-                            )
-                        raise
+                    return SupplierResolutionResult(
+                        status=SupplierResolutionStatus.FOUND_NOT_SUPPLIER,
+                        supplier_dolibarr_id=party_id,
+                        supplier_data=party,
+                    )
 
                 # Step 2: Not found - search by name as fallback (for ambiguous cases)
                 if name:
@@ -141,17 +140,21 @@ class SupplierResolver:
                         candidate = candidates[0]
                         candidate_tax_id = normalize_tax_id(candidate.get("vat_number", "") or candidate.get("tva_intra", ""))
                         if candidate_tax_id == normalized_tax_id:
-                            # Tax ID matches - treat as found
+                            # Tax ID matches - check if supplier
                             candidate_id = candidate.get("id") or candidate.get("rowid")
                             is_supplier = candidate.get("fournisseur") == 1 or candidate.get("supplier") == 1
-                            if not is_supplier:
-                                await client.update_thirdparty(candidate_id, {"fournisseur": 1})
-                                candidate = await client.get_thirdparty(candidate_id)
-                            return SupplierResolutionResult(
-                                status=SupplierResolutionStatus.FOUND,
-                                supplier_dolibarr_id=candidate_id,
-                                supplier_data=candidate,
-                            )
+                            if is_supplier:
+                                return SupplierResolutionResult(
+                                    status=SupplierResolutionStatus.FOUND,
+                                    supplier_dolibarr_id=candidate_id,
+                                    supplier_data=candidate,
+                                )
+                            else:
+                                return SupplierResolutionResult(
+                                    status=SupplierResolutionStatus.FOUND_NOT_SUPPLIER,
+                                    supplier_dolibarr_id=candidate_id,
+                                    supplier_data=candidate,
+                                )
                         else:
                             # Different tax_id - ambiguous
                             return SupplierResolutionResult(

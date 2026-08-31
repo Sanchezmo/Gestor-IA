@@ -21,12 +21,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import fitz  # PyMuPDF
+import pymupdf as fitz
 import structlog
 
 from core.hermes.ai import AIProvider, create_ai_provider
 from core.hermes.instance_config import InstanceConfig
 from .models import (
+    ClassificationResult,
     SupplierInvoiceDraft,
     SupplierInfo,
     InvoiceLine,
@@ -172,7 +173,7 @@ class InvoiceExtractor:
     def __init__(
         self,
         instance_config: InstanceConfig,
-        ollama_timeout: float = 600.0,
+        ollama_timeout: float = 900.0,
         ocr_dpi: int = 150,
         max_pages: int = 10,
     ):
@@ -309,7 +310,7 @@ class InvoiceExtractor:
                 filename=filename,
                 elapsed_ms=elapsed_ms,
                 classification=classification.document_type.value,
-                confidence=str(classification.classification_confidence),
+                confidence=str(classification.confidence),
                 has_supplier=draft.has_supplier(),
                 line_count=len(draft.lines),
             )
@@ -405,6 +406,7 @@ class InvoiceExtractor:
         """OCR via Ollama vision model."""
         try:
             result = await self.provider.vision(
+                think=False,
                 image_path=image_path,
                 prompt="Extrae TODO el texto de esta imagen de factura. Devuelve solo el texto crudo, sin comentarios.",
                 request_timeout=self.ollama_timeout,
@@ -526,6 +528,7 @@ class InvoiceExtractor:
                 temp_path = tmp.name
 
             result = await self.provider.vision(
+                think=False,
                 image_path=temp_path,
                 prompt="""
 Clasifica este documento. Devuelve SOLO JSON:
@@ -538,7 +541,7 @@ Clasifica este documento. Devuelve SOLO JSON:
 Busca: encabezados factura, números factura, CIF/NIF/VAT, base imponible, IVA, total, proveedor/cliente, forma pago.
 Múltiples facturas = varios números/encabezados distintos.
 """,
-                request_timeout=60,
+                request_timeout=self.ollama_timeout,
             )
 
             json_str = result.get("text", "").strip()
@@ -573,10 +576,12 @@ Múltiples facturas = varios números/encabezados distintos.
         else:
             doc_type, confidence, signals = await self._classify_llm(page_images, page_count)
 
-        return DocumentClassification(
+        return ClassificationResult(
             document_type=doc_type,
-            classification_confidence=confidence,
-            classification_signals=signals,
+            confidence=confidence,
+            signals=signals,
+            page_count=page_count,
+            classification_strategy="heuristic" if has_native_text and raw_text and len(raw_text.strip()) >= 50 else "llm",
         )
 
     # =========================================================================
@@ -613,9 +618,25 @@ Devuelve SOLO el JSON válido, sin texto adicional.
             logger.error("structured_extraction_failed", error=str(e))
             raise
 
-    # =========================================================================
+# =========================================================================
     # DRAFT BUILDING
     # =========================================================================
+
+    def _ensure_dict(self, value: Any, default: dict | None = None) -> dict[str, Any]:
+        """Ensure value is a dict, return default if not."""
+        if isinstance(value, dict):
+            return value
+        if default is not None:
+            return default
+        return {}
+
+    def _ensure_list(self, value: Any, default: list | None = None) -> list[Any]:
+        """Ensure value is a list, return default if not."""
+        if isinstance(value, list):
+            return value
+        if default is not None:
+            return default
+        return []
 
     def _build_draft(
         self,
@@ -632,38 +653,86 @@ Devuelve SOLO el JSON válido, sin texto adicional.
     ) -> SupplierInvoiceDraft:
         """Build SupplierInvoiceDraft from extracted data."""
 
-        # Supplier
-        supplier_data = extracted_data.get("supplier", {})
+        # Supplier - defensive: handle supplier as dict, list, or missing
+        # Also support flat structure: supplier_name, supplier_tax_id, etc.
+        supplier_raw = extracted_data.get("supplier")
+        if isinstance(supplier_raw, list):
+            supplier_data = self._ensure_dict(supplier_raw[0]) if supplier_raw else {}
+        else:
+            supplier_data = self._ensure_dict(supplier_raw)
+        
+        # Fallback to flat structure fields if nested structure is empty
+        if not supplier_data.get("name"):
+            supplier_data["name"] = extracted_data.get("supplier_name", "")
+        if not supplier_data.get("tax_id"):
+            supplier_data["tax_id"] = extracted_data.get("supplier_tax_id", "")
+        
         supplier = SupplierInfo(
             name=supplier_data.get("name", ""),
             tax_id=normalize_tax_id(supplier_data.get("tax_id", "")),
-            address=supplier_data.get("address"),
-            email=supplier_data.get("email"),
-            phone=supplier_data.get("phone"),
+            address=supplier_data.get("address") or extracted_data.get("supplier_address"),
+            email=supplier_data.get("email") or extracted_data.get("supplier_email"),
+            phone=supplier_data.get("phone") or extracted_data.get("supplier_phone"),
         )
 
-        # Invoice header
-        invoice_data = extracted_data.get("invoice", {})
+        # Invoice header - defensive: handle invoice as dict, list, or missing
+        # Also support flat structure: invoice_number, invoice_date, etc.
+        invoice_raw = extracted_data.get("invoice")
+        if isinstance(invoice_raw, list):
+            invoice_data = self._ensure_dict(invoice_raw[0]) if invoice_raw else {}
+        else:
+            invoice_data = self._ensure_dict(invoice_raw)
+        
+        # Fallback to flat structure
+        if not invoice_data.get("number"):
+            invoice_data["number"] = extracted_data.get("invoice_number")
+        if not invoice_data.get("date"):
+            invoice_data["date"] = extracted_data.get("invoice_date")
+        if not invoice_data.get("due_date"):
+            invoice_data["due_date"] = extracted_data.get("due_date") or extracted_data.get("invoice_due_date")
+        
         invoice_number = invoice_data.get("number")
         invoice_date = self._parse_date(invoice_data.get("date"))
         due_date = self._parse_date(invoice_data.get("due_date"))
 
-        # Lines
+        # Lines - defensive: handle lines as list, dict (single object), or missing
         lines = []
-        for line_data in extracted_data.get("lines", []):
+        lines_data = self._ensure_list(extracted_data.get("lines"))
+        # If lines is a single dict instead of list, wrap it
+        if isinstance(extracted_data.get("lines"), dict):
+            lines_data = [extracted_data.get("lines")]
+        
+        for line_data in lines_data:
+            line_data = self._ensure_dict(line_data)
+            # Handle vat_rate that might be string with % or null
+            vat_rate_raw = line_data.get("vat_rate")
+            if vat_rate_raw is None:
+                vat_rate = Decimal("21")
+            else:
+                vat_rate_str = str(vat_rate_raw).replace("%", "").strip()
+                try:
+                    vat_rate = Decimal(vat_rate_str)
+                except Exception:
+                    vat_rate = Decimal("21")
+            
             line = InvoiceLine(
                 description=line_data.get("description", ""),
                 quantity=Decimal(str(line_data.get("quantity", 1))),
                 unit_price=Decimal(str(line_data.get("unit_price", 0))),
-                vat_rate=Decimal(str(line_data.get("vat_rate", 21))) if line_data.get("vat_rate") else Decimal("21"),
+                vat_rate=vat_rate,
                 discount_percent=Decimal(str(line_data.get("discount_percent", 0))),
                 product_ref=line_data.get("product_ref"),
             )
             lines.append(line)
 
-        # Tax breakdown
+        # Tax breakdown - defensive: handle taxes as list, dict, or missing
         tax_breakdown = []
-        for tax_data in extracted_data.get("taxes", []):
+        taxes_data = self._ensure_list(extracted_data.get("taxes"))
+        if isinstance(extracted_data.get("taxes"), dict):
+            taxes_data = [extracted_data.get("taxes")]
+        
+        for tax_data in taxes_data:
+            tax_data = self._ensure_dict(tax_data)
             tax_breakdown.append(TaxBreakdownItem(
                 rate=Decimal(str(tax_data.get("rate", 0))),
                 base=Decimal(str(tax_data.get("base", 0))),
@@ -671,9 +740,14 @@ Devuelve SOLO el JSON válido, sin texto adicional.
                 source=InvoiceFieldSource.KNOWN,
             ))
 
-        # Withholding breakdown
+        # Withholding breakdown - defensive
         withholding_breakdown = []
-        for wh_data in extracted_data.get("withholdings", []):
+        wh_data_list = self._ensure_list(extracted_data.get("withholdings"))
+        if isinstance(extracted_data.get("withholdings"), dict):
+            wh_data_list = [extracted_data.get("withholdings")]
+        
+        for wh_data in wh_data_list:
+            wh_data = self._ensure_dict(wh_data)
             withholding_breakdown.append(WithholdingBreakdownItem(
                 rate=Decimal(str(wh_data.get("rate", 0))),
                 base=Decimal(str(wh_data.get("base", 0))),
@@ -700,8 +774,8 @@ Devuelve SOLO el JSON válido, sin texto adicional.
             document_size_bytes=len(file_content),
             page_count=page_count,
             classification=classification.document_type,
-            classification_confidence=classification.classification_confidence,
-            classification_signals=classification.classification_signals,
+            classification_confidence=classification.confidence,
+            classification_signals=classification.signals,
             supplier=supplier,
             invoice_number=invoice_number,
             invoice_number_source=InvoiceFieldSource.KNOWN if invoice_number else InvoiceFieldSource.UNKNOWN,
@@ -757,7 +831,7 @@ Devuelve SOLO el JSON válido, sin texto adicional.
             result = await self.provider.generate(
                 prompt="OK",
                 num_predict=1,
-                request_timeout=10,
+                request_timeout=self.ollama_timeout,
             )
             return True
         except Exception:

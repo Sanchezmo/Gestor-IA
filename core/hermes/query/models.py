@@ -1439,7 +1439,9 @@ def format_thirdparties_for_telegram(parties: list[dict[str, Any]], limit: int, 
         tipo_str = f" ({', '.join(tipo)})" if tipo else ""
         email_str = f" - {p['email']}" if p.get("email") else ""
         phone_str = f" - {p['phone']}" if p.get("phone") else ""
-        lines.append(f"{i}. {p['name']}{tipo_str}{email_str}{phone_str}")
+        # Dolibarr puede devolver 'nom' o 'name' según versión/API
+        name = p.get("nom") or p.get("name") or "Sin nombre"
+        lines.append(f"{i}. {name}{tipo_str}{email_str}{phone_str}")
 
     if len(parties) >= limit:
         lines.append(f"\nMostrando los primeros {limit} resultados (offset {offset}).")
@@ -1449,7 +1451,9 @@ def format_thirdparties_for_telegram(parties: list[dict[str, Any]], limit: int, 
 
 def format_thirdparty_detail_for_telegram(detail: dict[str, Any]) -> str:
     """Formatear detalle de tercero para respuesta Telegram."""
-    lines = [f"📋 *{detail['name']}*"]
+    # Dolibarr puede devolver 'nom' o 'name' según versión/API
+    name = detail.get("nom") or detail.get("name") or "Sin nombre"
+    lines = [f"📋 *{name}*"]
     if detail.get("ref"):
         lines.append(f"Ref: {detail['ref']}")
     if detail.get("vat_number"):

@@ -353,7 +353,16 @@ class ListThirdpartiesTool(Tool):
                 parties = [
                     ThirdpartySummary(
                         id=p.get("id", 0),
-                        name=p.get("nom") or p.get("name", "Sin nombre"),
+                        # Dolibarr puede devolver: nom, name, ref, societe, company_name
+                        # Usar check explícito para None y "" 
+                        name=(
+                            p.get("nom") if p.get("nom") not in (None, "") else
+                            p.get("name") if p.get("name") not in (None, "") else
+                            p.get("ref") if p.get("ref") not in (None, "") else
+                            p.get("societe") if p.get("societe") not in (None, "") else
+                            p.get("company_name") if p.get("company_name") not in (None, "") else
+                            "Sin nombre"
+                        ),
                         is_customer=bool(p.get("client", 0)),
                         is_supplier=bool(p.get("fournisseur", 0)),
                         email=p.get("email"),
@@ -509,7 +518,16 @@ class SearchThirdpartiesTool(Tool):
                 parties = [
                     ThirdpartySummary(
                         id=p.get("id", 0),
-                        name=p.get("nom") or p.get("name", "Sin nombre"),
+                        # Dolibarr puede devolver: nom, name, ref, societe, company_name
+                        # Usar check explícito para None y "" 
+                        name=(
+                            p.get("nom") if p.get("nom") not in (None, "") else
+                            p.get("name") if p.get("name") not in (None, "") else
+                            p.get("ref") if p.get("ref") not in (None, "") else
+                            p.get("societe") if p.get("societe") not in (None, "") else
+                            p.get("company_name") if p.get("company_name") not in (None, "") else
+                            "Sin nombre"
+                        ),
                         is_customer=bool(p.get("client", 0)),
                         is_supplier=bool(p.get("fournisseur", 0)),
                         email=p.get("email"),

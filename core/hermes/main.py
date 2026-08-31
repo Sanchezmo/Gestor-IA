@@ -699,24 +699,27 @@ async def telegram_webhook(
                 result = await ingestion_service.ingest(file_id, filename, mime_type)
 
                 if result.success and result.preview_text:
-                    # Send preview with inline keyboard
-                    from core.hermes.commands.telegram import send_command_preview
-                    from core.hermes.commands.models import CommandPreview, CommandType
+                    # FASE 36: Preview ONLY - no ERP writes yet
+                    # Send custom preview with disabled confirm button
+                    from core.integrations.telegram.client import TelegramMessage
                     from uuid import uuid4
 
-                    # Create a preview object for the invoice
-                    preview = CommandPreview(
-                        command_type=CommandType.CREATE_SUPPLIER_INVOICE,
-                        summary=result.preview_text,
-                        structured_data={
-                            "draft_id": str(result.draft.correlation_id),
-                            "document_hash": result.draft.document_hash,
-                            "stored_path": result.stored_path,
-                        },
-                        command_id=uuid4(),
-                    )
+                    # Build inline keyboard with disabled confirm button
+                    keyboard = {
+                        "inline_keyboard": [
+                            [
+                                {"text": "🔒 Confirmar (Fase 36 - Solo Preview)", "callback_data": "disabled:fase36_preview"},
+                                {"text": "❌ Cancelar", "callback_data": f"cancel:{uuid4()}"},
+                            ]
+                        ]
+                    }
 
-                    await send_command_preview(telegram_client, chat_id, preview)
+                    await telegram_client.send_message(
+                        chat_id=chat_id,
+                        text=result.preview_text,
+                        reply_markup=keyboard,
+                        parse_mode="HTML",
+                    )
                     # Delete processing message
                     try:
                         await telegram_client.delete_message(chat_id, processing_msg.message_id)

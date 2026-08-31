@@ -60,7 +60,7 @@ class OllamaProvider(AIProvider):
         endpoint: str,
         model: str,
         vision_model: str | None = None,
-        default_timeout: float = 600.0,
+        default_timeout: float = 900.0,
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.model = model
@@ -120,6 +120,7 @@ class OllamaProvider(AIProvider):
         with Path(image_path).open("rb") as f:
             b64 = base64.b64encode(f.read()).decode()
 
+        format_schema = kwargs.pop("format", None)
         payload = {
             "model": model or self.vision_model,
             "prompt": prompt or "",
@@ -127,7 +128,10 @@ class OllamaProvider(AIProvider):
             "stream": False,
             "temperature": temperature,
             "num_predict": max_tokens,
+            **kwargs,
         }
+        if format_schema:
+            payload["format"] = json.loads(format_schema) if isinstance(format_schema, str) else format_schema
 
         resp = await client.post("/api/generate", json=payload)
         resp.raise_for_status()

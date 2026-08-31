@@ -416,6 +416,10 @@ class DocumentIngestionService:
         lines.append(f"<b>CIF/NIF:</b> {draft.supplier.tax_id if draft.supplier and draft.supplier.tax_id else '—'}")
         lines.append(f"<b>Estado proveedor:</b> {draft.get_supplier_resolution_display()}")
 
+        if draft.supplier_resolution_status == SupplierResolutionStatus.FOUND_NOT_SUPPLIER:
+            lines.append("<b>⚠ El tercero existe pero no está habilitado como proveedor.</b>")
+            lines.append("Se habilitará automáticamente al confirmar la factura.")
+
         if draft.supplier_resolution_status == SupplierResolutionStatus.AMBIGUOUS and draft.supplier_candidates:
             lines.append("\n<b>⚠ Candidatos encontrados:</b>")
             for i, cand in enumerate(draft.supplier_candidates[:3], 1):

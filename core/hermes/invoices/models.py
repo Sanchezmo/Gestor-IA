@@ -39,9 +39,20 @@ class DocumentClassification(StrEnum):
     UNKNOWN = "unknown"
 
 
+@dataclass(frozen=True, slots=True)
+class ClassificationResult:
+    """Result of document classification."""
+    document_type: DocumentClassification
+    confidence: Decimal
+    signals: list[str]
+    page_count: int = 0
+    classification_strategy: str = "heuristic"
+
+
 class SupplierResolutionStatus(StrEnum):
     """Supplier lookup result."""
     FOUND = "found"
+    FOUND_NOT_SUPPLIER = "found_not_supplier"  # Exists but not marked as supplier
     NOT_FOUND = "not_found"
     AMBIGUOUS = "ambiguous"
 
@@ -239,6 +250,7 @@ class SupplierInvoiceDraft:
         """Supplier resolution display for preview."""
         icons = {
             SupplierResolutionStatus.FOUND: "✓",
+            SupplierResolutionStatus.FOUND_NOT_SUPPLIER: "⚠",
             SupplierResolutionStatus.NOT_FOUND: "✗",
             SupplierResolutionStatus.AMBIGUOUS: "?",
         }
