@@ -465,6 +465,28 @@ class DocumentIngestionService:
             except Exception as e:
                 logger.warning("cleanup_stored_file_failed", path=stored_path, error=str(e))
 
+    async def _retrieve_stored_file(self, document_hash: str) -> bytes | None:
+        """Retrieve stored file content from disk."""
+        hash_prefix = document_hash[:2]
+        # Find the file in the pending directory
+        pending_path = self.pending_dir / document_hash[:2] / document_hash
+        if not pending_path.exists():
+            logger.warning("stored_file_not_found", document_hash=document_hash[:16])
+            return None
+        
+        # Find the actual file (there should be only one file in the directory)
+        files = list(pending_path.iterdir())
+        if not files:
+            logger.warning("stored_file_empty_directory", document_hash=document_hash[:16])
+            return None
+        
+        file_path = files[0]
+        try:
+            return file_path.read_bytes()
+        except Exception as e:
+            logger.error("retrieve_stored_file_failed", document_hash=document_hash[:16], error=str(e))
+            return None
+
     def _generate_preview(self, draft: SupplierInvoiceDraft) -> str:
         """Generate human-readable preview for Telegram."""
         lines = []
@@ -700,7 +722,15 @@ class DocumentIngestionService:
                 "retry_count": 0,
                 "last_error": None
             })
-            return await self.ingest(state.document_hash, filename, mime_type)
+            # Retry using stored file content
+            file_content = await self._retrieve_stored_file(state.document_hash)
+            if not file_content:
+                return IngestionResult(
+                    success=False,
+                    error="No se encontró el archivo original para reintentar",
+                    error_code="FILE_NOT_FOUND",
+                )
+            return await self.ingest_bytes(file_content, filename, mime_type)
         
         elif status == DocumentState.EXPIRED:
             logger.info("expired_document_reingestion", document_hash=state.document_hash[:16])
@@ -709,7 +739,15 @@ class DocumentIngestionService:
                 "retry_count": 0,
                 "last_error": None
             })
-            return await self.ingest(state.document_hash, filename, mime_type)
+            # Retry using stored file content
+            file_content = await self._retrieve_stored_file(state.document_hash)
+            if not file_content:
+                return IngestionResult(
+                    success=False,
+                    error="No se encontró el archivo original para reintentar",
+                    error_code="FILE_NOT_FOUND",
+                )
+            return await self.ingest_bytes(file_content, filename, mime_type)
         
         elif status == DocumentState.PROCESSING:
             try:
@@ -743,17 +781,27 @@ class DocumentIngestionService:
         if not state:
             return IngestionResult(success=False, error="Estado no encontrado para reintento", error_code="STATE_NOT_FOUND")
         
+        # Retrieve stored file content
+        file_content = await self._retrieve_stored_file(document_hash)
+        if not file_content:
+            return IngestionResult(
+                success=False,
+                error="No se encontró el archivo original para reintentar",
+                error_code="FILE_NOT_FOUND",
+            )
+        
+        # Use the original filename and mime_type from state if available
+        # For now, we'll need to get these from the state or use defaults
+        filename = "retry_document.pdf"  # TODO: get from state
+        mime_type = "application/pdf"  # TODO: get from state
+        
         await self._update_document_state(document_hash, {
             "status": DocumentState.RECEIVED.value,
             "retry_count": state.retry_count + 1,
             "correlation_id": correlation_id
         })
         
-        return IngestionResult(
-            success=False,
-            error="Reintento requerido. Reenvíe el documento.",
-            error_code="RETRY_REQUIRED",
-        )
+        return await self.ingest_bytes(file_content, filename, mime_type)
 
     async def _handle_extraction_failure(self, document_hash: str, stored_path: str, extraction_result: IngestionResult) -> None:
         """Handle extraction failure - mark document as failed retryable."""
