@@ -26,6 +26,7 @@ import shutil
 import structlog
 from dataclasses import replace
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -241,6 +242,12 @@ class DocumentIngestionService:
                     error="La factura ya existe en Dolibarr. Adjunto pendiente.",
                     error_code="INVOICE_EXISTS_ATTACHMENT_PENDING",
                 )
+            elif existing_durable_by_hash.final_state == "ATTACHMENT_PENDING":
+                return IngestionResult(
+                    success=False,
+                    error="Factura creada. Adjunto pendiente de subida.",
+                    error_code="ATTACHMENT_PENDING",
+                )
             elif existing_durable_by_hash.final_state == "SUPPLIER_CREATED":
                 # SUPPLIER_CREATED: allow continuation to invoice creation
                 # Store the existing supplier_dolibarr_id in Redis state so pipeline knows
@@ -258,6 +265,27 @@ class DocumentIngestionService:
                 ))
                 # Continue processing - will skip supplier creation
                 pass  # Fall through to normal processing
+            elif existing_durable_by_hash.final_state == "ERP_RESULT_UNKNOWN":
+                # ERP_RESULT_UNKNOWN: POST timeout - MUST reconcile first, block CREATE retry
+                return IngestionResult(
+                    success=False,
+                    error="Estado desconocido tras intento previo (timeout). Requiere reconciliación con Dolibarr antes de reintentar.",
+                    error_code="ERP_RESULT_UNKNOWN",
+                )
+            elif existing_durable_by_hash.final_state in ("FAILED_RETRYABLE", "FAILED_FINAL"):
+                # Failed states - allow retry for retryable, block for final
+                if existing_durable_by_hash.final_state == "FAILED_RETRYABLE":
+                    return IngestionResult(
+                        success=False,
+                        error="Intento previo fallido (reintentable). Puede reintentar el procesamiento.",
+                        error_code="FAILED_RETRYABLE",
+                    )
+                else:
+                    return IngestionResult(
+                        success=False,
+                        error="Intento previo fallido definitivamente. Requiere intervención manual.",
+                        error_code="FAILED_FINAL",
+                    )
 
         # TRANSIENT STATE CHECK (Redis - workflow tracking, TTL 7 days)
         existing_state = await self._get_document_state(document_hash)
@@ -443,12 +471,37 @@ class DocumentIngestionService:
                             error="La factura ya existe en Dolibarr. Adjunto pendiente.",
                             error_code="INVOICE_EXISTS_ATTACHMENT_PENDING",
                         )
+                    elif existing_durable.final_state == "ATTACHMENT_PENDING":
+                        return IngestionResult(
+                            success=False,
+                            error="Factura creada. Adjunto pendiente de subida.",
+                            error_code="ATTACHMENT_PENDING",
+                        )
                     elif existing_durable.final_state == "SUPPLIER_CREATED":
                         return IngestionResult(
                             success=False,
                             error="El proveedor ya existe. Factura pendiente de creación.",
                             error_code="SUPPLIER_EXISTS_INVOICE_PENDING",
                         )
+                    elif existing_durable.final_state == "ERP_RESULT_UNKNOWN":
+                        return IngestionResult(
+                            success=False,
+                            error="Estado desconocido tras intento previo (timeout). Requiere reconciliación con Dolibarr antes de reintentar.",
+                            error_code="ERP_RESULT_UNKNOWN",
+                        )
+                    elif existing_durable.final_state in ("FAILED_RETRYABLE", "FAILED_FINAL"):
+                        if existing_durable.final_state == "FAILED_RETRYABLE":
+                            return IngestionResult(
+                                success=False,
+                                error="Intento previo fallido (reintentable). Puede reintentar el procesamiento.",
+                                error_code="FAILED_RETRYABLE",
+                            )
+                        else:
+                            return IngestionResult(
+                                success=False,
+                                error="Intento previo fallido definitivamente. Requiere intervención manual.",
+                                error_code="FAILED_FINAL",
+                            )
 
             # Generate preview text
             preview_text = self._generate_preview(draft)
@@ -572,7 +625,7 @@ class DocumentIngestionService:
 
         if draft.supplier_resolution_status == SupplierResolutionStatus.FOUND_NOT_SUPPLIER:
             lines.append("<b>⚠ El tercero existe pero no está habilitado como proveedor.</b>")
-            lines.append("Se habilitará automáticamente al confirmar la factura.")
+            lines.append("Se habilitará como proveedor durante la confirmación (requiere acción explícita).")
 
         if draft.supplier_resolution_status == SupplierResolutionStatus.AMBIGUOUS and draft.supplier_candidates:
             lines.append("\n<b>⚠ Candidatos encontrados:</b>")
@@ -944,14 +997,12 @@ class DocumentIngestionService:
             "supplier_dolibarr_id": supplier_dolibarr_id
         })
 
-        # Persist to durable storage (MariaDB - gestor_ia_audit)
-        await self.idempotency_manager.record_completed(
+        # Persist to durable storage (MariaDB - gestor_ia_audit) - ATOMIC UPDATE
+        await self.idempotency_manager.mark_supplier_created(
             instance_id=self.company_context.instance_id,
-            document_hash=document_hash,
             supplier_tax_id=supplier_tax_id,
             supplier_invoice_number=supplier_invoice_number,
             supplier_dolibarr_id=supplier_dolibarr_id,
-            final_state="SUPPLIER_CREATED",
         )
 
     async def mark_invoice_created(
@@ -973,15 +1024,15 @@ class DocumentIngestionService:
             "dolibarr_invoice_id": dolibarr_invoice_id
         })
 
-        # Persist to durable storage (MariaDB - gestor_ia_audit)
-        await self.idempotency_manager.record_completed(
+        # Persist to durable storage (MariaDB - gestor_ia_audit) - ATOMIC UPDATE
+        await self.idempotency_manager.mark_invoice_created(
             instance_id=self.company_context.instance_id,
-            document_hash=document_hash,
             supplier_tax_id=supplier_tax_id,
             supplier_invoice_number=supplier_invoice_number,
             supplier_dolibarr_id=supplier_dolibarr_id,
             invoice_dolibarr_id=invoice_dolibarr_id,
-            final_state="INVOICE_CREATED",
+            dolibarr_invoice_ref=dolibarr_invoice_ref,
+            dolibarr_invoice_id=dolibarr_invoice_id,
         )
 
     async def mark_attachment_uploaded(
@@ -999,16 +1050,11 @@ class DocumentIngestionService:
             "attachment_uploaded": True
         })
 
-        # Persist to durable storage (MariaDB - gestor_ia_audit)
-        await self.idempotency_manager.record_completed(
+        # Persist to durable storage (MariaDB - gestor_ia_audit) - ATOMIC UPDATE
+        await self.idempotency_manager.mark_attachment_uploaded(
             instance_id=self.company_context.instance_id,
-            document_hash=document_hash,
             supplier_tax_id=supplier_tax_id,
             supplier_invoice_number=supplier_invoice_number,
-            supplier_dolibarr_id=supplier_dolibarr_id,
-            invoice_dolibarr_id=invoice_dolibarr_id,
-            final_state="COMPLETED",
-            attachment_uploaded=True,
         )
 
     async def mark_completed(
@@ -1026,16 +1072,11 @@ class DocumentIngestionService:
             "attachment_uploaded": True
         })
 
-        # Persist to durable storage (MariaDB - gestor_ia_audit)
-        await self.idempotency_manager.record_completed(
+        # Persist to durable storage (MariaDB - gestor_ia_audit) - ATOMIC UPDATE
+        await self.idempotency_manager.mark_completed(
             instance_id=self.company_context.instance_id,
-            document_hash=document_hash,
             supplier_tax_id=supplier_tax_id,
             supplier_invoice_number=supplier_invoice_number,
-            supplier_dolibarr_id=supplier_dolibarr_id,
-            invoice_dolibarr_id=invoice_dolibarr_id,
-            final_state="COMPLETED",
-            attachment_uploaded=True,
         )
 
     async def mark_cancelled(self, document_hash: str) -> None:
@@ -1049,8 +1090,87 @@ class DocumentIngestionService:
             "last_error": error
         })
 
+    async def mark_pending_confirmation(
+        self,
+        document_hash: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+        supplier_dolibarr_id: int | None = None,
+    ) -> None:
+        """Mark document as pending confirmation - persists to durable storage."""
+        await self._update_document_state(document_hash, {
+            "status": DocumentState.PENDING_CONFIRMATION.value,
+        })
+        if supplier_dolibarr_id:
+            await self._update_document_state(document_hash, {
+                "supplier_dolibarr_id": supplier_dolibarr_id
+            })
+
+        await self.idempotency_manager.mark_pending_confirmation(
+            instance_id=self.company_context.instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+            supplier_dolibarr_id=supplier_dolibarr_id,
+            document_hash=document_hash,
+        )
+
+    async def mark_confirming(
+        self,
+        document_hash: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> None:
+        """Mark document as confirming (executing confirmation)."""
+        await self._update_document_state(document_hash, {
+            "status": DocumentState.CONFIRMING.value,
+        })
+        await self.idempotency_manager.mark_confirming(
+            instance_id=self.company_context.instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+        )
+
+    async def mark_erp_result_unknown(
+        self,
+        document_hash: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> None:
+        """
+        Mark as ERP_RESULT_UNKNOWN (POST timeout - unknown if succeeded).
+
+        CRITICAL: Blocks CREATE retry until reconciliation runs.
+        """
+        await self._update_document_state(document_hash, {
+            "status": DocumentState.FAILED_RETRYABLE.value,  # Transient state in Redis
+            "last_error": "ERP_RESULT_UNKNOWN: POST timeout, reconciliation required",
+        })
+        await self.idempotency_manager.mark_erp_result_unknown(
+            instance_id=self.company_context.instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+        )
+
+    async def mark_failed_retryable(
+        self,
+        document_hash: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+        error: str,
+    ) -> None:
+        """Mark as failed but retryable (transient error)."""
+        await self._update_document_state(document_hash, {
+            "status": DocumentState.FAILED_RETRYABLE.value,
+            "last_error": error,
+        })
+        await self.idempotency_manager.mark_failed_retryable(
+            instance_id=self.company_context.instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+        )
+
     # =========================================================================
-    # RECONCILIATION (for ERP_UNKNOWN state after timeout)
+    # RECONCILIATION (for ERP_RESULT_UNKNOWN state after timeout)
     # =========================================================================
 
     async def reconcile_with_dolibarr(self, draft: SupplierInvoiceDraft) -> dict[str, Any] | None:
@@ -1059,6 +1179,9 @@ class DocumentIngestionService:
 
         Used when POST invoice times out and we don't know if it succeeded.
         Returns invoice data if found, None if not found or ambiguous.
+
+        Priority: ref_supplier (supplier's invoice number) over ref (Dolibarr internal).
+        Verification: invoice date and total amount as additional checks.
         """
         if not draft.has_supplier() or not draft.invoice_number or not draft.invoice_date:
             return None
@@ -1093,26 +1216,80 @@ class DocumentIngestionService:
                 for invoice in invoices:
                     ref = (invoice.get("ref") or "").upper()
                     ref_supplier = (invoice.get("ref_supplier") or "").upper()
-                    if ref == invoice_number_upper or ref_supplier == invoice_number_upper:
+
+                    # PRIMARY match: ref_supplier (supplier's invoice number)
+                    # SECONDARY match: ref (Dolibarr internal reference)
+                    is_primary_match = ref_supplier == invoice_number_upper
+                    is_secondary_match = ref == invoice_number_upper and not ref_supplier
+
+                    if is_primary_match or is_secondary_match:
+                        # Additional verification: date and total
+                        date_matches = True
+                        total_matches = True
+
+                        if draft.invoice_date:
+                            invoice_date_str = invoice.get("date") or invoice.get("date_creation")
+                            if invoice_date_str:
+                                try:
+                                    from datetime import date as dt_date
+                                    invoice_date = dt_date.fromisoformat(invoice_date_str[:10])
+                                    date_matches = invoice_date == draft.invoice_date
+                                except Exception:
+                                    date_matches = False  # Can't parse - treat as non-matching
+
+                        if draft.total is not None:
+                            invoice_total = invoice.get("total") or invoice.get("total_ttc")
+                            if invoice_total is not None:
+                                try:
+                                    total_matches = abs(Decimal(str(invoice_total)) - draft.total) < Decimal("0.01")
+                                except Exception:
+                                    total_matches = False
+
                         matches.append({
                             "dolibarr_id": invoice.get("id") or invoice.get("rowid"),
                             "ref": invoice.get("ref"),
                             "ref_supplier": invoice.get("ref_supplier"),
                             "status": invoice.get("status"),
                             "total": invoice.get("total"),
+                            "date": invoice.get("date") or invoice.get("date_creation"),
+                            "is_primary_match": is_primary_match,
+                            "date_matches": date_matches,
+                            "total_matches": total_matches,
                         })
 
                 if len(matches) == 1:
-                    logger.info("reconciliation_found_existing_invoice",
-                        supplier_id=resolution.supplier_dolibarr_id,
-                        invoice_number=draft.invoice_number,
-                        dolibarr_id=matches[0]["dolibarr_id"])
-                    return matches[0]
+                    match = matches[0]
+                    # Require at least date OR total to match for confidence
+                    if match["date_matches"] or match["total_matches"]:
+                        logger.info("reconciliation_found_existing_invoice",
+                            supplier_id=resolution.supplier_dolibarr_id,
+                            invoice_number=draft.invoice_number,
+                            dolibarr_id=match["dolibarr_id"],
+                            primary_match=match["is_primary_match"],
+                            date_match=match["date_matches"],
+                            total_match=match["total_matches"])
+                        return match
+                    else:
+                        logger.warning("reconciliation_weak_match_insufficient_verification",
+                            supplier_id=resolution.supplier_dolibarr_id,
+                            invoice_number=draft.invoice_number,
+                            dolibarr_id=match["dolibarr_id"])
+                        return None  # Weak match - fail closed
                 elif len(matches) > 1:
+                    # Check if any have strong verification (both date AND total)
+                    strong_matches = [m for m in matches if m["date_matches"] and m["total_matches"]]
+                    if len(strong_matches) == 1:
+                        match = strong_matches[0]
+                        logger.info("reconciliation_found_existing_invoice_strong",
+                            supplier_id=resolution.supplier_dolibarr_id,
+                            invoice_number=draft.invoice_number,
+                            dolibarr_id=match["dolibarr_id"])
+                        return match
                     logger.warning("reconciliation_ambiguous_multiple_matches",
                         supplier_id=resolution.supplier_dolibarr_id,
                         invoice_number=draft.invoice_number,
-                        matches=len(matches))
+                        matches=len(matches),
+                        strong_matches=len(strong_matches))
                     return None  # Ambiguous - fail closed
 
             return None

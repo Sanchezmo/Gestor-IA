@@ -119,9 +119,11 @@ class DocumentIdempotencyRecord(Base):
     # IDs en Dolibarr
     supplier_dolibarr_id = Column(Integer, nullable=True, index=True)
     invoice_dolibarr_id = Column(Integer, nullable=True, index=True)
+    dolibarr_invoice_ref = Column(String(100), nullable=True, index=True)  # ref from Dolibarr
+    dolibarr_invoice_id = Column(Integer, nullable=True, index=True)       # rowid from Dolibarr
 
     # Estado final del workflow
-    final_state = Column(String(50), nullable=False, index=True)  # COMPLETED, INVOICE_CREATED, SUPPLIER_CREATED
+    final_state = Column(String(50), nullable=False, index=True)  # COMPLETED, INVOICE_CREATED, SUPPLIER_CREATED, ERP_RESULT_UNKNOWN
 
     # Adjunto
     attachment_uploaded = Column(Boolean, nullable=False, default=False)
@@ -639,12 +641,45 @@ class DocumentIdempotencyManager:
     """
     Gestor de registros de idempotencia duraderos para operaciones ERP.
 
-    Almacena de forma PERMANENTE (sin TTL) el registro de operaciones completadas
-    para evitar duplicados en Dolibarr. Redis maneja estados transitorios con TTL;
-    esto es el almacenamiento duradero de verdad.
+    Almacena de forma PERMANENTE (sin TTL) el estado actual de cada operación
+    ERP (current durable state). Una fila lógica por operación comercial:
+    (instance_id, supplier_tax_id, supplier_invoice_number).
+
+    Los milestones ERP evolucionan esa MISMA fila:
+    PENDING_CONFIRMATION -> CONFIRMING -> SUPPLIER_CREATED -> INVOICE_CREATED
+    -> ATTACHMENT_PENDING -> COMPLETED
+
+    Redis maneja estados transitorios con TTL; esto es el almacenamiento
+    duradero de verdad (current state, no event log).
 
     Clave de deduplicación: (instance_id, supplier_tax_id, supplier_invoice_number)
     """
+
+    # Estados válidos para final_state
+    VALID_STATES = frozenset([
+        "PENDING_CONFIRMATION",
+        "CONFIRMING",
+        "SUPPLIER_CREATED",
+        "INVOICE_CREATED",
+        "ATTACHMENT_PENDING",
+        "COMPLETED",
+        "ERP_RESULT_UNKNOWN",   # POST timeout - no sabemos si se creó
+        "FAILED_RETRYABLE",     # Error transitorio, se puede reintentar
+        "FAILED_FINAL",         # Error permanente, intervención manual
+    ])
+
+    # Transiciones válidas: estado_origen -> set(estados_destino_permitidos)
+    VALID_TRANSITIONS = {
+        "PENDING_CONFIRMATION": {"CONFIRMING"},
+        "CONFIRMING": {"SUPPLIER_CREATED", "INVOICE_CREATED", "ERP_RESULT_UNKNOWN", "FAILED_RETRYABLE", "FAILED_FINAL"},
+        "SUPPLIER_CREATED": {"INVOICE_CREATED", "ERP_RESULT_UNKNOWN", "FAILED_RETRYABLE", "FAILED_FINAL"},
+        "INVOICE_CREATED": {"ATTACHMENT_PENDING", "COMPLETED", "ERP_RESULT_UNKNOWN", "FAILED_RETRYABLE", "FAILED_FINAL"},
+        "ATTACHMENT_PENDING": {"COMPLETED", "FAILED_RETRYABLE", "FAILED_FINAL"},
+        "ERP_RESULT_UNKNOWN": {"INVOICE_CREATED", "COMPLETED", "FAILED_RETRYABLE", "FAILED_FINAL"},  # Solo tras reconciliación
+        "FAILED_RETRYABLE": {"CONFIRMING", "SUPPLIER_CREATED", "INVOICE_CREATED", "ERP_RESULT_UNKNOWN"},
+        "FAILED_FINAL": set(),  # Terminal - no transitions allowed
+        "COMPLETED": set(),     # Terminal - no transitions allowed
+    }
 
     def __init__(self, database_url: str, pool_size: int = 5):
         """
@@ -667,91 +702,88 @@ class DocumentIdempotencyManager:
         # Crear tabla si no existe
         Base.metadata.create_all(self.engine)
 
-    def _generate_id(self) -> str:
-        """Generar UUID v4."""
-        return str(uuid4())
+    def _validate_transition(self, from_state: str | None, to_state: str) -> None:
+        """Validar que la transición de estado es permitida."""
+        if from_state is None:
+            # Nuevo registro - solo estados iniciales permitidos
+            if to_state not in {"PENDING_CONFIRMATION", "CONFIRMING"}:
+                raise ValueError(f"Invalid initial state: {to_state}. Must be PENDING_CONFIRMATION or CONFIRMING")
+            return
 
-    async def record_completed(
+        if from_state == to_state:
+            return  # Same state is idempotent
+
+        allowed = self.VALID_TRANSITIONS.get(from_state, set())
+        if to_state not in allowed:
+            raise ValueError(f"Invalid state transition: {from_state} -> {to_state}. Allowed: {allowed}")
+
+    async def get_or_create_operation(
         self,
         *,
         instance_id: str,
         document_hash: str,
         supplier_tax_id: str,
         supplier_invoice_number: str,
+        initial_state: str = "PENDING_CONFIRMATION",
         supplier_dolibarr_id: int | None = None,
-        invoice_dolibarr_id: int | None = None,
-        final_state: str = "COMPLETED",
-        attachment_uploaded: bool = False,
         document_filename: str | None = None,
         document_mime_type: str | None = None,
         document_size_bytes: int | None = None,
         correlation_id: str | None = None,
-    ) -> str:
+    ) -> tuple[DocumentIdempotencyRecord, bool]:
         """
-        Registrar operación completada para idempotencia duradera.
-
-        Args:
-            instance_id: ID de la instancia (aislamiento multi-empresa)
-            document_hash: SHA256 del documento original
-            supplier_tax_id: CIF/NIF del proveedor
-            supplier_invoice_number: Número de factura del proveedor
-            supplier_dolibarr_id: ID del proveedor en Dolibarr
-            invoice_dolibarr_id: ID de la factura en Dolibarr
-            final_state: COMPLETED | INVOICE_CREATED | SUPPLIER_CREATED
-            attachment_uploaded: Si se subió el PDF a Dolibarr
-            document_filename: Nombre del archivo original
-            document_mime_type: MIME type
-            document_size_bytes: Tamaño en bytes
-            correlation_id: ID de correlación
+        Obtener operación existente o crear nueva (atomic upsert).
 
         Returns:
-            id del registro creado
-
-        Raises:
-            IntegrityError: Si ya existe registro con misma clave de deduplicación
+            (record, created) - record es la operación, created=True si fue creada ahora
         """
-        record_id = str(uuid4())
-        now = datetime.utcnow()
-
         session = self.Session()
         try:
+            # Intentar obtener existente
+            record = session.query(DocumentIdempotencyRecord).filter(
+                DocumentIdempotencyRecord.instance_id == instance_id,
+                DocumentIdempotencyRecord.supplier_tax_id == supplier_tax_id,
+                DocumentIdempotencyRecord.supplier_invoice_number == supplier_invoice_number,
+            ).with_for_update().first()
+
+            if record:
+                return record, False
+
+            # Crear nuevo
+            if initial_state not in {"PENDING_CONFIRMATION", "CONFIRMING"}:
+                raise ValueError(f"Invalid initial state: {initial_state}")
+
             record = DocumentIdempotencyRecord(
                 id=str(uuid4()),
-                created_at=datetime.utcnow(),
-                completed_at=datetime.utcnow(),
                 instance_id=instance_id,
                 document_hash=document_hash,
                 supplier_tax_id=supplier_tax_id,
                 supplier_invoice_number=supplier_invoice_number,
                 supplier_dolibarr_id=supplier_dolibarr_id,
-                invoice_dolibarr_id=invoice_dolibarr_id,
-                final_state=final_state,
-                attachment_uploaded=attachment_uploaded,
+                final_state=initial_state,
                 document_filename=document_filename,
                 document_mime_type=document_mime_type,
                 document_size_bytes=document_size_bytes,
                 correlation_id=correlation_id,
             )
-
-            session = self.Session()
             session.add(record)
             session.commit()
 
             logger.info(
-                "idempotency_recorded",
+                "durable_operation_created",
                 record_id=record.id,
                 instance_id=instance_id,
                 supplier_tax_id=supplier_tax_id,
                 supplier_invoice_number=supplier_invoice_number,
-                final_state=final_state,
+                initial_state=initial_state,
             )
 
-            return record.id
+            return record, True
 
         except Exception as e:
             session.rollback()
             logger.error(
-                "idempotency_record_failed",
+                "durable_operation_create_failed",
                 error=str(e),
                 instance_id=instance_id,
                 supplier_tax_id=supplier_tax_id,
@@ -761,38 +793,307 @@ class DocumentIdempotencyManager:
         finally:
             session.close()
 
-    async def check_duplicate(
+    async def update_milestone(
+        self,
+        *,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+        new_state: str,
+        supplier_dolibarr_id: int | None = None,
+        invoice_dolibarr_id: int | None = None,
+        dolibarr_invoice_ref: str | None = None,
+        dolibarr_invoice_id: int | None = None,
+        attachment_uploaded: bool | None = None,
+    ) -> DocumentIdempotencyRecord:
+        """
+        Actualizar milestone de forma atómica (UPDATE con validación de transición).
+
+        Args:
+            instance_id: ID de la instancia
+            supplier_tax_id: CIF/NIF del proveedor
+            supplier_invoice_number: Número de factura del proveedor
+            new_state: Nuevo estado (debe ser transición válida)
+            supplier_dolibarr_id: ID proveedor en Dolibarr (opcional)
+            invoice_dolibarr_id: ID factura en Dolibarr (opcional)
+            dolibarr_invoice_ref: ref de Dolibarr (opcional)
+            dolibarr_invoice_id: rowid de Dolibarr (opcional)
+            attachment_uploaded: Si se subió adjunto (opcional)
+
+        Returns:
+            Registro actualizado
+
+        Raises:
+            ValueError: Si la transición no es válida
+            NoResultFound: Si no existe la operación
+        """
+        if new_state not in self.VALID_STATES:
+            raise ValueError(f"Invalid state: {new_state}. Valid: {self.VALID_STATES}")
+
+        session = self.Session()
+        try:
+            record = session.query(DocumentIdempotencyRecord).filter(
+                DocumentIdempotencyRecord.instance_id == instance_id,
+                DocumentIdempotencyRecord.supplier_tax_id == supplier_tax_id,
+                DocumentIdempotencyRecord.supplier_invoice_number == supplier_invoice_number,
+            ).with_for_update().first()
+
+            if not record:
+                from sqlalchemy.orm.exc import NoResultFound
+                raise NoResultFound(
+                    f"No durable operation found for "
+                    f"instance={instance_id}, supplier={supplier_tax_id}, invoice={supplier_invoice_number}"
+                )
+
+            # Validar transición
+            self._validate_transition(record.final_state, new_state)
+
+            # Actualizar campos
+            old_state = record.final_state
+            record.final_state = new_state
+
+            if supplier_dolibarr_id is not None:
+                record.supplier_dolibarr_id = supplier_dolibarr_id
+            if invoice_dolibarr_id is not None:
+                record.invoice_dolibarr_id = invoice_dolibarr_id
+            if dolibarr_invoice_ref is not None:
+                record.dolibarr_invoice_ref = dolibarr_invoice_ref
+            if dolibarr_invoice_id is not None:
+                record.dolibarr_invoice_id = dolibarr_invoice_id
+            if attachment_uploaded is not None:
+                record.attachment_uploaded = attachment_uploaded
+
+            # Timestamps
+            if new_state in {"COMPLETED", "FAILED_FINAL"}:
+                record.completed_at = datetime.utcnow()
+
+            session.commit()
+
+            logger.info(
+                "durable_milestone_updated",
+                record_id=record.id,
+                instance_id=instance_id,
+                from_state=old_state,
+                to_state=new_state,
+                supplier_dolibarr_id=record.supplier_dolibarr_id,
+                invoice_dolibarr_id=record.invoice_dolibarr_id,
+            )
+
+            return record
+
+        except Exception as e:
+            session.rollback()
+            logger.error(
+                "durable_milestone_update_failed",
+                error=str(e),
+                instance_id=instance_id,
+                supplier_tax_id=supplier_tax_id,
+                supplier_invoice_number=supplier_invoice_number,
+                new_state=new_state,
+            )
+            raise
+        finally:
+            session.close()
+
+    # =========================================================================
+    # CONVENIENCE METHODS FOR EACH MILESTONE
+    # =========================================================================
+
+    async def mark_pending_confirmation(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+        *,
+        document_hash: str,
+        supplier_dolibarr_id: int | None = None,
+        document_filename: str | None = None,
+        document_mime_type: str | None = None,
+        document_size_bytes: int | None = None,
+        correlation_id: str | None = None,
+    ) -> DocumentIdempotencyRecord:
+        """Crear o actualizar a PENDING_CONFIRMATION."""
+        record, created = await self.get_or_create_operation(
+            instance_id=instance_id,
+            document_hash=document_hash,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+            initial_state="PENDING_CONFIRMATION",
+            supplier_dolibarr_id=supplier_dolibarr_id,
+            document_filename=document_filename,
+            document_mime_type=document_mime_type,
+            document_size_bytes=document_size_bytes,
+            correlation_id=correlation_id,
+        )
+        if not created and record.final_state != "PENDING_CONFIRMATION":
+            record = await self.update_milestone(
+                instance_id=instance_id,
+                supplier_tax_id=supplier_tax_id,
+                supplier_invoice_number=supplier_invoice_number,
+                new_state="PENDING_CONFIRMATION",
+            )
+        return record
+
+    async def mark_confirming(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> DocumentIdempotencyRecord:
+        """Transicionar a CONFIRMING."""
+        return await self.update_milestone(
+            instance_id=instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+            new_state="CONFIRMING",
+        )
+
+    async def mark_supplier_created(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+        supplier_dolibarr_id: int,
+    ) -> DocumentIdempotencyRecord:
+        """Transicionar a SUPPLIER_CREATED."""
+        return await self.update_milestone(
+            instance_id=instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+            new_state="SUPPLIER_CREATED",
+            supplier_dolibarr_id=supplier_dolibarr_id,
+        )
+
+    async def mark_invoice_created(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+        supplier_dolibarr_id: int,
+        invoice_dolibarr_id: int,
+        dolibarr_invoice_ref: str,
+        dolibarr_invoice_id: int,
+    ) -> DocumentIdempotencyRecord:
+        """Transicionar a INVOICE_CREATED."""
+        return await self.update_milestone(
+            instance_id=instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+            new_state="INVOICE_CREATED",
+            supplier_dolibarr_id=supplier_dolibarr_id,
+            invoice_dolibarr_id=invoice_dolibarr_id,
+            dolibarr_invoice_ref=dolibarr_invoice_ref,
+            dolibarr_invoice_id=dolibarr_invoice_id,
+        )
+
+    async def mark_attachment_pending(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> DocumentIdempotencyRecord:
+        """Transicionar a ATTACHMENT_PENDING."""
+        return await self.update_milestone(
+            instance_id=instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+            new_state="ATTACHMENT_PENDING",
+        )
+
+    async def mark_attachment_uploaded(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> DocumentIdempotencyRecord:
+        """Transicionar a COMPLETED con attachment_uploaded=True."""
+        return await self.update_milestone(
+            instance_id=instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+            new_state="COMPLETED",
+            attachment_uploaded=True,
+        )
+
+    async def mark_completed(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> DocumentIdempotencyRecord:
+        """Transicionar a COMPLETED."""
+        return await self.update_milestone(
+            instance_id=instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+            new_state="COMPLETED",
+            attachment_uploaded=True,
+        )
+
+    async def mark_erp_result_unknown(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> DocumentIdempotencyRecord:
+        """
+        Marcar como ERP_RESULT_UNKNOWN (timeout en POST, no sabemos resultado).
+
+        ESTADO CRÍTICO: Prohíbe reintentar CREATE hasta reconciliación.
+        """
+        return await self.update_milestone(
+            instance_id=instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+            new_state="ERP_RESULT_UNKNOWN",
+        )
+
+    async def mark_failed_retryable(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> DocumentIdempotencyRecord:
+        """Transicionar a FAILED_RETRYABLE (error transitorio)."""
+        return await self.update_milestone(
+            instance_id=instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+            new_state="FAILED_RETRYABLE",
+        )
+
+    async def mark_failed_final(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> DocumentIdempotencyRecord:
+        """Transicionar a FAILED_FINAL (error permanente)."""
+        return await self.update_milestone(
+            instance_id=instance_id,
+            supplier_tax_id=supplier_tax_id,
+            supplier_invoice_number=supplier_invoice_number,
+            new_state="FAILED_FINAL",
+        )
+
+    # =========================================================================
+    # QUERY METHODS
+    # =========================================================================
+
+    async def get_operation(
         self,
         instance_id: str,
         supplier_tax_id: str,
         supplier_invoice_number: str,
     ) -> DocumentIdempotencyRecord | None:
-        """
-        Verificar si ya existe un registro completado para esta factura.
-
-        Returns:
-            DocumentIdempotencyRecord si existe, None si no
-        """
+        """Obtener operación por clave comercial."""
         session = self.Session()
         try:
-            result = session.query(DocumentIdempotencyRecord).filter(
+            return session.query(DocumentIdempotencyRecord).filter(
                 DocumentIdempotencyRecord.instance_id == instance_id,
                 DocumentIdempotencyRecord.supplier_tax_id == supplier_tax_id,
                 DocumentIdempotencyRecord.supplier_invoice_number == supplier_invoice_number,
-                DocumentIdempotencyRecord.final_state.in_(["COMPLETED", "INVOICE_CREATED", "SUPPLIER_CREATED"]),
             ).first()
-
-            if result:
-                logger.info(
-                    "duplicate_detected_durable",
-                    instance_id=instance_id,
-                    supplier_tax_id=supplier_tax_id,
-                    supplier_invoice_number=supplier_invoice_number,
-                    existing_id=result.id,
-                    final_state=result.final_state,
-                )
-
-            return result
         finally:
             session.close()
 
@@ -811,62 +1112,41 @@ class DocumentIdempotencyManager:
         finally:
             session.close()
 
-    async def mark_invoice_created(
+    async def check_duplicate(
         self,
         instance_id: str,
-        document_hash: str,
-        invoice_dolibarr_id: int,
-        dolibarr_invoice_ref: str,
-        dolibarr_invoice_id: int,
-    ) -> None:
-        """Marcar factura como creada en Dolibarr."""
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> DocumentIdempotencyRecord | None:
+        """
+        Verificar si ya existe un registro completado para esta factura.
+
+        Returns:
+            DocumentIdempotencyRecord si existe en estado terminal o avanzado, None si no
+        """
         session = self.Session()
         try:
-            record = session.query(DocumentIdempotencyRecord).filter(
-                DocumentIdempotencyRecord.document_hash == document_hash,
+            result = session.query(DocumentIdempotencyRecord).filter(
                 DocumentIdempotencyRecord.instance_id == instance_id,
+                DocumentIdempotencyRecord.supplier_tax_id == supplier_tax_id,
+                DocumentIdempotencyRecord.supplier_invoice_number == supplier_invoice_number,
+                DocumentIdempotencyRecord.final_state.in_([
+                    "COMPLETED", "INVOICE_CREATED", "SUPPLIER_CREATED",
+                    "ATTACHMENT_PENDING", "ERP_RESULT_UNKNOWN",
+                ]),
             ).first()
 
-            if record:
-                record.final_state = "INVOICE_CREATED"
-                record.invoice_dolibarr_id = invoice_dolibarr_id
-                record.dolibarr_invoice_ref = dolibarr_invoice_ref
-                record.dolibarr_invoice_id = dolibarr_invoice_id
-                session.commit()
-        finally:
-            session.close()
+            if result:
+                logger.info(
+                    "duplicate_detected_durable",
+                    instance_id=instance_id,
+                    supplier_tax_id=supplier_tax_id,
+                    supplier_invoice_number=supplier_invoice_number,
+                    existing_id=result.id,
+                    final_state=result.final_state,
+                )
 
-    async def mark_attachment_uploaded(self, instance_id: str, document_hash: str) -> None:
-        """Marcar adjunto como subido."""
-        session = self.Session()
-        try:
-            record = session.query(DocumentIdempotencyRecord).filter(
-                DocumentIdempotencyRecord.instance_id == instance_id,
-                DocumentIdempotencyRecord.document_hash == document_hash,
-            ).first()
-
-            if record:
-                record.attachment_uploaded = True
-                record.completed_at = datetime.utcnow()
-                record.final_state = "COMPLETED"
-                session.commit()
-        finally:
-            session.close()
-
-    async def mark_completed(self, instance_id: str, document_hash: str) -> None:
-        """Marcar documento como completamente procesado."""
-        session = self.Session()
-        try:
-            record = session.query(DocumentIdempotencyRecord).filter(
-                DocumentIdempotencyRecord.instance_id == instance_id,
-                DocumentIdempotencyRecord.document_hash == document_hash,
-            ).first()
-
-            if record:
-                record.final_state = "COMPLETED"
-                record.attachment_uploaded = True
-                record.completed_at = datetime.utcnow()
-                session.commit()
+            return result
         finally:
             session.close()
 
