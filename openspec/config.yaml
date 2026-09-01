@@ -1,0 +1,58 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Python 3.11+, FastAPI, MariaDB, Redis, Ollama (LOCAL_ONLY), Dolibarr ERP, Telegram Bot
+  Architecture: Multi-instance on-premise, Hermes Core (shared FastAPI), CompanyContext explicit, systemd native runtime
+  Testing: pytest, pytest-asyncio, pytest-cov; layers: unit, integration (requires native DB), isolation (critical), E2E
+  Style: Ruff (lint/format), MyPy (strict), pre-commit
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Preserve multi-instance isolation invariants
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Document cross-instance isolation requirements explicitly
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+    - Reference CompanyContext/InstanceConfig patterns
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Isolation tests MUST pass before business logic tasks
+  apply:
+    guidelines:
+      - Follow existing code patterns
+      - Preserve explicit CompanyContext propagation
+      - No global mutable state
+    tdd: false
+    test_command: "make test"
+  verify:
+    test_command: "make test"
+    build_command: ""
+    coverage_threshold: 80
+  archive:
+    - Warn before merging destructive deltas
+    - Preserve isolation test coverage
+
+projects:
+  - path: "."
+    stack: "Python 3.11+, FastAPI, MariaDB, Redis, Ollama, Dolibarr, Telegram"
+    test_command: "make test"
+    test_framework: "pytest"
+    layers:
+      unit: true
+      integration: true
+      isolation: true
+      e2e: true
+    coverage_command: "make test-cov"
+    quality:
+      linter: "make lint"
+      type_checker: "make type-check"
+      formatter: "make format"
+
+strict_tdd: false
+persistence_mode: hybrid
+initialized_at: "2026-09-01T17:00:00Z"

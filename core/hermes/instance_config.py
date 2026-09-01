@@ -316,12 +316,18 @@ def clear_config_cache():
 INSTANCE_CONFIG_TEMPLATE = """# InstanceConfig para {company_name}
 # Generado automáticamente - Editar valores reales
 # NO commitear secretos reales - usar secrets_refs o instance.env
+#
+# VPS-READY: Para despliegue en VPS, configurar estos endpoints según la infraestructura:
+# - database.host: IP/hostname del servidor MariaDB compartido
+# - dolibarr.internal_url: URL interna del Dolibarr de esta instancia (ej: http://dolibarr-{instance_id}:8080)
+# - ai.ollama_endpoint: URL del servidor Ollama (local o remoto via WireGuard/VPN)
+# - Redis: configurado via REDIS_HOST/REDIS_PORT globales + DB number por instancia
 
 instance_id: "{instance_id}"
 company_name: "{company_name}"
 
 database:
-  host: "127.0.0.1"
+  host: "127.0.0.1"  # VPS: cambiar a IP del servidor MariaDB compartido
   port: 3306
   name: "dolibarr_{instance_id}"
   user: "db_{instance_id}"
@@ -329,7 +335,7 @@ database:
 
 dolibarr:
   version: "23.0.4"
-  internal_url: "http://127.0.0.1:{dolibarr_port}"
+  internal_url: "http://127.0.0.1:{dolibarr_port}"  # VPS: http://dolibarr-{instance_id}:8080
   public_url: "https://{dolibarr_domain}"
   api_key: "CHANGE_ME_DOLIBARR_API_KEY"
   documents_path: "/var/lib/dolibarr/documents/{instance_id}"
@@ -351,7 +357,7 @@ domains:
 
 ai:
   default_policy: "LOCAL_ONLY"
-  ollama_endpoint: "http://127.0.0.1:11434"
+  ollama_endpoint: "http://127.0.0.1:11434"  # VPS: http://ollama-server:11434 (remoto privado via WireGuard/VPN)
   ollama_model: "qwen3.5:4b"  # EJEMPLO - cambiar según modelo disponible
   ollama_vision_model: null
   nvidia_api_key: null
@@ -362,7 +368,8 @@ ai:
   openai_base_url: "https://api.openai.com/v1"
   openai_text_model: null
   openai_vision_model: null
-  task_policies: {{}}
+  task_policies:
+    invoice_processing: "LOCAL_ONLY"  # CRÍTICO: facturas siempre LOCAL_ONLY
 
 enabled_agents: []
 enabled_workflows: []

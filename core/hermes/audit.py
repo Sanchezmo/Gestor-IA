@@ -1206,6 +1206,40 @@ class DocumentIdempotencyManager:
         finally:
             session.close()
 
+    async def get_state(
+        self,
+        instance_id: str,
+        supplier_tax_id: str,
+        supplier_invoice_number: str,
+    ) -> str | None:
+        """
+        Obtener el estado actual de una operación durable.
+
+        Returns the final_state of the operation, or None if not found.
+        Useful for checking the current milestone before proceeding.
+
+        Args:
+            instance_id: ID de la instancia
+            supplier_tax_id: CIF/NIF del proveedor
+            supplier_invoice_number: Número de factura del proveedor
+
+        Returns:
+            final_state string (e.g. "SUPPLIER_CREATED", "INVOICE_CREATED", etc.)
+            or None if the operation doesn't exist
+        """
+        session = self.Session()
+        try:
+            record = session.query(DocumentIdempotencyRecord).filter(
+                DocumentIdempotencyRecord.instance_id == instance_id,
+                DocumentIdempotencyRecord.supplier_tax_id == supplier_tax_id,
+                DocumentIdempotencyRecord.supplier_invoice_number == supplier_invoice_number,
+            ).first()
+            if record:
+                return record.final_state
+            return None
+        finally:
+            session.close()
+
     def close(self):
         """Cerrar conexiones."""
         self.engine.dispose()

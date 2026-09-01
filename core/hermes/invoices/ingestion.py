@@ -37,6 +37,14 @@ from core.hermes.context import CompanyContext
 from core.hermes.identity import UserContext
 from core.hermes.config import get_global_settings
 from core.hermes.audit import DocumentIdempotencyManager
+from core.hermes.ai_registry import (
+    feature_registry,
+    traceability_logger,
+    minimisation_filter,
+    regulatory_gate,
+    RuntimeVersionCapture,
+    AIUsePolicy,
+)
 from .models import (
     SupplierInvoiceDraft,
     DocumentClassification,
@@ -535,7 +543,31 @@ class DocumentIngestionService:
             await self._update_document_status(document_hash, DocumentState.PROCESSING)
 
             # 7. Extract invoice data
+            import time
+            extraction_start = time.perf_counter()
             extraction_result = await self.extractor.extract(file_content, filename, mime_type)
+            extraction_latency_ms = int((time.perf_counter() - extraction_start) * 1000)
+
+            # AI Traceability: Log extraction execution
+            if traceability_logger:
+                try:
+                    await traceability_logger.log_execution(
+                        operation_id=document_hash,
+                        instance_id=self.company_context.instance_id,
+                        feature_id="supplier_invoice_extraction",
+                        provider="ollama",
+                        model=self.company_context.instance_config.ai.ollama_model,
+                        policy=AIUsePolicy.LOCAL_ONLY,
+                        local_or_cloud="local",
+                        success=extraction_result.success,
+                        latency_ms=extraction_latency_ms,
+                        model_version=None,
+                        fallback_used=False,
+                        error_code=extraction_result.error_code if not extraction_result.success else None,
+                        correlation_id=document_hash,
+                    )
+                except Exception:
+                    pass  # Never fail main operation due to trace logging
 
             if not extraction_result.success:
                 await self._handle_extraction_failure(document_hash, stored_path, extraction_result)

@@ -15,6 +15,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from core.hermes.identity import UserContext
+from core.hermes.config import get_global_settings
 from core.hermes.instance_config import InstanceConfig
 
 if TYPE_CHECKING:
@@ -226,6 +227,18 @@ class CompanyContext:
     def is_tool_enabled(self, tool_name: str) -> bool:
         """Verificar si una herramienta está habilitada para esta instancia."""
         return tool_name in self.enabled_tools
+
+    def get_audit_db_url(self) -> str:
+        """
+        Obtener URL de conexión a la base de datos de auditoría global.
+        
+        Returns URL para acceder a la BD `gestor_ia_audit` en el servidor MariaDB compartido.
+        Usado para operaciones de lectura/escritura de estado durable y auditoría.
+        
+        Formato: mysql+pymysql://gestor_ia_audit:{password}@{host}:{port}/gestor_ia_audit
+        """
+        settings = get_global_settings()
+        return f"mysql+pymysql://gestor_ia_audit:{settings.MARIADB_AUDIT_PASSWORD}@{settings.MARIADB_HOST}:{settings.MARIADB_PORT}/gestor_ia_audit"
 
     def to_audit_dict(self) -> dict[str, Any]:
         """Convertir a dict para logging de auditoría (sin secretos)."""

@@ -322,7 +322,7 @@ class BC3MeasurementCalculator:
             f"Acumulado: {totals['total_amount']:.2f} €",
             f"Pendiente certificar: {Decimal('0'):.2f} €",  # Simplificado
             "",
-        )
+        ])
         
         # Detalle por capítulo
         for chapter in project.chapters:
