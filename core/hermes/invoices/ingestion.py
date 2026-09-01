@@ -1578,7 +1578,10 @@ class DocumentIngestionService:
 
         RETURNS EXPLICIT RESULT - NO BOOL AMBIGUITY.
 
-        Semántica obligatoria:
+        Semántica obligatoria (ALINEADA CON RECONCILIATION):
+        - IDENTIDAD PRIMARIA: ref_supplier (número de factura del proveedor)
+        - ref (interno Dolibarr) NUNCA es sustituto equivalente de ref_supplier
+        - Solo se considera ref si ref_supplier está vacío
         - MATCH -> bloquear CREATE / adoptar según workflow seguro
         - NO_MATCH -> CREATE puede continuar si resto de invariantes lo permiten
         - UNKNOWN_ERROR -> CREATE PROHIBIDO / fail closed / retry check / manual review
@@ -1623,23 +1626,42 @@ class DocumentIngestionService:
                 )
 
                 invoice_number_upper = draft.invoice_number.upper()
+                primary_match = None
+                secondary_match = None
+
                 for invoice in invoices:
                     ref = (invoice.get("ref") or "").upper()
                     ref_supplier = (invoice.get("ref_supplier") or "").upper()
-                    if ref == invoice_number_upper or ref_supplier == invoice_number_upper:
-                        dolibarr_id = invoice.get("id") or invoice.get("rowid")
-                        logger.warning("duplicate_invoice_detected_in_dolibarr",
-                            supplier_id=resolution.supplier_dolibarr_id,
-                            invoice_number=draft.invoice_number,
-                            dolibarr_id=dolibarr_id,
-                            ref=invoice.get("ref"),
-                            ref_supplier=invoice.get("ref_supplier"))
-                        return DuplicateCheckDetail(
-                            result=DuplicateCheckResult.MATCH,
-                            dolibarr_id=dolibarr_id,
-                            ref=invoice.get("ref"),
-                            ref_supplier=invoice.get("ref_supplier"),
-                        )
+
+                    # IDENTIDAD PRIMARIA: ref_supplier == invoice_number del proveedor
+                    is_primary = ref_supplier == invoice_number_upper and ref_supplier != ""
+                    # IDENTIDAD SECUNDARIA: ref == invoice_number SOLO si NO hay ref_supplier
+                    is_secondary = (ref == invoice_number_upper and ref != "" and ref_supplier == "")
+
+                    if is_primary and primary_match is None:
+                        primary_match = invoice
+                    elif is_secondary and secondary_match is None:
+                        secondary_match = invoice
+
+                # PRIORIDAD: match primario (ref_supplier) sobre secundario (ref)
+                match = primary_match or secondary_match
+
+                if match:
+                    dolibarr_id = match.get("id") or match.get("rowid")
+                    is_primary = primary_match is not None
+                    logger.warning("duplicate_invoice_detected_in_dolibarr",
+                        supplier_id=resolution.supplier_dolibarr_id,
+                        invoice_number=draft.invoice_number,
+                        dolibarr_id=dolibarr_id,
+                        ref=match.get("ref"),
+                        ref_supplier=match.get("ref_supplier"),
+                        match_type="primary" if is_primary else "secondary")
+                    return DuplicateCheckDetail(
+                        result=DuplicateCheckResult.MATCH,
+                        dolibarr_id=dolibarr_id,
+                        ref=match.get("ref"),
+                        ref_supplier=match.get("ref_supplier"),
+                    )
 
                 return DuplicateCheckDetail(
                     result=DuplicateCheckResult.NO_MATCH,

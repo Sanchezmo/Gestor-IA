@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from core.hermes.context import CompanyContext
     from core.hermes.instance_config import InstanceConfig
 
+from core.hermes.audit_migrations import AuditSchemaValidationError, run_audit_migrations
+
 logger = structlog.get_logger()
 
 Base = declarative_base()
@@ -246,8 +248,7 @@ class AuditLogger:
         )
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        # Run migrations instead of create_all (idempotent, versioned)
-        from core.hermes.audit_migrations import run_audit_migrations
+        # Run bootstrap + migrations + validation (idempotent, versioned, fail-closed)
         run_audit_migrations(database_url=database_url)
 
     def _calculate_hash(self, data: dict) -> str:
@@ -697,8 +698,7 @@ class DocumentIdempotencyManager:
         )
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        # Run migrations instead of create_all (idempotent, versioned)
-        from core.hermes.audit_migrations import run_audit_migrations
+        # Run bootstrap + migrations + validation (idempotent, versioned, fail-closed)
         run_audit_migrations(database_url=database_url)
 
     def _validate_transition(self, from_state: str | None, to_state: str) -> None:

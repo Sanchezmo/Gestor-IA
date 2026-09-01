@@ -2954,6 +2954,146 @@ class TestDuplicateCheckExtended:
                     assert result.allows_create is False
 
 
+class TestDuplicateCheckRefSupplierAlignment:
+    """Tests for duplicate check ref_supplier priority (aligned with reconciliation)."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_check_prioritizes_ref_supplier_over_ref(
+        self, mock_company_context, mock_user_context, mock_telegram_client, valid_draft
+    ):
+        """REF_SUPPLIER_PRIMARY: ref_supplier match takes priority over ref match."""
+        from core.hermes.invoices.ingestion import DuplicateCheckResult
+        service = DocumentIngestionService(mock_company_context, mock_user_context, mock_telegram_client)
+
+        with patch.object(service.supplier_resolver, 'resolve', new_callable=AsyncMock) as mock_resolve:
+            mock_resolve.return_value = MagicMock(
+                status=SupplierResolutionStatus.FOUND,
+                supplier_dolibarr_id=123,
+                candidates=[],
+            )
+
+            from core.hermes.identity_store import IdentityStore
+            mock_identity = MagicMock()
+            mock_identity.dolibarr_api_key = "test-key"
+
+            with patch.object(IdentityStore, 'get', return_value=mock_identity):
+                mock_dolibarr = AsyncMock()
+                mock_dolibarr.__aenter__ = AsyncMock(return_value=mock_dolibarr)
+                mock_dolibarr.__aexit__ = AsyncMock(return_value=None)
+                # Two invoices: one matches by ref_supplier (primary), one by ref (secondary)
+                # The primary match should win
+                mock_dolibarr.list_supplier_invoices = AsyncMock(return_value=[
+                    {
+                        "id": 999, "rowid": 999,
+                        "ref": "DIFFERENT-REF",  # Different internal ref
+                        "ref_supplier": "FAC-2024-001",  # MATCHES supplier invoice number
+                        "status": 1, "total": "1210.00", "total_ttc": "1210.00",
+                        "date": "2024-01-15", "date_creation": "2024-01-15",
+                    },
+                    {
+                        "id": 888, "rowid": 888,
+                        "ref": "FAC-2024-001",  # MATCHES supplier invoice number (but this is ref, not ref_supplier)
+                        "ref_supplier": "OTHER-SUPPLIER-REF",
+                        "status": 1, "total": "1210.00", "total_ttc": "1210.00",
+                        "date": "2024-01-15", "date_creation": "2024-01-15",
+                    }
+                ])
+
+                with patch.object(service.company_context, 'create_dolibarr_client_for_user', return_value=mock_dolibarr):
+                    result = await service.check_duplicate_in_dolibarr(valid_draft)
+
+                    # Should match the PRIMARY (ref_supplier) match, not the secondary (ref) match
+                    assert result.result == DuplicateCheckResult.MATCH
+                    assert result.dolibarr_id == 999  # Primary match ID
+                    assert result.ref_supplier == "FAC-2024-001"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_check_secondary_ref_only_when_no_ref_supplier(
+        self, mock_company_context, mock_user_context, mock_telegram_client, valid_draft
+    ):
+        """INTERNAL_REF_EQUIVALENT_TO_SUPPLIER_NUMBER: ref match only when ref_supplier is empty."""
+        from core.hermes.invoices.ingestion import DuplicateCheckResult
+        service = DocumentIngestionService(mock_company_context, mock_user_context, mock_telegram_client)
+
+        with patch.object(service.supplier_resolver, 'resolve', new_callable=AsyncMock) as mock_resolve:
+            mock_resolve.return_value = MagicMock(
+                status=SupplierResolutionStatus.FOUND,
+                supplier_dolibarr_id=123,
+                candidates=[],
+            )
+
+            from core.hermes.identity_store import IdentityStore
+            mock_identity = MagicMock()
+            mock_identity.dolibarr_api_key = "test-key"
+
+            with patch.object(IdentityStore, 'get', return_value=mock_identity):
+                mock_dolibarr = AsyncMock()
+                mock_dolibarr.__aenter__ = AsyncMock(return_value=mock_dolibarr)
+                mock_dolibarr.__aexit__ = AsyncMock(return_value=None)
+                # Only secondary match available (ref matches, ref_supplier is empty)
+                mock_dolibarr.list_supplier_invoices = AsyncMock(return_value=[
+                    {
+                        "id": 777, "rowid": 777,
+                        "ref": "FAC-2024-001",  # Matches invoice number
+                        "ref_supplier": "",  # Empty - so ref is considered
+                        "status": 1, "total": "1210.00", "total_ttc": "1210.00",
+                        "date": "2024-01-15", "date_creation": "2024-01-15",
+                    }
+                ])
+
+                with patch.object(service.company_context, 'create_dolibarr_client_for_user', return_value=mock_dolibarr):
+                    result = await service.check_duplicate_in_dolibarr(valid_draft)
+
+                    # Should match via secondary (ref) since ref_supplier is empty
+                    assert result.result == DuplicateCheckResult.MATCH
+                    assert result.dolibarr_id == 777
+                    assert result.ref == "FAC-2024-001"
+                    assert result.ref_supplier == ""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_check_no_match_when_ref_supplier_differs(
+        self, mock_company_context, mock_user_context, mock_telegram_client, valid_draft
+    ):
+        """NO FALSE MATCH: Different ref_supplier + matching ref = NO_MATCH (not equivalent)."""
+        from core.hermes.invoices.ingestion import DuplicateCheckResult
+        service = DocumentIngestionService(mock_company_context, mock_user_context, mock_telegram_client)
+
+        with patch.object(service.supplier_resolver, 'resolve', new_callable=AsyncMock) as mock_resolve:
+            mock_resolve.return_value = MagicMock(
+                status=SupplierResolutionStatus.FOUND,
+                supplier_dolibarr_id=123,
+                candidates=[],
+            )
+
+            from core.hermes.identity_store import IdentityStore
+            mock_identity = MagicMock()
+            mock_identity.dolibarr_api_key = "test-key"
+
+            with patch.object(IdentityStore, 'get', return_value=mock_identity):
+                mock_dolibarr = AsyncMock()
+                mock_dolibarr.__aenter__ = AsyncMock(return_value=mock_dolibarr)
+                mock_dolibarr.__aexit__ = AsyncMock(return_value=None)
+                # ref matches but ref_supplier is DIFFERENT and NOT empty
+                # This should NOT match because ref_supplier is the primary identity
+                mock_dolibarr.list_supplier_invoices = AsyncMock(return_value=[
+                    {
+                        "id": 666, "rowid": 666,
+                        "ref": "FAC-2024-001",  # Matches invoice number
+                        "ref_supplier": "DIFFERENT-SUPPLIER-INVOICE",  # Different supplier invoice number
+                        "status": 1, "total": "1210.00", "total_ttc": "1210.00",
+                        "date": "2024-01-15", "date_creation": "2024-01-15",
+                    }
+                ])
+
+                with patch.object(service.company_context, 'create_dolibarr_client_for_user', return_value=mock_dolibarr):
+                    result = await service.check_duplicate_in_dolibarr(valid_draft)
+
+                    # Should NOT match - ref_supplier is primary and it differs
+                    assert result.result == DuplicateCheckResult.NO_MATCH
+                    assert result.blocks_create is False
+                    assert result.allows_create is True
+
+
 class TestStateVocabularyConsistency:
     """Tests for ERP_RESULT_UNKNOWN consistency between domain and durable."""
 
