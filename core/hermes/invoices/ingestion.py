@@ -27,6 +27,7 @@ import structlog
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,154 @@ class IngestionResult:
         self.error_code = error_code
         self.preview_text = preview_text
         self.stored_path = stored_path
+
+
+# =========================================================================
+# RECONCILIATION RESULT TYPES (Explicit, no bool ambiguity)
+# =========================================================================
+
+class ReconciliationResult(StrEnum):
+    """Explicit reconciliation outcomes - no bool ambiguity."""
+
+    NO_MATCH = "no_match"           # No candidate found in Dolibarr
+    UNIQUE_MATCH = "unique_match"   # Exactly one candidate with strong verification
+    AMBIGUOUS_MATCH = "ambiguous_match"  # Multiple candidates, cannot determine
+    ERROR = "error"                 # Error querying Dolibarr (network, auth, etc.)
+
+    @property
+    def can_auto_adopt(self) -> bool:
+        """Only UNIQUE_MATCH can automatically adopt the invoice_id."""
+        return self == ReconciliationResult.UNIQUE_MATCH
+
+    @property
+    def is_fail_closed(self) -> bool:
+        """AMBIGUOUS_MATCH and ERROR are FAIL CLOSED - require manual review."""
+        return self in (ReconciliationResult.AMBIGUOUS_MATCH, ReconciliationResult.ERROR)
+
+
+class ReconciliationDetail:
+    """Detailed reconciliation result with evidence."""
+
+    def __init__(
+        self,
+        result: ReconciliationResult,
+        dolibarr_id: int | None = None,
+        ref: str | None = None,
+        ref_supplier: str | None = None,
+        date_verification: str | None = None,  # "match" | "mismatch" | "not_available"
+        total_verification: str | None = None,  # "match" | "mismatch" | "not_available"
+        is_primary_match: bool = False,
+        error_message: str | None = None,
+        candidates_count: int = 0,
+    ):
+        self.result = result
+        self.dolibarr_id = dolibarr_id
+        self.ref = ref
+        self.ref_supplier = ref_supplier
+        self.date_verification = date_verification
+        self.total_verification = total_verification
+        self.is_primary_match = is_primary_match
+        self.error_message = error_message
+        self.candidates_count = candidates_count
+
+    @property
+    def can_auto_adopt(self) -> bool:
+        """Delegate to result enum."""
+        return self.result.can_auto_adopt
+
+    @property
+    def is_fail_closed(self) -> bool:
+        """Delegate to result enum."""
+        return self.result.is_fail_closed
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "result": self.result.value,
+            "dolibarr_id": self.dolibarr_id,
+            "ref": self.ref,
+            "ref_supplier": self.ref_supplier,
+            "date_verification": self.date_verification,
+            "total_verification": self.total_verification,
+            "is_primary_match": self.is_primary_match,
+            "error_message": self.error_message,
+            "candidates_count": self.candidates_count,
+            "can_auto_adopt": self.can_auto_adopt,
+            "is_fail_closed": self.is_fail_closed,
+        }
+
+
+# =========================================================================
+# DUPLICATE CHECK RESULT TYPES (Explicit, no bool ambiguity)
+# =========================================================================
+
+class DuplicateCheckResult(StrEnum):
+    """Explicit duplicate check outcomes - no bool ambiguity.
+
+    MATCH -> bloquear CREATE / adoptar según workflow seguro
+    NO_MATCH -> CREATE puede continuar si resto de invariantes lo permiten
+    UNKNOWN_ERROR -> CREATE PROHIBIDO / fail closed / retry check / manual review
+    """
+
+    NO_MATCH = "no_match"         # Checked successfully, no duplicate found
+    MATCH = "match"               # Duplicate found in Dolibarr
+    UNKNOWN_ERROR = "unknown_error"  # Could not check (timeout, auth, network, etc.)
+
+    @property
+    def blocks_create(self) -> bool:
+        """MATCH and UNKNOWN_ERROR block CREATE."""
+        return self in (DuplicateCheckResult.MATCH, DuplicateCheckResult.UNKNOWN_ERROR)
+
+    @property
+    def allows_create(self) -> bool:
+        """Only NO_MATCH allows CREATE to proceed."""
+        return self == DuplicateCheckResult.NO_MATCH
+
+    @property
+    def is_fail_closed(self) -> bool:
+        """UNKNOWN_ERROR is FAIL CLOSED - require manual review/retry."""
+        return self == DuplicateCheckResult.UNKNOWN_ERROR
+
+
+class DuplicateCheckDetail:
+    """Detailed duplicate check result with evidence."""
+
+    def __init__(
+        self,
+        result: DuplicateCheckResult,
+        dolibarr_id: int | None = None,
+        ref: str | None = None,
+        ref_supplier: str | None = None,
+        error_message: str | None = None,
+    ):
+        self.result = result
+        self.dolibarr_id = dolibarr_id
+        self.ref = ref
+        self.ref_supplier = ref_supplier
+        self.error_message = error_message
+
+    @property
+    def blocks_create(self) -> bool:
+        return self.result.blocks_create
+
+    @property
+    def allows_create(self) -> bool:
+        return self.result.allows_create
+
+    @property
+    def is_fail_closed(self) -> bool:
+        return self.result.is_fail_closed
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "result": self.result.value,
+            "dolibarr_id": self.dolibarr_id,
+            "ref": self.ref,
+            "ref_supplier": self.ref_supplier,
+            "error_message": self.error_message,
+            "blocks_create": self.blocks_create,
+            "allows_create": self.allows_create,
+            "is_fail_closed": self.is_fail_closed,
+        }
 
 
 # =========================================================================
@@ -809,6 +958,14 @@ class DocumentIngestionService:
                 error_code="CONFIRMING_IN_PROGRESS",
             )
 
+        elif status == DocumentState.ERP_RESULT_UNKNOWN:
+            logger.info("document_erp_result_unknown", document_hash=state.document_hash[:16])
+            return IngestionResult(
+                success=False,
+                error="Estado desconocido tras intento previo (timeout). Requiere reconciliación con Dolibarr antes de reintentar.",
+                error_code="ERP_RESULT_UNKNOWN",
+            )
+
         elif status == DocumentState.FAILED_RETRYABLE:
             if state.retry_count >= MAX_AUTO_RETRIES:
                 logger.warning("max_retries_exceeded", document_hash=state.document_hash[:16], retry_count=state.retry_count)
@@ -1142,7 +1299,7 @@ class DocumentIngestionService:
         CRITICAL: Blocks CREATE retry until reconciliation runs.
         """
         await self._update_document_state(document_hash, {
-            "status": DocumentState.FAILED_RETRYABLE.value,  # Transient state in Redis
+            "status": DocumentState.ERP_RESULT_UNKNOWN.value,
             "last_error": "ERP_RESULT_UNKNOWN: POST timeout, reconciliation required",
         })
         await self.idempotency_manager.mark_erp_result_unknown(
@@ -1173,18 +1330,28 @@ class DocumentIngestionService:
     # RECONCILIATION (for ERP_RESULT_UNKNOWN state after timeout)
     # =========================================================================
 
-    async def reconcile_with_dolibarr(self, draft: SupplierInvoiceDraft) -> dict[str, Any] | None:
+    async def reconcile_with_dolibarr(self, draft: SupplierInvoiceDraft) -> ReconciliationDetail:
         """
         Attempt to find existing invoice in Dolibarr for reconciliation.
 
         Used when POST invoice times out and we don't know if it succeeded.
-        Returns invoice data if found, None if not found or ambiguous.
+        Returns explicit ReconciliationDetail - NEVER returns None.
 
-        Priority: ref_supplier (supplier's invoice number) over ref (Dolibarr internal).
-        Verification: invoice date and total amount as additional checks.
+        SEMÁNTICA CONSERVADORA (FAIL CLOSED):
+        - Identidad PRIMARIA: supplier_id + ref_supplier (número factura proveedor)
+        - ref (interno Dolibarr) NUNCA es sustituto equivalente de ref_supplier
+        - Verificadores secundarios: date, total
+        - Distinción explícita: NOT_AVAILABLE | MATCH | MISMATCH
+        - Ausencia de campo NO se convierte en MATCH falso
+        - Solo UNIQUE_MATCH puede adoptar invoice_id automáticamente
+        - AMBIGUOUS_MATCH y ERROR -> FAIL CLOSED (revisión manual)
         """
+        # Validación de precondiciones
         if not draft.has_supplier() or not draft.invoice_number or not draft.invoice_date:
-            return None
+            return ReconciliationDetail(
+                result=ReconciliationResult.NO_MATCH,
+                error_message="Precondiciones no cumplidas: supplier, invoice_number, invoice_date requeridos",
+            )
 
         try:
             resolution = await self.supplier_resolver.resolve(
@@ -1194,14 +1361,20 @@ class DocumentIngestionService:
             )
 
             if not resolution.supplier_dolibarr_id:
-                return None
+                return ReconciliationDetail(
+                    result=ReconciliationResult.NO_MATCH,
+                    error_message="Proveedor no encontrado en Dolibarr",
+                )
 
             from core.hermes.identity_store import IdentityStore
             identity_store = IdentityStore(self.company_context.instance_id)
             identity = identity_store.get(self.user_context.telegram_user_id)
 
             if not identity:
-                return None
+                return ReconciliationDetail(
+                    result=ReconciliationResult.ERROR,
+                    error_message="Identidad de usuario no disponible para consultar Dolibarr",
+                )
 
             dolibarr = self.company_context.create_dolibarr_client_for_user(identity)
 
@@ -1212,95 +1385,211 @@ class DocumentIngestionService:
                 )
 
                 invoice_number_upper = draft.invoice_number.upper()
-                matches = []
+                primary_candidates = []   # Coinciden por ref_supplier (identidad primaria)
+                secondary_candidates = [] # Coinciden solo por ref (interno Dolibarr)
+
                 for invoice in invoices:
                     ref = (invoice.get("ref") or "").upper()
                     ref_supplier = (invoice.get("ref_supplier") or "").upper()
 
-                    # PRIMARY match: ref_supplier (supplier's invoice number)
-                    # SECONDARY match: ref (Dolibarr internal reference)
-                    is_primary_match = ref_supplier == invoice_number_upper
-                    is_secondary_match = ref == invoice_number_upper and not ref_supplier
+                    # IDENTIDAD PRIMARIA: ref_supplier == invoice_number del proveedor
+                    is_primary = ref_supplier == invoice_number_upper and ref_supplier != ""
+                    # IDENTIDAD SECUNDARIA: ref == invoice_number (solo si NO hay ref_supplier)
+                    is_secondary = (ref == invoice_number_upper and ref != "" and ref_supplier == "")
 
-                    if is_primary_match or is_secondary_match:
-                        # Additional verification: date and total
-                        date_matches = True
-                        total_matches = True
+                    if not is_primary and not is_secondary:
+                        continue
 
-                        if draft.invoice_date:
-                            invoice_date_str = invoice.get("date") or invoice.get("date_creation")
-                            if invoice_date_str:
-                                try:
-                                    from datetime import date as dt_date
-                                    invoice_date = dt_date.fromisoformat(invoice_date_str[:10])
-                                    date_matches = invoice_date == draft.invoice_date
-                                except Exception:
-                                    date_matches = False  # Can't parse - treat as non-matching
+                    # Verificadores secundarios: distinguir NOT_AVAILABLE / MATCH / MISMATCH
+                    # date_verification
+                    if draft.invoice_date:
+                        invoice_date_str = invoice.get("date") or invoice.get("date_creation")
+                        if invoice_date_str:
+                            try:
+                                from datetime import date as dt_date
+                                invoice_date = dt_date.fromisoformat(invoice_date_str[:10])
+                                date_verification = "match" if invoice_date == draft.invoice_date else "mismatch"
+                            except Exception:
+                                date_verification = "mismatch"  # No parseable = mismatch
+                        else:
+                            date_verification = "not_available"
+                    else:
+                        date_verification = "not_available"
 
-                        if draft.total is not None:
-                            invoice_total = invoice.get("total") or invoice.get("total_ttc")
-                            if invoice_total is not None:
-                                try:
-                                    total_matches = abs(Decimal(str(invoice_total)) - draft.total) < Decimal("0.01")
-                                except Exception:
-                                    total_matches = False
+                    # total_verification
+                    if draft.total is not None:
+                        invoice_total = invoice.get("total") or invoice.get("total_ttc")
+                        if invoice_total is not None:
+                            try:
+                                total_verification = "match" if abs(Decimal(str(invoice_total)) - draft.total) < Decimal("0.01") else "mismatch"
+                            except Exception:
+                                total_verification = "mismatch"
+                        else:
+                            total_verification = "not_available"
+                    else:
+                        total_verification = "not_available"
 
-                        matches.append({
-                            "dolibarr_id": invoice.get("id") or invoice.get("rowid"),
-                            "ref": invoice.get("ref"),
-                            "ref_supplier": invoice.get("ref_supplier"),
-                            "status": invoice.get("status"),
-                            "total": invoice.get("total"),
-                            "date": invoice.get("date") or invoice.get("date_creation"),
-                            "is_primary_match": is_primary_match,
-                            "date_matches": date_matches,
-                            "total_matches": total_matches,
-                        })
+                    candidate = {
+                        "dolibarr_id": invoice.get("id") or invoice.get("rowid"),
+                        "ref": invoice.get("ref"),
+                        "ref_supplier": invoice.get("ref_supplier"),
+                        "status": invoice.get("status"),
+                        "total": invoice.get("total"),
+                        "date": invoice.get("date") or invoice.get("date_creation"),
+                        "is_primary_match": is_primary,
+                        "date_verification": date_verification,
+                        "total_verification": total_verification,
+                    }
 
-                if len(matches) == 1:
-                    match = matches[0]
-                    # Require at least date OR total to match for confidence
-                    if match["date_matches"] or match["total_matches"]:
-                        logger.info("reconciliation_found_existing_invoice",
+                    if is_primary:
+                        primary_candidates.append(candidate)
+                    else:
+                        secondary_candidates.append(candidate)
+
+                # PRIORIDAD: candidatos primarios (ref_supplier) sobre secundarios (ref)
+                candidates = primary_candidates if primary_candidates else secondary_candidates
+
+                if not candidates:
+                    return ReconciliationDetail(
+                        result=ReconciliationResult.NO_MATCH,
+                        candidates_count=0,
+                    )
+
+                # Filtrar candidatos con MISMATCH en verificadores presentes en AMBOS lados
+                # Un verificador "not_available" NO descarta, pero tampoco cuenta como MATCH
+                valid_candidates = []
+                for c in candidates:
+                    date_ok = c["date_verification"] in ("match", "not_available")
+                    total_ok = c["total_verification"] in ("match", "not_available")
+
+                    # Si hay MISMATCH en un verificador presente en ambos lados -> descartar
+                    if c["date_verification"] == "mismatch" or c["total_verification"] == "mismatch":
+                        logger.info("reconciliation_candidate_rejected_mismatch",
+                            supplier_id=resolution.supplier_dolibarr_id,
+                            invoice_number=draft.invoice_number,
+                            dolibarr_id=c["dolibarr_id"],
+                            date_verification=c["date_verification"],
+                            total_verification=c["total_verification"])
+                        continue
+
+                    valid_candidates.append(c)
+
+                if not valid_candidates:
+                    return ReconciliationDetail(
+                        result=ReconciliationResult.NO_MATCH,
+                        candidates_count=len(candidates),
+                        error_message="Todos los candidatos rechazados por mismatch en verificadores",
+                    )
+
+                if len(valid_candidates) == 1:
+                    # UNIQUE_MATCH: exactamente un candidato válido
+                    match = valid_candidates[0]
+                    # Requiere al menos UN verificador MATCH que esté presente en AMBOS lados
+                    # (no not_available). Si un verificador es not_available, la verificación es débil.
+                    date_strong = match["date_verification"] == "match"
+                    total_strong = match["total_verification"] == "match"
+                    has_strong_verification = date_strong or total_strong
+
+                    # Si un verificador coincide pero el otro es not_available -> verificación débil
+                    # (no podemos confirmar el campo faltante)
+                    has_weak_verification = (
+                        (match["date_verification"] == "match" and match["total_verification"] == "not_available") or
+                        (match["total_verification"] == "match" and match["date_verification"] == "not_available")
+                    )
+
+                    if has_strong_verification and not has_weak_verification:
+                        logger.info("reconciliation_unique_match",
                             supplier_id=resolution.supplier_dolibarr_id,
                             invoice_number=draft.invoice_number,
                             dolibarr_id=match["dolibarr_id"],
                             primary_match=match["is_primary_match"],
-                            date_match=match["date_matches"],
-                            total_match=match["total_matches"])
-                        return match
+                            date_verification=match["date_verification"],
+                            total_verification=match["total_verification"])
+                        return ReconciliationDetail(
+                            result=ReconciliationResult.UNIQUE_MATCH,
+                            dolibarr_id=match["dolibarr_id"],
+                            ref=match["ref"],
+                            ref_supplier=match["ref_supplier"],
+                            date_verification=match["date_verification"],
+                            total_verification=match["total_verification"],
+                            is_primary_match=match["is_primary_match"],
+                            candidates_count=1,
+                        )
                     else:
-                        logger.warning("reconciliation_weak_match_insufficient_verification",
+                        # Verificación débil (solo un campo coincide, el otro not_available) o solo not_available
+                        logger.warning("reconciliation_weak_verification_fail_closed",
                             supplier_id=resolution.supplier_dolibarr_id,
                             invoice_number=draft.invoice_number,
-                            dolibarr_id=match["dolibarr_id"])
-                        return None  # Weak match - fail closed
-                elif len(matches) > 1:
-                    # Check if any have strong verification (both date AND total)
-                    strong_matches = [m for m in matches if m["date_matches"] and m["total_matches"]]
-                    if len(strong_matches) == 1:
-                        match = strong_matches[0]
-                        logger.info("reconciliation_found_existing_invoice_strong",
-                            supplier_id=resolution.supplier_dolibarr_id,
-                            invoice_number=draft.invoice_number,
-                            dolibarr_id=match["dolibarr_id"])
-                        return match
-                    logger.warning("reconciliation_ambiguous_multiple_matches",
+                            dolibarr_id=match["dolibarr_id"],
+                            date_verification=match["date_verification"],
+                            total_verification=match["total_verification"])
+                        return ReconciliationDetail(
+                            result=ReconciliationResult.AMBIGUOUS_MATCH,
+                            candidates_count=1,
+                            error_message="Coincidencia única pero sin verificación fuerte (campo faltante en Dolibarr)",
+                        )
+
+                # Múltiples candidatos válidos
+                # Buscar si hay uno con verificación FUERTE en AMBOS verificadores
+                strong_matches = [
+                    c for c in valid_candidates
+                    if c["date_verification"] == "match" and c["total_verification"] == "match"
+                ]
+
+                if len(strong_matches) == 1:
+                    match = strong_matches[0]
+                    logger.info("reconciliation_unique_strong_match",
                         supplier_id=resolution.supplier_dolibarr_id,
                         invoice_number=draft.invoice_number,
-                        matches=len(matches),
-                        strong_matches=len(strong_matches))
-                    return None  # Ambiguous - fail closed
+                        dolibarr_id=match["dolibarr_id"])
+                    return ReconciliationDetail(
+                        result=ReconciliationResult.UNIQUE_MATCH,
+                        dolibarr_id=match["dolibarr_id"],
+                        ref=match["ref"],
+                        ref_supplier=match["ref_supplier"],
+                        date_verification=match["date_verification"],
+                        total_verification=match["total_verification"],
+                        is_primary_match=match["is_primary_match"],
+                        candidates_count=len(valid_candidates),
+                    )
 
-            return None
+                # AMBIGUOUS_MATCH: múltiples candidatos o ninguno con verificación fuerte en ambos
+                logger.warning("reconciliation_ambiguous_fail_closed",
+                    supplier_id=resolution.supplier_dolibarr_id,
+                    invoice_number=draft.invoice_number,
+                    valid_candidates=len(valid_candidates),
+                    strong_matches=len(strong_matches))
+                return ReconciliationDetail(
+                    result=ReconciliationResult.AMBIGUOUS_MATCH,
+                    candidates_count=len(valid_candidates),
+                    error_message=f"Múltiples candidatos ({len(valid_candidates)}) sin verificación única fuerte",
+                )
+
         except Exception as e:
-            logger.warning("reconciliation_failed", error=str(e))
-            return None
+            logger.error("reconciliation_error_fail_closed", error=str(e))
+            return ReconciliationDetail(
+                result=ReconciliationResult.ERROR,
+                error_message=str(e),
+            )
 
-    async def check_duplicate_in_dolibarr(self, draft: SupplierInvoiceDraft) -> bool:
-        """Check if invoice already exists in Dolibarr to prevent duplicates."""
+    async def check_duplicate_in_dolibarr(self, draft: SupplierInvoiceDraft) -> DuplicateCheckDetail:
+        """
+        Check if invoice already exists in Dolibarr to prevent duplicates.
+
+        RETURNS EXPLICIT RESULT - NO BOOL AMBIGUITY.
+
+        Semántica obligatoria:
+        - MATCH -> bloquear CREATE / adoptar según workflow seguro
+        - NO_MATCH -> CREATE puede continuar si resto de invariantes lo permiten
+        - UNKNOWN_ERROR -> CREATE PROHIBIDO / fail closed / retry check / manual review
+
+        NUNCA convierte "no pude comprobar" en "no existe".
+        """
         if not draft.has_supplier() or not draft.invoice_number or not draft.invoice_date:
-            return False
+            return DuplicateCheckDetail(
+                result=DuplicateCheckResult.NO_MATCH,
+                error_message="Precondiciones no cumplidas: supplier, invoice_number, invoice_date requeridos",
+            )
 
         try:
             resolution = await self.supplier_resolver.resolve(
@@ -1310,16 +1599,20 @@ class DocumentIngestionService:
             )
 
             if not resolution.supplier_dolibarr_id:
-                return False
+                return DuplicateCheckDetail(
+                    result=DuplicateCheckResult.NO_MATCH,
+                    error_message="Proveedor no encontrado en Dolibarr",
+                )
 
-            from core.integrations.dolibarr.client import DolibarrClient
             from core.hermes.identity_store import IdentityStore
-
             identity_store = IdentityStore(self.company_context.instance_id)
             identity = identity_store.get(self.user_context.telegram_user_id)
 
             if not identity:
-                return False
+                return DuplicateCheckDetail(
+                    result=DuplicateCheckResult.UNKNOWN_ERROR,
+                    error_message="Identidad de usuario no disponible para consultar Dolibarr",
+                )
 
             dolibarr = self.company_context.create_dolibarr_client_for_user(identity)
 
@@ -1334,15 +1627,30 @@ class DocumentIngestionService:
                     ref = (invoice.get("ref") or "").upper()
                     ref_supplier = (invoice.get("ref_supplier") or "").upper()
                     if ref == invoice_number_upper or ref_supplier == invoice_number_upper:
+                        dolibarr_id = invoice.get("id") or invoice.get("rowid")
                         logger.warning("duplicate_invoice_detected_in_dolibarr",
                             supplier_id=resolution.supplier_dolibarr_id,
-                            invoice_number=draft.invoice_number)
-                        return True
+                            invoice_number=draft.invoice_number,
+                            dolibarr_id=dolibarr_id,
+                            ref=invoice.get("ref"),
+                            ref_supplier=invoice.get("ref_supplier"))
+                        return DuplicateCheckDetail(
+                            result=DuplicateCheckResult.MATCH,
+                            dolibarr_id=dolibarr_id,
+                            ref=invoice.get("ref"),
+                            ref_supplier=invoice.get("ref_supplier"),
+                        )
 
-                return False
+                return DuplicateCheckDetail(
+                    result=DuplicateCheckResult.NO_MATCH,
+                )
+
         except Exception as e:
-            logger.warning("duplicate_check_failed", error=str(e))
-            return False
+            logger.error("duplicate_check_error_fail_closed", error=str(e))
+            return DuplicateCheckDetail(
+                result=DuplicateCheckResult.UNKNOWN_ERROR,
+                error_message=str(e),
+            )
 
 
 # =========================================================================

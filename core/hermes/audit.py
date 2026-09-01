@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import structlog
 from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Integer, String, Text, create_engine, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 if TYPE_CHECKING:
@@ -127,10 +128,6 @@ class DocumentIdempotencyRecord(Base):
 
     # Adjunto
     attachment_uploaded = Column(Boolean, nullable=False, default=False)
-
-    # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    completed_at = Column(DateTime, nullable=True, index=True)
 
     # Metadatos adicionales
     document_filename = Column(String(255), nullable=True)
@@ -249,8 +246,9 @@ class AuditLogger:
         )
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        # Crear tabla si no existe
-        Base.metadata.create_all(self.engine)
+        # Run migrations instead of create_all (idempotent, versioned)
+        from core.hermes.audit_migrations import run_audit_migrations
+        run_audit_migrations(database_url=database_url)
 
     def _calculate_hash(self, data: dict) -> str:
         """Calcular SHA256 de dict ordenado."""
@@ -699,8 +697,9 @@ class DocumentIdempotencyManager:
         )
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        # Crear tabla si no existe
-        Base.metadata.create_all(self.engine)
+        # Run migrations instead of create_all (idempotent, versioned)
+        from core.hermes.audit_migrations import run_audit_migrations
+        run_audit_migrations(database_url=database_url)
 
     def _validate_transition(self, from_state: str | None, to_state: str) -> None:
         """Validar que la transición de estado es permitida."""
@@ -732,14 +731,27 @@ class DocumentIdempotencyManager:
         correlation_id: str | None = None,
     ) -> tuple[DocumentIdempotencyRecord, bool]:
         """
-        Obtener operación existente o crear nueva (atomic upsert).
+        Obtener operación existente o crear nueva (atomic upsert con recuperación de race).
+
+        Implementa semántica GET_OR_CREATE_ATOMIC:
+        - Intentar localizar operación existente con FOR UPDATE
+        - Si no existe, crear nueva
+        - UNIQUE constraint es la última barrera
+        - Si hay race de INSERT (IntegrityError por ux_idempotency_dedup):
+            rollback + re-leer la fila creada por el worker ganador
+            continuar de forma idempotente (created=False)
+        - Otros IntegrityError: FAIL (no esconder errores genuinos)
 
         Returns:
-            (record, created) - record es la operación, created=True si fue creada ahora
+            (record, created) - record es la operación, created=True si fue creada AHORA por este worker
         """
+        # Validar estado inicial antes de entrar en la transacción
+        if initial_state not in {"PENDING_CONFIRMATION", "CONFIRMING"}:
+            raise ValueError(f"Invalid initial state: {initial_state}")
+
         session = self.Session()
         try:
-            # Intentar obtener existente
+            # PASO 1: Intentar obtener existente con FOR UPDATE (bloquea la fila si existe)
             record = session.query(DocumentIdempotencyRecord).filter(
                 DocumentIdempotencyRecord.instance_id == instance_id,
                 DocumentIdempotencyRecord.supplier_tax_id == supplier_tax_id,
@@ -749,10 +761,7 @@ class DocumentIdempotencyManager:
             if record:
                 return record, False
 
-            # Crear nuevo
-            if initial_state not in {"PENDING_CONFIRMATION", "CONFIRMING"}:
-                raise ValueError(f"Invalid initial state: {initial_state}")
-
+            # PASO 2: No existe - intentar crear
             record = DocumentIdempotencyRecord(
                 id=str(uuid4()),
                 instance_id=instance_id,
@@ -767,7 +776,61 @@ class DocumentIdempotencyManager:
                 correlation_id=correlation_id,
             )
             session.add(record)
-            session.commit()
+
+            try:
+                session.commit()
+            except IntegrityError as e:
+                # PASO 3: Race condition - otro worker insertó la misma clave única
+                # Verificar que es específicamente la constraint de deduplicación comercial
+                error_msg = str(e.orig).lower() if e.orig else str(e).lower()
+                is_dedup_constraint = (
+                    "ux_idempotency_dedup" in error_msg
+                    or "duplicate entry" in error_msg
+                    and "instance_id" in error_msg
+                    and "supplier_tax_id" in error_msg
+                    and "supplier_invoice_number" in error_msg
+                )
+
+                if not is_dedup_constraint:
+                    # NO es la constraint esperada - re-lanzar (FAIL CLOSED)
+                    session.rollback()
+                    logger.error(
+                        "durable_operation_create_integrity_error_not_dedup",
+                        error=str(e),
+                        instance_id=instance_id,
+                        supplier_tax_id=supplier_tax_id,
+                        supplier_invoice_number=supplier_invoice_number,
+                    )
+                    raise
+
+                # ES la constraint de deduplicación - recuperar fila del worker ganador
+                session.rollback()
+
+                # Re-leer con FOR UPDATE para obtener la fila que creó el otro worker
+                record = session.query(DocumentIdempotencyRecord).filter(
+                    DocumentIdempotencyRecord.instance_id == instance_id,
+                    DocumentIdempotencyRecord.supplier_tax_id == supplier_tax_id,
+                    DocumentIdempotencyRecord.supplier_invoice_number == supplier_invoice_number,
+                ).with_for_update().first()
+
+                if not record:
+                    # Esto no debería pasar si la constraint se disparó, pero por seguridad
+                    session.rollback()
+                    raise RuntimeError(
+                        f"IntegrityError on dedup constraint but no record found for "
+                        f"instance={instance_id}, supplier={supplier_tax_id}, invoice={supplier_invoice_number}"
+                    )
+
+                logger.info(
+                    "durable_operation_race_recovered",
+                    record_id=record.id,
+                    instance_id=instance_id,
+                    supplier_tax_id=supplier_tax_id,
+                    supplier_invoice_number=supplier_invoice_number,
+                    winner_state=record.final_state,
+                )
+
+                return record, False  # created=False: la creó el otro worker
 
             logger.info(
                 "durable_operation_created",
@@ -780,15 +843,8 @@ class DocumentIdempotencyManager:
 
             return record, True
 
-        except Exception as e:
+        except Exception:
             session.rollback()
-            logger.error(
-                "durable_operation_create_failed",
-                error=str(e),
-                instance_id=instance_id,
-                supplier_tax_id=supplier_tax_id,
-                supplier_invoice_number=supplier_invoice_number,
-            )
             raise
         finally:
             session.close()

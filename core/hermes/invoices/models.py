@@ -75,6 +75,7 @@ class DocumentState(StrEnum):
     INVOICE_CREATED = "invoice_created"      # Invoice created in Dolibarr
     ATTACHMENT_PENDING = "attachment_pending"  # Invoice created, attachment upload pending
     COMPLETED = "completed"                  # Fully processed and stored in Dolibarr
+    ERP_RESULT_UNKNOWN = "erp_result_unknown"  # POST timeout - unknown if succeeded (durable sync)
     FAILED_RETRYABLE = "failed_retryable"    # Failed, can retry (transient error)
     FAILED_FINAL = "failed_final"            # Failed permanently, requires manual intervention
     CANCELLED = "cancelled"                  # Cancelled by user
