@@ -85,6 +85,7 @@ class CommandExecutor:
             created_at=datetime.now(),
             expires_at=datetime.now() + __import__("datetime").timedelta(hours=24),
             idempotency_key=str(preview.command_id),
+            document_hash=intent.document_hash,
         )
         self.store.create(pending)
 
@@ -140,7 +141,9 @@ class CommandExecutor:
 
         # 4. Execute
         try:
-            result = await handler.execute(self.ctx, self.user, pending.validated_payload)
+            result = await handler.execute(
+                self.ctx, self.user, pending.validated_payload, pending.document_hash
+            )
 
             # 4a. Update to EXECUTED
             result_data = {

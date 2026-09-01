@@ -314,7 +314,7 @@ class DocumentIngestionService:
                 validation_warnings=validation_result.warnings,
             )
 
-            # 11. Resolve supplier if we have tax_id
+# 11. Resolve supplier if we have tax_id
             if draft.has_supplier():
                 resolution = await self.supplier_resolver.resolve(
                     tax_id=draft.supplier.tax_id,
@@ -334,14 +334,19 @@ class DocumentIngestionService:
                     await self._update_document_state(document_hash, {
                         "supplier_dolibarr_id": resolution.supplier_dolibarr_id
                     })
+                    
+                    # PERSIST SUPPLIER_CREATED STATE (durable)
+                    await self.idempotency_manager.record_completed(
+                        instance_id=self.company_context.instance_id,
+                        document_hash=document_hash,
+                        supplier_tax_id=draft.supplier.tax_id,
+                        supplier_invoice_number=draft.invoice_number or "",
+                        supplier_dolibarr_id=resolution.supplier_dolibarr_id,
+                        final_state="SUPPLIER_CREATED",
+                    )
 
                 # DURABLE IDEMPOTENCY CHECK: Check if this invoice was already completed in Dolibarr
                 if draft.has_supplier() and draft.invoice_number and draft.invoice_date:
-                    existing_durable = await self.idempotency_manager.check_duplicate(
-                        instance_id=self.company_context.instance_id,
-                        supplier_tax_id=draft.supplier.tax_id,
-                        supplier_invoice_number=draft.invoice_number,
-                    )
                     
                     if existing_durable:
                         logger.info("duplicate_detected_durable_after_resolution",

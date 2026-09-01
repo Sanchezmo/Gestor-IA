@@ -22,7 +22,8 @@ from core.hermes.commands.models import (
     calculate_invoice_line,
     calculate_invoice_totals,
 )
-from core.integrations.dolibarr.client import DolibarrException
+from core.hermes.audit import DocumentIdempotencyManager, create_document_idempotency_manager
+from core.hermes.invoices.models import DocumentState
 
 
 class CreateSupplierInvoiceHandler(CommandHandler):
@@ -168,7 +169,8 @@ class CreateSupplierInvoiceHandler(CommandHandler):
         self,
         company_context: CompanyContext,
         user_context: UserContext,
-        validated_payload: dict[str, Any]
+        validated_payload: dict[str, Any],
+        document_hash: str | None = None
     ) -> CommandResult:
         """Execute supplier invoice creation in Dolibarr."""
         dolibarr = company_context.create_dolibarr_client()
@@ -193,6 +195,17 @@ class CreateSupplierInvoiceHandler(CommandHandler):
                         "fournisseur": 1,
                     })
                     thirdparty_id = thirdparty_result.get("id")
+                    
+                    # PERSIST SUPPLIER_CREATED STATE (durable)
+                    idempotency_manager = create_document_idempotency_manager(instance_config=company_context.instance_config)
+                    await idempotency_manager.record_completed(
+                        instance_id=company_context.instance_id,
+                        document_hash="",  # No document hash for supplier creation
+                        supplier_tax_id=validated_payload.get("proveedor_query", ""),
+                        supplier_invoice_number="",  # No invoice number for supplier creation
+                        supplier_dolibarr_id=thirdparty_id,
+                        final_state="SUPPLIER_CREATED",
+                    )
                 else:
                     thirdparty_id = thirdparty.get("id")
 
@@ -231,6 +244,16 @@ class CreateSupplierInvoiceHandler(CommandHandler):
                         error_code="SUPPLIER_INVOICE_CREATE_FAILED",
                         error_message="No se pudo crear la factura de proveedor",
                     )
+
+                # PERSIST INVOICE_CREATED STATE (durable)
+                idempotency_manager = create_document_idempotency_manager(instance_config=company_context.instance_config)
+                await idempotency_manager.mark_invoice_created(
+                    instance_id=company_context.instance_id,
+                    document_hash=document_hash or "",
+                    invoice_dolibarr_id=invoice_id,
+                    dolibarr_invoice_ref=invoice_ref,
+                    dolibarr_invoice_id=invoice_id,
+                )
 
                 # 4. Add lines
                 for line in validated_payload["lineas"]:

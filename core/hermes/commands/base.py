@@ -40,7 +40,7 @@ class CommandHandler(ABC):
 
     @abstractmethod
     async def execute(
-        self, company_context: CompanyContext, user_context: UserContext, validated_payload: dict[str, Any]
+        self, company_context: CompanyContext, user_context: UserContext, validated_payload: dict[str, Any], document_hash: str | None = None
     ) -> CommandResult:
         """Execute command against Dolibarr."""
         pass

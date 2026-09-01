@@ -59,6 +59,7 @@ class CommandIntent:
     request_id: str
     correlation_id: str | None = None
     timestamp: datetime = field(default_factory=datetime.now)
+    document_hash: str | None = None  # SHA256 of source document for idempotency
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,7 @@ class PendingCommand:
     confirmed_at: datetime | None = None
     executed_at: datetime | None = None
     idempotency_key: str = field(default="")
+    document_hash: str | None = None  # SHA256 of source document for idempotency
     result: dict[str, Any] | None = None
     error_code: str | None = None
     error_message: str | None = None
