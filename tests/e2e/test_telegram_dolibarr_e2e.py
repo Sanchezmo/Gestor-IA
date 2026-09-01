@@ -267,7 +267,7 @@ class TestTelegramToDolibarrHappyPath:
                 ],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -323,7 +323,7 @@ class TestWebhookSecretValidation:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             from core.hermes.identity_resolver import IdentityResolver
@@ -371,7 +371,7 @@ class TestUnknownUser:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -417,7 +417,7 @@ class TestDisabledUser:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -454,7 +454,7 @@ class TestDisabledUser:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -491,7 +491,7 @@ class TestNoPermission:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -567,7 +567,7 @@ class TestCrossInstanceIsolation:
                 )
                 return mock
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 if ctx.instance_id == "empresa_a":
                     used_clients["a"] += 1
                     return make_mock_client("a")
@@ -626,7 +626,7 @@ class TestCrossInstanceIsolation:
                 mock.list_thirdparties = AsyncMock(return_value=[])
                 return mock
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 if ctx.instance_id == "empresa_a":
                     return make_mock_user(dolibarr_user_a)
                 else:
@@ -682,7 +682,7 @@ class TestDolibarrErrors:
                 ),
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -724,7 +724,7 @@ class TestDolibarrErrors:
                 ),
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -762,7 +762,7 @@ class TestDolibarrErrors:
                 ),
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -810,7 +810,7 @@ class TestAuditLogging:
                 ],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -846,7 +846,7 @@ class TestAuditLogging:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -896,7 +896,7 @@ class TestPaginationAndFormatting:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -931,7 +931,7 @@ class TestPaginationAndFormatting:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -1002,7 +1002,7 @@ class TestToolRegistry:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -1039,7 +1039,7 @@ class TestToolRegistry:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)
@@ -1084,7 +1084,7 @@ class TestParametersValidation:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_client
 
             _resolver = IdentityResolver(store, mock_factory)

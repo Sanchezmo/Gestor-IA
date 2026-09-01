@@ -437,13 +437,14 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
         reconciliation_engine = ReconciliationEngine(dolibarr)
 
         # Capture runtime versions for AI compliance
+        git_sha = RuntimeVersionCapture.capture_git_sha()
         runtime_versions = RuntimeVersionCapture.capture(
             gestor_ia_version="1.0.0",  # TODO: from package metadata
             workflow_version="supplier-invoice-v1",
             ai_config_version="1.0",
             provider_version=f"ollama:{company_context.instance_config.ai.ollama_model}",
             policy_version="1.0",
-            git_sha=None,  # TODO: from git
+            git_sha=git_sha,
         )
 
         async with dolibarr as client:

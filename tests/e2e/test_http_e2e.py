@@ -951,7 +951,7 @@ class TestToolRegistryCrossInstance:
                 list_thirdparties_return_value=[],
             )
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 return mock_dolibarr
 
             resolver = IdentityResolver(store, mock_factory)
@@ -1012,7 +1012,7 @@ class TestToolRegistryCrossInstance:
                 mock.list_thirdparties = AsyncMock(return_value=[])
                 return mock
 
-            def mock_factory(ctx):
+            def mock_factory(ctx, identity):
                 if ctx.instance_id == "empresa_a":
                     return make_mock_user(dolibarr_user_a)
                 else:

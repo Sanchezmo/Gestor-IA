@@ -19,6 +19,7 @@ dependencies = [
     "cryptography>=42.0.0",
     "pyyaml>=6.0.1",
     "tenacity>=8.2.0",
+    "pymysql>=1.1.0",
 ]
 
 [project.optional-dependencies]

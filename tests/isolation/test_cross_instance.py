@@ -392,8 +392,16 @@ class TestDolibarrClientIsolation:
 
     @pytest.mark.asyncio
     async def test_client_a_cannot_use_config_b(self, context_a, context_b):
-        """Cliente de A no puede recibir config de B accidentalmente."""
-        client = DolibarrClient.from_instance_config(context_a.instance_config.dolibarr)
+        """Cliente de A no puede recibir config de B accidentalmente.
+        
+        Uses admin key (instance-scoped) for this test since we're testing
+        config isolation, not user-scoped authorization.
+        """
+        client = DolibarrClient(
+            base_url=context_a.dolibarr_config.internal_url,
+            api_key=context_a.dolibarr_config.api_key,
+            timeout=30,
+        )
         assert client.base_url == context_a.dolibarr_config.internal_url
         assert client.base_url != context_b.dolibarr_config.internal_url
 

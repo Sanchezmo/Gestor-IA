@@ -78,8 +78,8 @@ class TestIdentityResolver:
 
     @pytest.fixture
     def dolibarr_client_factory(self):
-        def factory(ctx: CompanyContext) -> DolibarrClient:
-            return DolibarrClient.from_instance_config(ctx.dolibarr_config)
+        def factory(ctx: CompanyContext, identity) -> DolibarrClient:
+            return DolibarrClient.from_instance_config(ctx.dolibarr_config, identity.dolibarr_api_key)
 
         return factory
 
@@ -131,8 +131,8 @@ class TestIdentityResolver:
         mock_client.get_user = AsyncMock(return_value=dolibarr_user)
         mock_client.get_user_groups = AsyncMock(return_value=dolibarr_groups)
 
-        # Patch factory to return mock client
-        def mock_factory(ctx):
+        # Patch factory to return mock client (takes company_context and identity)
+        def mock_factory(ctx, identity):
             return mock_client
 
         resolver = IdentityResolver(identity_store, mock_factory)
@@ -178,7 +178,7 @@ class TestIdentityResolver:
             side_effect=DolibarrException(message="User not found", endpoint="users/17", status_code=404)
         )
 
-        def mock_factory(ctx):
+        def mock_factory(ctx, identity):
             return mock_client
 
         resolver = IdentityResolver(identity_store, mock_factory)
@@ -207,7 +207,7 @@ class TestIdentityResolver:
         mock_client.__aexit__ = AsyncMock(return_value=None)
         mock_client.get_user = AsyncMock(return_value=inactive_user)
 
-        def mock_factory(ctx):
+        def mock_factory(ctx, identity):
             return mock_client
 
         resolver = IdentityResolver(identity_store, mock_factory)
@@ -230,7 +230,7 @@ class TestIdentityResolver:
             side_effect=DolibarrException(message="Timeout", endpoint="users/17", status_code=504)
         )
 
-        def mock_factory(ctx):
+        def mock_factory(ctx, identity):
             return mock_client
 
         resolver = IdentityResolver(identity_store, mock_factory)
@@ -252,7 +252,7 @@ class TestIdentityResolver:
         mock_client.get_user = AsyncMock(return_value=dolibarr_user)
         mock_client.get_user_groups = AsyncMock(return_value=dolibarr_groups)
 
-        def mock_factory(ctx):
+        def mock_factory(ctx, identity):
             return mock_client
 
         resolver = IdentityResolver(identity_store, mock_factory)
@@ -347,7 +347,7 @@ class TestIdentityResolverCrossInstance:
             entity=1,
         )
 
-        def mock_factory(ctx):
+        def mock_factory(ctx, identity):
             mock = AsyncMock(spec=DolibarrClient)
             # Setup async context manager protocol
             mock.__aenter__ = AsyncMock(return_value=mock)

@@ -447,6 +447,34 @@ class RuntimeVersionCapture:
             git_sha=git_sha,
         )
 
+    @staticmethod
+    def capture_git_sha(project_root: str | None = None) -> str | None:
+        """Attempt to capture git SHA from the repository.
+        
+        Returns the short SHA (8 chars) if in a git repo, None otherwise.
+        Safe to call in any environment - fails gracefully.
+        """
+        import subprocess
+        from pathlib import Path
+        
+        try:
+            if project_root is None:
+                # Try to find project root from current file location
+                project_root = str(Path(__file__).parent.parent.parent)
+            
+            result = subprocess.run(
+                ["git", "rev-parse", "--short=8", "HEAD"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return None
+
 
 # =========================================================================
 # SINGLETON INSTANCES (initialized at startup)

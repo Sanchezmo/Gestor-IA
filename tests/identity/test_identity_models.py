@@ -312,9 +312,12 @@ class TestUserContext:
 
 
 class TestGestorPermissions:
-    """Tests for Gestor-IA permission constants."""
+    """Tests for Gestor-IA permission constants (Hermes capabilities only).
 
+    ERP permissions are NOT included - Dolibarr is the sole authority for ERP permissions.
+    """
     def test_all_permissions_defined(self):
+        # Only Hermes-specific capabilities (from core.hermes.capabilities.HERMES_CAPABILITIES)
         expected = {
             "ai.use",
             "ai.external_provider",
@@ -323,14 +326,14 @@ class TestGestorPermissions:
             "instance.manage",
             "content.generate",
             "admin",
-            "product.read",
-            "thirdparty.read",
-            "customer_invoice.read",
-            "supplier_invoice.read",
-            "thirdparty.create",
             "product.create",
             "service.create",
             "proposal.create",
+            "thirdparty.create",
+            "bc3.import",
+            "mass_operations",
+            "media.publish",
+            "system.manage",
         }
         assert GestorPermissions.ALL == expected
 

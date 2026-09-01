@@ -89,7 +89,8 @@ class TestAuditLoggerExtensions:
         with patch("core.hermes.audit.create_engine") as mock_create_engine:
             mock_engine = MagicMock()
             mock_create_engine.return_value = mock_engine
-            logger = AuditLogger("mysql://user:pass@localhost/db")
+            # Use SQLite in-memory to avoid real DB connection
+            logger = AuditLogger("sqlite:///:memory:")
             logger.Session = MagicMock(return_value=mock_session)
             return logger
 
@@ -114,7 +115,8 @@ class TestAuditLoggerExtensions:
         with patch("core.hermes.audit.create_engine") as mock_create_engine:
             mock_engine = MagicMock()
             mock_create_engine.return_value = mock_engine
-            logger = AuditLogger("mysql://user:pass@localhost/db")
+            # Use SQLite in-memory to avoid real DB connection
+            logger = AuditLogger("sqlite:///:memory:")
 
             # Create mock CompanyContext with user_context
             mock_user_context = MagicMock(spec=UserContext)
@@ -161,7 +163,8 @@ class TestAuditCleanupWithCriticalActions:
         with patch("core.hermes.audit.create_engine") as mock_create_engine:
             mock_engine = MagicMock()
             mock_create_engine.return_value = mock_engine
-            logger = AuditLogger("mysql://user:pass@localhost/db")
+            # Use SQLite in-memory to avoid real DB connection
+            logger = AuditLogger("sqlite:///:memory:")
 
             mock_session = MagicMock()
             logger.Session = MagicMock(return_value=mock_session)
