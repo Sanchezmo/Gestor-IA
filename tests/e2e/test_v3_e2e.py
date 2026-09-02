@@ -1,6 +1,11 @@
 """
 E2E Tests for Command Layer V3 - Full Telegram → NL → Preview → Confirm → Execute → Audit flow.
+
+Architecture: Dolibarr is the SOLE authority for ERP permissions.
+Hermes only manages Hermes-specific capabilities (ai.use, admin, etc.).
 """
+
+from __future__ import annotations
 
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ from core.hermes.commands.executor import CommandExecutor
 from core.hermes.commands.store import PendingCommandStore
 from core.hermes.audit import AuditLogger
 from core.hermes.authorization import AuthorizationService
+from core.hermes.identity import GestorPermissions
 
 
 class TestV3InvoiceE2E:
@@ -44,13 +50,18 @@ class TestV3InvoiceE2E:
 
     @pytest.fixture
     def mock_user_context(self):
-        """Create mock UserContext with invoice.create permission."""
+        """Create mock UserContext with Hermes capabilities (NOT ERP permissions).
+        
+        Architecture: Dolibarr is the SOLE authority for ERP permissions.
+        Hermes only manages Hermes-specific capabilities.
+        """
         user = MagicMock(spec=UserContext)
         user.instance_id = "test_empresa"
         user.telegram_user_id = 12345
         user.dolibarr_user_id = 1
-        user.effective_permissions = frozenset(["invoice.create", "thirdparty.read", "thirdparty.create"])
-        user.has_permission = MagicMock(return_value=True)
+        # Hermes capabilities only (admin, ai.use, etc.) - NOT ERP permissions
+        user.gestor_roles = frozenset([GestorPermissions.ADMIN, GestorPermissions.AI_USE])
+        user.has_permission = MagicMock(side_effect=lambda p: p in user.gestor_roles)
         return user
 
     @pytest.fixture
