@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from core.hermes.audit import AuditActions, AuditLogger, create_audit_logger
+from core.hermes.audit_migrations import validate_audit_schema, AuditSchemaValidationError
 from core.hermes.authorization import AuthorizationService
 from core.hermes.config import GlobalSettings, get_global_settings
 from core.hermes.context import CompanyContext
@@ -120,6 +121,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         database_url=f"mysql+pymysql://gestor_ia_audit:{_global_settings.MARIADB_AUDIT_PASSWORD}@"
         f"{_global_settings.MARIADB_HOST}:{_global_settings.MARIADB_PORT}/gestor_ia_audit"
     )
+
+    # Validate audit schema fail-closed at runtime.
+    # If the deployment migration/bootstrap was not run, the schema will be
+    # incomplete and Hermes must fail closed rather than start with a broken
+    # audit subsystem.
+    try:
+        validate_audit_schema(_audit_logger.engine)
+    except AuditSchemaValidationError as e:
+        logger.error(
+            "audit_schema_validation_failed",
+            error=str(e.details),
+        )
+        raise
 
     # Cloudflare manager
     _cloudflare_manager = create_cloudflare_manager(_global_settings)

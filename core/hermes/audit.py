@@ -248,8 +248,10 @@ class AuditLogger:
         )
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        # Run bootstrap + migrations + validation (idempotent, versioned, fail-closed)
-        run_audit_migrations(database_url=database_url)
+        # NOTE: Bootstrap + migrations are deployment-only steps.
+        # The restricted runtime user (gestor_ia_audit) lacks CREATE privilege.
+        # Schema must be created and validated during deployment before runtime.
+        # Runtime init assumes the schema already exists and is valid.
 
     def _calculate_hash(self, data: dict) -> str:
         """Calcular SHA256 de dict ordenado."""
@@ -704,8 +706,10 @@ class DocumentIdempotencyManager:
         )
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
-        # Run bootstrap + migrations + validation (idempotent, versioned, fail-closed)
-        run_audit_migrations(database_url=database_url)
+        # NOTE: Bootstrap + migrations are deployment-only steps.
+        # The restricted runtime user (gestor_ia_audit) lacks CREATE privilege.
+        # Schema must be created and validated during deployment before runtime.
+        # Runtime init assumes the schema already exists and is valid.
 
     def _validate_transition(self, from_state: str | None, to_state: str) -> None:
         """Validar que la transición de estado es permitida."""
