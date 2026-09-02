@@ -508,15 +508,16 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
                             error_message="Invoice already exists in Dolibarr",
                         )
                 except Exception as e:
-                    # Integration error - don't block CREATE; let reconciliation handle it
-                    logger.warning(
-                        "duplicate_check_integration_error",
-                        instance_id=company_context.instance_id,
-                        supplier_tax_id=supplier_tax_id,
-                        invoice_number=invoice_number,
-                        error=str(e),
+                    # Integration error during duplicate check - FAIL CLOSED:
+                    # DO NOT CREATE the invoice if we cannot verify duplication.
+                    # Preserve a retry-safe state and return a safe error.
+                    return CommandResult(
+                        success=False,
+                        error_code="DUPLICATE_CHECK_FAILED",
+                        error_message="Duplicate check integration error; "
+                        "invoice CREATE blocked to prevent duplicate. "
+                        "Retry after resolving Dolibarr availability.",
                     )
-                    # Continue without blocking; reconciliation will resolve
 
                 # ============================================================
                 # STEP 2: Supplier Resolution (SUPPLIER_CREATED / INVOICE_CREATED)

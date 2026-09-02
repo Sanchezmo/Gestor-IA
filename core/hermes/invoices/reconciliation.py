@@ -41,7 +41,8 @@ class ReconciliationDetail:
     def __init__(
         self,
         result: ReconciliationResult,
-        dolibarr_id: int | None = None,
+        supplier_dolibarr_id: int | None = None,
+        invoice_dolibarr_id: int | None = None,
         ref: str | None = None,
         ref_supplier: str | None = None,
         date_verification: str | None = None,  # "match" | "mismatch" | "not_available"
@@ -51,7 +52,8 @@ class ReconciliationDetail:
         candidates_count: int = 0,
     ):
         self.result = result
-        self.dolibarr_id = dolibarr_id
+        self.supplier_dolibarr_id = supplier_dolibarr_id  # Dolibarr thirdparty/supplier ID
+        self.invoice_dolibarr_id = invoice_dolibarr_id    # Dolibarr supplier invoice ID
         self.ref = ref
         self.ref_supplier = ref_supplier
         self.date_verification = date_verification
@@ -62,7 +64,7 @@ class ReconciliationDetail:
 
     @property
     def can_auto_adopt(self) -> bool:
-        """Only UNIQUE_MATCH can automatically adopt the invoice_id."""
+        """Only UNIQUE_MATCH can automatically adopt the invoice."""
         return self.result == ReconciliationResult.UNIQUE_MATCH
 
     @property
@@ -114,10 +116,15 @@ class ReconciliationEngine:
         Query Dolibarr to find the invoice by strong supplier-invoice identity
         (ref_supplier), check for duplicates, and determine the appropriate result.
 
+        The supplier_id is used to identify the thirdparty/supplier,
+        and invoice_id is used to identify the specific supplier invoice.
+        These are stored separately in ReconciliationDetail so that
+        adopting an existing invoice correctly persists both IDs.
+
         Args:
             invoice_ref: Supplier invoice reference number (should be ref_supplier)
-            invoice_id: Dolibarr invoice rowid ID (optional, not used as primary key)
-            supplier_id: Dolibarr supplier (socid) ID (optional)
+            invoice_id: Dolibarr supplier invoice ID (optional)
+            supplier_id: Dolibarr supplier (socid/thirdparty) ID (optional)
 
         Returns:
             ReconciliationOutcome with the determined result
@@ -246,7 +253,8 @@ class ReconciliationEngine:
                     result=ReconciliationResult.UNIQUE_MATCH,
                     detail=ReconciliationDetail(
                         result=ReconciliationResult.UNIQUE_MATCH,
-                        dolibarr_id=int(dolibarr_id) if dolibarr_id else None,
+                        supplier_dolibarr_id=supplier_id,
+                        invoice_dolibarr_id=int(dolibarr_id) if dolibarr_id else None,
                         ref=str(ref_val) if ref_val else None,
                         ref_supplier=str(ref_supplier_val) if ref_supplier_val else None,
                         date_verification="match",
@@ -262,7 +270,8 @@ class ReconciliationEngine:
                     result=ReconciliationResult.AMBIGUOUS_MATCH,
                     detail=ReconciliationDetail(
                         result=ReconciliationResult.AMBIGUOUS_MATCH,
-                        dolibarr_id=int(dolibarr_id) if dolibarr_id else None,
+                        supplier_dolibarr_id=supplier_id,
+                        invoice_dolibarr_id=int(dolibarr_id) if dolibarr_id else None,
                         ref=str(ref_val) if ref_val else None,
                         ref_supplier=str(ref_supplier_val) if ref_supplier_val else None,
                         date_verification="mismatch",
@@ -279,7 +288,8 @@ class ReconciliationEngine:
                     result=ReconciliationResult.NO_MATCH,
                     detail=ReconciliationDetail(
                         result=ReconciliationResult.NO_MATCH,
-                        dolibarr_id=int(dolibarr_id) if dolibarr_id else None,
+                        supplier_dolibarr_id=supplier_id,
+                        invoice_dolibarr_id=int(dolibarr_id) if dolibarr_id else None,
                         ref=str(ref_val) if ref_val else None,
                         ref_supplier=str(ref_supplier_val) if ref_supplier_val else None,
                         date_verification="mismatch",
@@ -296,7 +306,8 @@ class ReconciliationEngine:
                     result=ReconciliationResult.ERROR,
                     detail=ReconciliationDetail(
                         result=ReconciliationResult.ERROR,
-                        dolibarr_id=int(dolibarr_id) if dolibarr_id else None,
+                        supplier_dolibarr_id=supplier_id,
+                        invoice_dolibarr_id=int(dolibarr_id) if dolibarr_id else None,
                         ref=str(ref_val) if ref_val else None,
                         ref_supplier=str(ref_supplier_val) if ref_supplier_val else None,
                         date_verification="not_available",
@@ -312,7 +323,8 @@ class ReconciliationEngine:
                 result=ReconciliationResult.NO_MATCH,
                 detail=ReconciliationDetail(
                     result=ReconciliationResult.NO_MATCH,
-                    dolibarr_id=None,
+                    supplier_dolibarr_id=supplier_id,
+                    invoice_dolibarr_id=None,
                     ref=str(invoice_ref) if invoice_ref else None,
                     ref_supplier=None,
                     date_verification="not_available",
