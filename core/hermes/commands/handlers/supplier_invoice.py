@@ -297,9 +297,6 @@ class CreateSupplierInvoiceHandler(CommandHandler):
 
                     await client.add_supplier_invoice_line(invoice_id, line_data)
 
-                # 5. Validate invoice
-                await client.validate_supplier_invoice(invoice_id)
-
                 # 6. Calculate totals for response
                 totals = self._calculate_totals(validated_payload["lineas"])
 
