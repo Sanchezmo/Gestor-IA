@@ -51,7 +51,7 @@ def map_supplier_invoice_draft_to_dolibarr(
 
     # Invoice header field mapping (our snake_case -> Dolibarr camelCase)
     header_mapping: dict[str, str] = {
-        "invoice_number": "ref",
+        "invoice_number": "ref_supplier",
         "invoice_date": "date",
         "due_date": "date_lim_reglement",
         "currency": "fk_multicurrency",
@@ -67,8 +67,9 @@ def map_supplier_invoice_draft_to_dolibarr(
                 value = int(datetime.combine(value, datetime.min.time()).timestamp())
             payload[dolibarr_key] = value
 
-    # serie (optional reference) - use invoice_number as ref if no Dolibarr supplier ID
-    if data.invoice_number and not data.supplier_dolibarr_id:
+    # ref (optional general reference) - only set if no ref_supplier available
+    # ref_supplier is the primary identity for reconciliation; ref is secondary
+    if data.invoice_number and not data.supplier_dolibarr_id and not payload.get("ref_supplier"):
         payload["ref"] = data.invoice_number
 
     # Payment terms (optional)
@@ -82,29 +83,6 @@ def map_supplier_invoice_draft_to_dolibarr(
     # Notes
     if data.notes:
         payload["note_private"] = data.notes
-
-    # ============================================================
-    # Map lines (InvoiceLine -> Dolibarr supplierinvoice lines)
-    # ============================================================
-    lines_payload: list[dict[str, Any]] = []
-
-    for line in data.lines:
-        line_payload: dict[str, Any] = {
-            "label": line.description,
-            "qty": float(line.quantity) if line.quantity else 1,
-            "price_ht": float(line.unit_price) if line.unit_price else Decimal("0"),
-            "tva_tx": float(line.vat_rate) if line.vat_rate else Decimal("0"),
-            "remise_percent": float(line.discount_percent) if line.discount_percent else Decimal("0"),
-        }
-
-        # Product reference if available
-        if line.product_ref:
-            line_payload["fk_product"] = line.product_ref
-
-        lines_payload.append(line_payload)
-
-    if lines_payload:
-        payload["lines"] = lines_payload
 
     return payload
 

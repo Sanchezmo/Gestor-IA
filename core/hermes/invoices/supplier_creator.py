@@ -88,7 +88,7 @@ class SupplierInvoiceCreator:
     def __init__(self, dolibarr_client: Any) -> None:
         self.dolibarr = dolibarr_client
 
-    def resolve_supplier(
+    async def resolve_supplier(
         self,
         query: str,
         *,
@@ -114,12 +114,12 @@ class SupplierInvoiceCreator:
         normalized_query = query.strip()
 
         # Step 1: Try searching by tax ID (NIF/CIF)
-        tax_match = self._find_by_tax_id(normalized_query)
+        tax_match = await self._find_by_tax_id(normalized_query)
         if tax_match:
             return tax_match
 
         # Step 2: Try searching by name
-        name_match = self._find_by_name(normalized_query)
+        name_match = await self._find_by_name(normalized_query)
         if name_match:
             return name_match
 
@@ -128,10 +128,10 @@ class SupplierInvoiceCreator:
             reason=f"No thirdparty matching '{normalized_query}' found in Dolibarr"
         )
 
-    def _find_by_tax_id(self, tax_id: str) -> SupplierResolutionOutcome | None:
+    async def _find_by_tax_id(self, tax_id: str) -> SupplierResolutionOutcome | None:
         """Search Dolibarr for a thirdparty by normalized tax ID (NIF/CIF)."""
         try:
-            parties = self.dolibarr.find_thirdparty_by_tax_id(tax_id)
+            parties = await self.dolibarr.find_thirdparty_by_tax_id(tax_id)
         except Exception:
             return None
 
@@ -163,11 +163,11 @@ class SupplierInvoiceCreator:
             reason=f"Multiple thirdparties match tax ID '{tax_id}' in Dolibarr",
         )
 
-    def _find_by_name(self, name: str) -> SupplierResolutionOutcome | None:
+    async def _find_by_name(self, name: str) -> SupplierResolutionOutcome | None:
         """Search Dolibarr for a thirdparty by name."""
         try:
             # Search thirdparties with supplier filter
-            parties = self.dolibarr.list_thirdparties(
+            parties = await self.dolibarr.list_thirdparties(
                 limit=50,
                 sqlfilters=f"t.name:='{name}' OR t.nom:='{name}'",
             )

@@ -104,15 +104,26 @@ def verify_supplier_invoice(
 
     # ----- Header verification -----
 
-    # ref / invoice_number
+    # ref / invoice_number - use ref_supplier as primary identity (Defect 6)
+    # Ref_supplier is the supplier invoice number; ref is Dolibarr's internal field
     expected_ref = original_draft.invoice_number or ""
-    actual_ref = dolibarr_invoice.get("ref") or ""
-    if expected_ref != actual_ref:
+    ref_supplier = dolibarr_invoice.get("ref_supplier") or ""
+    ref = dolibarr_invoice.get("ref") or ""
+
+    # Primary: compare ref_supplier (supplier invoice number)
+    if ref_supplier and ref_supplier.upper() != expected_ref.upper():
+        mismatched_fields.append("ref_supplier")
+        # Secondary: also check ref if ref_supplier doesn't match
+        if ref.upper() == expected_ref.upper():
+            # ref matches even though ref_supplier doesn't - note the discrepancy
+            pass
+    elif ref and ref.upper() != expected_ref.upper():
+        # ref_supplier is empty, fall back to ref (secondary identity)
         mismatched_fields.append("ref")
-        # Normalize for comparison: strip whitespace
-        if expected_ref.strip() != actual_ref.strip():
+        if expected_ref.strip() != ref.strip():
             # Record as mismatch but don't fail if within tolerance
             pass
+    # If both ref_supplier and ref match expected_ref, no mismatch recorded
 
     # date / invoice_date
     expected_date = original_draft.invoice_date
@@ -208,7 +219,7 @@ def verify_supplier_invoice(
             line_mismatches.append("tva_tx")
 
         # discount_percent / remise_percent
-        expected_discount = _get_expected("discount_percent")
+        expected_discount = _get_expected("discount_percent") or Decimal("0")
         actual_discount = (
             Decimal(str(actual_line.get("remise_percent")))
             if actual_line.get("remise_percent") is not None

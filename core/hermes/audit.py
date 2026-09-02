@@ -662,19 +662,25 @@ class DocumentIdempotencyManager:
         "INVOICE_CREATED",
         "ATTACHMENT_PENDING",
         "COMPLETED",
-        "ERP_RESULT_UNKNOWN",   # POST timeout - no sabemos si se creó
+        "ERP_RESULT_UNKNOWN",   # POST timeout - no sabemos si se creó (durable sync)
         "FAILED_RETRYABLE",     # Error transitorio, se puede reintentar
         "FAILED_FINAL",         # Error permanente, intervención manual
     ])
 
     # Transiciones válidas: estado_origen -> set(estados_destino_permitidos)
+    # NOTE: ERP_RESULT_UNKNOWN -> FAILED_RETRYABLE is NOT allowed via generic
+    # exception handling. That transition is only permitted after explicit
+    # reconciliation has proven the invoice state (unique match -> adopt, etc.).
+    # See defect: ERP_RESULT_UNKNOWN must never be converted to FAILED_RETRYABLE
+    # if it would permit another CREATE.
     VALID_TRANSITIONS = {
         "PENDING_CONFIRMATION": {"CONFIRMING"},
         "CONFIRMING": {"SUPPLIER_CREATED", "INVOICE_CREATED", "ERP_RESULT_UNKNOWN", "FAILED_RETRYABLE", "FAILED_FINAL"},
         "SUPPLIER_CREATED": {"INVOICE_CREATED", "ERP_RESULT_UNKNOWN", "FAILED_RETRYABLE", "FAILED_FINAL"},
         "INVOICE_CREATED": {"ATTACHMENT_PENDING", "COMPLETED", "ERP_RESULT_UNKNOWN", "FAILED_RETRYABLE", "FAILED_FINAL"},
         "ATTACHMENT_PENDING": {"COMPLETED", "FAILED_RETRYABLE", "FAILED_FINAL"},
-        "ERP_RESULT_UNKNOWN": {"INVOICE_CREATED", "COMPLETED", "FAILED_RETRYABLE", "FAILED_FINAL"},  # Solo tras reconciliación
+        # ERP_RESULT_UNKNOWN -> FAILED_RETRYABLE blocked; only via reconciliation
+        "ERP_RESULT_UNKNOWN": {"INVOICE_CREATED", "COMPLETED", "FAILED_FINAL"},
         "FAILED_RETRYABLE": {"CONFIRMING", "SUPPLIER_CREATED", "INVOICE_CREATED", "ERP_RESULT_UNKNOWN"},
         "FAILED_FINAL": set(),  # Terminal - no transitions allowed
         "COMPLETED": set(),     # Terminal - no transitions allowed

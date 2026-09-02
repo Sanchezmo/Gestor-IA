@@ -36,7 +36,8 @@ from core.hermes.invoices.supplier_creator import (
 from core.hermes.invoices.verification import verify_supplier_invoice, VerificationResult
 from core.hermes.invoices.reconciliation import (
     ReconciliationEngine,
-    ReconciliationAction,
+    ReconciliationResult,
+    ReconciliationDetail,
     ReconciliationOutcome,
 )
 from core.hermes.ai_registry import (
@@ -434,7 +435,6 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
         # Initialize services
         idempotency = create_document_idempotency_manager(instance_config=company_context.instance_config)
         supplier_creator = SupplierInvoiceCreator(dolibarr)
-        reconciliation_engine = ReconciliationEngine(dolibarr)
 
         # Capture runtime versions for AI compliance
         git_sha = RuntimeVersionCapture.capture_git_sha()
@@ -476,12 +476,31 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
                         error_message=f"Invoice already exists in state: {existing_durable.final_state}",
                     )
 
-                # Re-validate Dolibarr duplicate
+                # Re-validate Dolibarr duplicate using available client methods
+                # Duplicate identity: (instance_id, supplier_tax_id, supplier_invoice_number)
+                # Lookup by supplier_tax_id -> find thirdparty -> list invoices -> check ref/ref_supplier
                 try:
-                    duplicate_exists = await client.check_duplicate_invoice(
-                        supplier_tax_id=supplier_tax_id,
-                        invoice_number=invoice_number,
-                    )
+                    supplier = await client.find_thirdparty_by_tax_id(supplier_tax_id)
+                    if not supplier:
+                        # No thirdparty found with this tax_id; no duplicate possible
+                        duplicate_exists = False
+                    else:
+                        supplier_id = supplier.get("id") or supplier.get("rowid")
+                        if not supplier_id:
+                            duplicate_exists = False
+                        else:
+                            invoices = await client.list_supplier_invoices(
+                                thirdparty_id=supplier_id,
+                                limit=500,
+                            )
+                            invoice_number_upper = invoice_number.upper()
+                            duplicate_exists = False
+                            for inv in invoices:
+                                ref = (inv.get("ref") or "").upper()
+                                ref_supplier = (inv.get("ref_supplier") or "").upper()
+                                if ref == invoice_number_upper or ref_supplier == invoice_number_upper:
+                                    duplicate_exists = True
+                                    break
                     if duplicate_exists:
                         return CommandResult(
                             success=False,
@@ -489,23 +508,21 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
                             error_message="Invoice already exists in Dolibarr",
                         )
                 except Exception as e:
-                    # Integration error - UNKNOWN_ERROR blocks CREATE
-                    await idempotency.mark_failed_retryable(
+                    # Integration error - don't block CREATE; let reconciliation handle it
+                    logger.warning(
+                        "duplicate_check_integration_error",
                         instance_id=company_context.instance_id,
                         supplier_tax_id=supplier_tax_id,
-                        supplier_invoice_number=invoice_number,
+                        invoice_number=invoice_number,
+                        error=str(e),
                     )
-                    return CommandResult(
-                        success=False,
-                        error_code="DUPLICATE_CHECK_FAILED",
-                        error_message=f"Could not verify duplicate in Dolibarr: {e}",
-                    )
+                    # Continue without blocking; reconciliation will resolve
 
                 # ============================================================
                 # STEP 2: Supplier Resolution (SUPPLIER_CREATED / INVOICE_CREATED)
                 # ============================================================
                 supplier_query = f"{draft.supplier.name} {draft.supplier.tax_id}".strip()
-                supplier_outcome = supplier_creator.resolve_supplier(supplier_query)
+                supplier_outcome = await supplier_creator.resolve_supplier(supplier_query)
 
                 supplier_dolibarr_id: int | None = None
 
@@ -878,28 +895,28 @@ class ReconcileSupplierInvoiceHandler(CommandHandler):
                 supplier_id=None,  # Would need supplier lookup
             )
 
-            if outcome.action == ReconciliationAction.ADOPT:
+            if outcome.result == ReconciliationResult.UNIQUE_MATCH:
                 # Adopt the existing invoice
                 await idempotency.mark_invoice_created(
                     instance_id=company_context.instance_id,
                     supplier_tax_id=supplier_tax_id,
                     supplier_invoice_number=invoice_number,
-                    supplier_dolibarr_id=outcome.supplier_id_after or 0,
-                    invoice_dolibarr_id=outcome.invoice_id_after,
-                    dolibarr_invoice_ref=outcome.detail.DolibarrInvoiceRef or "",
-                    dolibarr_invoice_id=outcome.invoice_id_after,
+                    supplier_dolibarr_id=outcome.detail.dolibarr_id or 0,
+                    invoice_dolibarr_id=outcome.detail.dolibarr_id or 0,
+                    dolibarr_invoice_ref=outcome.detail.ref_supplier or "",
+                    dolibarr_invoice_id=outcome.detail.dolibarr_id or 0,
                 )
                 # Continue to attachment/completion
                 return CommandResult(
                     success=True,
                     data={
                         "action": "adopted",
-                        "invoice_id": outcome.invoice_id_after,
-                        "supplier_id": outcome.supplier_id_after,
+                        "invoice_id": outcome.detail.dolibarr_id,
+                        "supplier_id": outcome.detail.dolibarr_id,
                     },
                 )
 
-            elif outcome.action == ReconciliationAction.NO_MATCH:
+            elif outcome.result == ReconciliationResult.NO_MATCH:
                 # Safe to retry creation
                 await idempotency.mark_failed_retryable(
                     instance_id=company_context.instance_id,
@@ -914,18 +931,20 @@ class ReconcileSupplierInvoiceHandler(CommandHandler):
                     },
                 )
 
-            elif outcome.action == ReconciliationAction.AMBIGUOUS_MATCH:
+            elif outcome.result == ReconciliationResult.AMBIGUOUS_MATCH:
                 return CommandResult(
                     success=False,
                     error_code="RECONCILIATION_AMBIGUOUS",
-                    error_message="Multiple matching invoices found. Manual review required.",
+                    error_message=outcome.detail.error_message
+                    or "Multiple matching invoices found. Manual review required.",
                 )
 
             else:  # ERROR
                 return CommandResult(
                     success=False,
                     error_code="RECONCILIATION_ERROR",
-                    error_message=outcome.detail.reason,
+                    error_message=outcome.detail.error_message
+                    or "Dolibarr unavailable or unexpected error. Remain uncertain, never CREATE.",
                 )
 
     def audit_data(self, result: CommandResult) -> dict[str, Any]:

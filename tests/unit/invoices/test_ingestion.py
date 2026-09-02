@@ -1671,9 +1671,11 @@ class TestDurableStateMachineInvariants:
 
         # ERP_RESULT_UNKNOWN -> CONFIRMING should be blocked (must reconcile first)
         assert "CONFIRMING" not in DocumentIdempotencyManager.VALID_TRANSITIONS["ERP_RESULT_UNKNOWN"]
-        # ERP_RESULT_UNKNOWN can only go to INVOICE_CREATED, COMPLETED, FAILED_RETRYABLE, FAILED_FINAL
+        # ERP_RESULT_UNKNOWN can only go to INVOICE_CREATED, COMPLETED, FAILED_FINAL.
+        # FAILED_RETRYABLE is blocked from direct transition to prevent duplicate CREATE;
+        # that transition is only permitted after explicit reconciliation has resolved the state.
         allowed_from_erp_unknown = DocumentIdempotencyManager.VALID_TRANSITIONS["ERP_RESULT_UNKNOWN"]
-        assert allowed_from_erp_unknown == {"INVOICE_CREATED", "COMPLETED", "FAILED_RETRYABLE", "FAILED_FINAL"}
+        assert allowed_from_erp_unknown == {"INVOICE_CREATED", "COMPLETED", "FAILED_FINAL"}
 
     @pytest.mark.asyncio
     async def test_completed_is_terminal(
