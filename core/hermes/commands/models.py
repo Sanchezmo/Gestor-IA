@@ -45,6 +45,7 @@ class CommandStatus(StrEnum):
     CANCELLED = "CANCELLED"
     EXPIRED = "EXPIRED"
     FAILED = "FAILED"
+    CORRECTION_REQUESTED = "CORRECTION_REQUESTED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +90,7 @@ class PendingCommand:
     expires_at: datetime
     confirmed_at: datetime | None = None
     executed_at: datetime | None = None
+    correction_requested_at: datetime | None = None
     idempotency_key: str = field(default="")
     document_hash: str | None = None  # SHA256 of source document for idempotency
     result: dict[str, Any] | None = None

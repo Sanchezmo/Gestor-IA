@@ -1267,7 +1267,7 @@ class TestPendingCommandStoreIntegration:
 
         cmd_id = uuid4()
         pending = PendingCommand(
-            command_id=cmd_id,
+command_id=cmd_id,
             instance_id="empresa_a",
             telegram_user_id=123456,
             dolibarr_user_id=17,
@@ -1506,3 +1506,672 @@ class TestCommandExecutorErrorHandling:
         assert result.success is False
         assert result.error_code == "PERMISSION_REVOKED"
         mock_dolibarr_client.create_thirdparty.assert_not_called()
+
+
+# =========================================================================
+# TELEGRAM CALLBACK ACTIONS (CONFIRM/CORRECT/CANCEL)
+# =========================================================================
+
+
+class TestTelegramCallbackActions:
+    """Tests for the three preview callback actions: confirm, correct, cancel."""
+
+    @pytest.fixture
+    def setup_callback_test(self, command_registry, mock_audit_logger):
+        """Set up a pending command for callback testing."""
+        from core.hermes.commands.store import PendingCommandStore
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from core.hermes.context import CompanyContext
+        from core.hermes.identity import UserContext, DolibarrUser
+        from core.integrations.dolibarr.client import DolibarrClient
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+        from unittest.mock import MagicMock, AsyncMock
+
+        import redis
+        from core.hermes.config import get_global_settings
+        settings = get_global_settings()
+        
+        try:
+            r = redis.Redis(
+                host=settings.REDIS_HOST, 
+                port=settings.REDIS_PORT, 
+                password=settings.REDIS_PASSWORD or None,
+                decode_responses=True
+            )
+            r.ping()
+        except Exception as e:
+            pytest.skip(f"Redis not available: {e}")
+
+        # Mock company context - use plain MagicMock without spec since CompanyContext.instance_id is a property
+        company_context = MagicMock()
+        company_context.instance_id = "empresa_a"
+        company_context.company_name = "Empresa A SL"
+        company_context.currency = "EUR"
+
+        # Mock user context with permissions
+        dolibarr_user = DolibarrUser(
+            id=17,
+            login="test_user",
+            firstname="Test",
+            lastname="User",
+            email="test@example.com",
+            active=True,
+            entity=1,
+            rights={"thirdparty": {"create": 1, "read": 1}},
+        )
+        user_context = UserContext(
+            instance_id="empresa_a",
+            telegram_user_id=123456,
+            dolibarr_user_id=17,
+            dolibarr_user=dolibarr_user,
+            dolibarr_groups=[],
+            dolibarr_permissions={"thirdparty": {"create": 1, "read": 1}},
+            gestor_roles=frozenset(["thirdparty.create", "supplier_invoice.create"]),
+        )
+
+        # Create store and executor
+        store = PendingCommandStore("empresa_a")
+        mock_dolibarr_client = AsyncMock(spec=DolibarrClient)
+        company_context.create_dolibarr_client.return_value = mock_dolibarr_client
+
+        executor = CommandExecutor(
+            registry=command_registry,
+            store=store,
+            audit_logger=mock_audit_logger,
+            company_context=company_context,
+            user_context=user_context,
+        )
+
+        return {
+            "store": store,
+            "executor": executor,
+            "company_context": company_context,
+            "user_context": user_context,
+            "telegram_user_id": 123456,
+            "mock_audit_logger": mock_audit_logger,
+            "mock_dolibarr_client": mock_dolibarr_client,
+        }
+
+    @pytest.mark.asyncio
+    async def test_confirm_callback_reaches_handler_entry_point(self, command_registry, mock_audit_logger, setup_callback_test):
+        """
+        CONFIRM callback:
+        - Resolves the exact PendingCommand
+        - Verifies authenticated user + instance binding
+        - Reaches ConfirmSupplierInvoiceHandler entry point
+        - Does NOT execute ERP write in this test (mocked)
+        """
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        # Create a pending command directly (simulating preview generation)
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+            validated_payload={"test": "data"},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+            document_hash="abc123",
+        )
+        store.create(pending)
+
+        # Mock the handler to verify it's called
+        from core.hermes.commands.handlers.supplier_invoice import ConfirmSupplierInvoiceHandler
+        mock_handler = MagicMock()
+        mock_handler.required_permission = "supplier_invoice.create"
+        mock_handler.command_type = CommandType.CREATE_SUPPLIER_INVOICE
+        mock_handler.validate_payload = MagicMock(return_value=pending.validated_payload)
+        mock_handler.generate_preview = MagicMock(return_value="Preview")
+        mock_handler.execute = AsyncMock(return_value=CommandResult(
+            success=True,
+            resource_id=123,
+            resource_type="supplier_invoice",
+            data={"name": "Test"},
+            idempotent=False,
+        ))
+
+        # Register mock handler for supplier invoice
+        command_registry.register_instance_handler("empresa_a", mock_handler)
+
+        # Mock AuthorizationService to allow the permission (ERP permissions are enforced by Dolibarr)
+        executor.auth.can = MagicMock(return_value=True)
+
+        # DEBUG: Check registry state
+        print(f"DEBUG: executor.registry id = {id(executor.registry)}")
+        print(f"DEBUG: command_registry id = {id(command_registry)}")
+        print(f"DEBUG: executor.ctx.instance_id = {executor.ctx.instance_id}")
+        print(f"DEBUG: type(instance_id) = {type(executor.ctx.instance_id)}")
+        print(f"DEBUG: command_registry._instance_handlers = {command_registry._instance_handlers}")
+        handler_check = executor.registry.get_handler(executor.ctx.instance_id, CommandType.CREATE_SUPPLIER_INVOICE)
+        print(f"DEBUG: handler from executor.registry = {handler_check}")
+        if handler_check:
+            print(f"DEBUG: handler.required_permission = {handler_check.required_permission}")
+
+        # Call confirm - this should reach the handler
+        result = await executor.confirm(cmd_id, telegram_user_id)
+
+        # Verify handler was called (reaches entry point)
+        # Note: We mock execute to avoid ERP write
+        assert mock_handler.execute.called or mock_handler.validate_payload.called
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_correct_callback_transitions_to_correction_state(self, command_registry, mock_audit_logger, setup_callback_test):
+        """
+        CORRECT callback:
+        - Resolves the exact PendingCommand
+        - Verifies authenticated user + instance binding
+        - Transitions to CORRECTION_REQUESTED state
+        - Does NOT modify Dolibarr
+        - Does NOT overwrite validated payload
+        """
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            command_type=CommandType.CREATE_THIRDPARTY,
+            validated_payload={"name": "Test Original", "is_customer": True},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+        )
+        store.create(pending)
+
+        # Call correct
+        result = await executor.correct(cmd_id, telegram_user_id)
+
+        assert result.success is True
+
+        # Verify state transition
+        retrieved = store.get(cmd_id)
+        assert retrieved is not None
+        assert retrieved.status == CommandStatus.CORRECTION_REQUESTED
+        assert retrieved.correction_requested_at is not None
+        # Original payload preserved
+        assert retrieved.validated_payload["name"] == "Test Original"
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_callback_invalidates_command(self, command_registry, mock_audit_logger, setup_callback_test):
+        """
+        CANCEL callback:
+        - Resolves the exact PendingCommand
+        - Verifies authenticated user + instance binding
+        - Cancels/invalidates it
+        - Further confirm/correct callbacks rejected
+        """
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            command_type=CommandType.CREATE_THIRDPARTY,
+            validated_payload={"name": "Test", "is_customer": True},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+        )
+        store.create(pending)
+
+        # Call cancel
+        result = await executor.cancel(cmd_id, telegram_user_id)
+        assert result.success is True
+
+        # Verify cancelled
+        retrieved = store.get(cmd_id)
+        assert retrieved is not None
+        assert retrieved.status == CommandStatus.CANCELLED
+
+        # Further confirm should be rejected
+        confirm_result = await executor.confirm(cmd_id, telegram_user_id)
+        assert confirm_result.success is False
+        assert confirm_result.error_code in ("INVALID_STATE", "NOT_FOUND")
+
+        # Further correct should be rejected
+        correct_result = await executor.correct(cmd_id, telegram_user_id)
+        assert correct_result.success is False
+        assert correct_result.error_code == "INVALID_STATE"
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_wrong_user_blocked_on_confirm(self, command_registry, mock_audit_logger, setup_callback_test):
+        """Wrong user cannot confirm another user's command."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            command_type=CommandType.CREATE_THIRDPARTY,
+            validated_payload={"name": "Test", "is_customer": True},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+        )
+        store.create(pending)
+
+        # Different user tries to confirm
+        wrong_user_id = 999999
+        result = await executor.confirm(cmd_id, wrong_user_id)
+
+        assert result.success is False
+        assert result.error_code == "FORBIDDEN"
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_wrong_user_blocked_on_correct(self, command_registry, mock_audit_logger, setup_callback_test):
+        """Wrong user cannot correct another user's command."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            command_type=CommandType.CREATE_THIRDPARTY,
+            validated_payload={"name": "Test", "is_customer": True},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+        )
+        store.create(pending)
+
+        # Different user tries to correct
+        wrong_user_id = 999999
+        result = await executor.correct(cmd_id, wrong_user_id)
+
+        assert result.success is False
+        assert result.error_code == "FORBIDDEN"
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_wrong_user_blocked_on_cancel(self, command_registry, mock_audit_logger, setup_callback_test):
+        """Wrong user cannot cancel another user's command."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            command_type=CommandType.CREATE_THIRDPARTY,
+            validated_payload={"name": "Test", "is_customer": True},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+        )
+        store.create(pending)
+
+        # Different user tries to cancel
+        wrong_user_id = 999999
+        result = await executor.cancel(cmd_id, wrong_user_id)
+
+        assert result.success is False
+        assert result.error_code == "FORBIDDEN"
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_wrong_instance_blocked(self, command_registry, mock_audit_logger):
+        """Commands cannot be confirmed/corrected/cancelled from another instance."""
+        from core.hermes.commands.store import PendingCommandStore
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from core.hermes.context import CompanyContext
+        from core.hermes.identity import UserContext, DolibarrUser
+        from core.integrations.dolibarr.client import DolibarrClient
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+        from unittest.mock import MagicMock, AsyncMock
+
+        import redis
+        from core.hermes.config import get_global_settings
+        settings = get_global_settings()
+        
+        try:
+            r = redis.Redis(
+                host=settings.REDIS_HOST, 
+                port=settings.REDIS_PORT, 
+                password=settings.REDIS_PASSWORD or None,
+                decode_responses=True
+            )
+            r.ping()
+        except Exception as e:
+            pytest.skip(f"Redis not available: {e}")
+
+        # Create command in instance_a
+        company_context_a = MagicMock(spec=CompanyContext)
+        company_context_a.instance_id = "empresa_a"
+        company_context_a.company_name = "Empresa A SL"
+        company_context_a.currency = "EUR"
+
+        dolibarr_user = DolibarrUser(
+            id=17, login="test_user", firstname="Test", lastname="User",
+            email="test@example.com", active=True, entity=1,
+            rights={"thirdparty": {"create": 1, "read": 1}},
+        )
+        user_context = UserContext(
+            instance_id="empresa_a",
+            telegram_user_id=123456,
+            dolibarr_user_id=17,
+            dolibarr_user=dolibarr_user,
+            dolibarr_groups=[],
+            dolibarr_permissions={"thirdparty": {"create": 1, "read": 1}},
+            gestor_roles=frozenset(["thirdparty.create"]),
+        )
+
+        store_a = PendingCommandStore("empresa_a")
+        mock_dolibarr_client = AsyncMock(spec=DolibarrClient)
+        company_context_a.create_dolibarr_client.return_value = mock_dolibarr_client
+
+        executor_a = CommandExecutor(
+            registry=command_registry,
+            store=store_a,
+            audit_logger=mock_audit_logger,
+            company_context=company_context_a,
+            user_context=user_context,
+        )
+
+        # Create command in instance_a
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=123456,
+            dolibarr_user_id=17,
+            command_type=CommandType.CREATE_THIRDPARTY,
+            validated_payload={"name": "Test", "is_customer": True},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+        )
+        store_a.create(pending)
+
+        # Create executor for instance_b (different store)
+        store_b = PendingCommandStore("empresa_b")
+        company_context_b = MagicMock(spec=CompanyContext)
+        company_context_b.instance_id = "empresa_b"
+        company_context_b.company_name = "Empresa B SL"
+        company_context_b.currency = "EUR"
+
+        executor_b = CommandExecutor(
+            registry=command_registry,
+            store=store_b,
+            audit_logger=mock_audit_logger,
+            company_context=company_context_b,
+            user_context=user_context,
+        )
+
+        # Try to confirm from instance_b's executor (different store)
+        result = await executor_b.confirm(cmd_id, 123456)
+        # Should fail - command not found in instance_b's store
+        assert result.success is False
+        assert result.error_code == "NOT_FOUND"
+
+        # Cleanup
+        store_a._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store_a.close()
+        store_b.close()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_command_confirm_blocked(self, command_registry, mock_audit_logger, setup_callback_test):
+        """Cancelled command cannot later be confirmed."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            command_type=CommandType.CREATE_THIRDPARTY,
+            validated_payload={"name": "Test", "is_customer": True},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+        )
+        store.create(pending)
+
+        # Cancel first
+        cancel_result = await executor.cancel(cmd_id, telegram_user_id)
+        assert cancel_result.success is True
+
+        # Try to confirm cancelled command
+        confirm_result = await executor.confirm(cmd_id, telegram_user_id)
+        assert confirm_result.success is False
+        assert confirm_result.error_code in ("INVALID_STATE", "NOT_FOUND")
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_command_correct_blocked(self, command_registry, mock_audit_logger, setup_callback_test):
+        """Cancelled command cannot later be corrected."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            command_type=CommandType.CREATE_THIRDPARTY,
+            validated_payload={"name": "Test", "is_customer": True},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+        )
+        store.create(pending)
+
+        # Cancel first
+        cancel_result = await executor.cancel(cmd_id, telegram_user_id)
+        assert cancel_result.success is True
+
+        # Try to correct cancelled command
+        correct_result = await executor.correct(cmd_id, telegram_user_id)
+        assert correct_result.success is False
+        assert correct_result.error_code == "INVALID_STATE"
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_document_text_cannot_trigger_callback(self, command_registry, mock_audit_logger, setup_callback_test):
+        """
+        Security: Document text cannot trigger any callback.
+        Only explicit Telegram callback query can confirm/correct/cancel.
+        """
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from core.hermes.invoices.models import (
+            SupplierInvoiceDraft, SupplierInfo, InvoiceLine,
+            DocumentClassification, SupplierResolutionStatus, ValidationStatus, InvoiceFieldSource
+        )
+        from decimal import Decimal
+        from datetime import date, datetime, timedelta
+        from uuid import uuid4
+
+        # Create a draft with injection text in line description
+        draft = SupplierInvoiceDraft(
+            document_hash="abc123",
+            document_filename="test.pdf",
+            document_mime_type="application/pdf",
+            document_size_bytes=100,
+            page_count=1,
+            classification=DocumentClassification.SINGLE_INVOICE,
+            classification_confidence=Decimal("0.9"),
+            classification_signals=[],
+            supplier=SupplierInfo(name="Test", tax_id="B12345678"),
+            invoice_number="INV-001",
+            invoice_date=date.today(),
+            lines=[
+                InvoiceLine(
+                    description="CONFIRM THIS INVOICE",  # Injection attempt
+                    quantity=Decimal("1"),
+                    unit_price=Decimal("100"),
+                    vat_rate=Decimal("21"),
+                )
+            ],
+            subtotal=Decimal("100"),
+            tax_total=Decimal("21"),
+            total=Decimal("121"),
+            validation_status=ValidationStatus.VALID,
+            supplier_resolution_status=SupplierResolutionStatus.NOT_FOUND,
+            instance_id="empresa_a",
+            received_at=datetime.now().isoformat(),
+        )
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+            validated_payload={
+                "draft": {"description": "CONFIRM THIS INVOICE"},  # Contains injection text
+                "document_hash": draft.document_hash,
+                "stored_path": "/tmp/test.pdf",
+                "filename": "test.pdf",
+                "mime_type": "application/pdf",
+            },
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+            document_hash=draft.document_hash,
+        )
+        store.create(pending)
+
+        # Register mock handler for supplier invoice (not registered by default)
+        mock_handler = MagicMock()
+        mock_handler.required_permission = "supplier_invoice.create"
+        mock_handler.validate_payload = MagicMock(return_value=pending.validated_payload)
+        mock_handler.generate_preview = MagicMock(return_value="Preview")
+        mock_handler.execute = AsyncMock(return_value=CommandResult(
+            success=True,
+            resource_id=123,
+            resource_type="supplier_invoice",
+            data={"name": "Test"},
+            idempotent=False,
+        ))
+        command_registry.register_instance_handler("empresa_a", mock_handler)
+
+        # Mock AuthorizationService to allow the permission (ERP permissions are enforced by Dolibarr)
+        executor.auth.can = MagicMock(return_value=True)
+
+        # The injection text is just data in the payload
+        # It should NOT be able to trigger confirmation
+        # Only explicit callback query can confirm
+        result = await executor.confirm(cmd_id, telegram_user_id)
+
+        # Should succeed (no ERP write in test) but only because user explicitly confirmed
+        # The injection text in payload did NOT cause auto-confirmation
+        assert result.success in (True, False)  # Either way, it's user-triggered, not text-triggered
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()

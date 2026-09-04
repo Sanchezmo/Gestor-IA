@@ -19,6 +19,7 @@ async def send_command_preview(telegram: TelegramClient, chat_id: int, preview: 
         "inline_keyboard": [
             [
                 {"text": "✅ Confirmar", "callback_data": f"confirm:{preview.command_id}"},
+                {"text": "✏️ Corregir", "callback_data": f"correct:{preview.command_id}"},
                 {"text": "❌ Cancelar", "callback_data": f"cancel:{preview.command_id}"},
             ]
         ]
@@ -39,7 +40,7 @@ async def handle_command_callback(
     callback_data: str,
     telegram_user_id: int,
 ) -> None:
-    """Handle confirm/cancel callback queries."""
+    """Handle confirm/correct/cancel callback queries."""
     if callback_data.startswith("confirm:"):
         command_id = UUID(callback_data.split(":", 1)[1])
         result = await executor.confirm(command_id, telegram_user_id)
@@ -52,6 +53,17 @@ async def handle_command_callback(
             resource_type = result.resource_type or "recurso"
             name = result.data.get("name") or result.data.get("label") or f"ID:{result.resource_id}"
             text = f"✅ {resource_type.capitalize()} creado: {name}"
+        else:
+            text = f"❌ {result.error_message}"
+
+        await telegram.edit_message_text(chat_id, message_id, text)
+
+    elif callback_data.startswith("correct:"):
+        command_id = UUID(callback_data.split(":", 1)[1])
+        result = await executor.correct(command_id, telegram_user_id)
+
+        if result.success:
+            text = "✏️ Corrección solicitada. Indique qué desea corregir."
         else:
             text = f"❌ {result.error_message}"
 

@@ -202,6 +202,7 @@ class PendingCommandStore:
             "expires_at": pending.expires_at.isoformat(),
             "confirmed_at": pending.confirmed_at.isoformat() if pending.confirmed_at else None,
             "executed_at": pending.executed_at.isoformat() if pending.executed_at else None,
+            "correction_requested_at": pending.correction_requested_at.isoformat() if pending.correction_requested_at else None,
             "idempotency_key": pending.idempotency_key,
             "result": _json_safe(pending.result) if pending.result else None,
             "error_code": pending.error_code,
@@ -222,6 +223,7 @@ class PendingCommandStore:
             expires_at=datetime.fromisoformat(data["expires_at"]),
             confirmed_at=datetime.fromisoformat(data["confirmed_at"]) if data["confirmed_at"] else None,
             executed_at=datetime.fromisoformat(data["executed_at"]) if data["executed_at"] else None,
+            correction_requested_at=datetime.fromisoformat(data["correction_requested_at"]) if data.get("correction_requested_at") else None,
             idempotency_key=data["idempotency_key"],
             result=data["result"],
             error_code=data["error_code"],
@@ -236,6 +238,8 @@ class PendingCommandStore:
             updates["confirmed_at"] = datetime.now()
         elif status == CommandStatus.EXECUTED:
             updates["executed_at"] = datetime.now()
+        elif status == CommandStatus.CORRECTION_REQUESTED:
+            updates["correction_requested_at"] = datetime.now()
         
         # Build new PendingCommand preserving proper types
         # Start with current values, then apply updates
@@ -251,6 +255,7 @@ class PendingCommandStore:
             expires_at=pending.expires_at,
             confirmed_at=updates.get("confirmed_at", pending.confirmed_at),
             executed_at=updates.get("executed_at", pending.executed_at),
+            correction_requested_at=updates.get("correction_requested_at", pending.correction_requested_at),
             idempotency_key=pending.idempotency_key,
             result=updates.get("result", pending.result),
             error_code=updates.get("error_code", pending.error_code),

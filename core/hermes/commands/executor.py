@@ -218,6 +218,65 @@ class CommandExecutor:
         await self._audit_cancelled(cancelled)
         return CommandResult(success=True)
 
+    async def correct(self, command_id: UUID, telegram_user_id: int) -> CommandResult:
+        """Request correction for pending command."""
+        # 1. Load and validate pending command atomically
+        pending = self.store.get(command_id)
+        if not pending:
+            return CommandResult(
+                success=False,
+                error_code="NOT_FOUND",
+                error_message="Comando no encontrado o expirado",
+            )
+
+        # 2. Validate ownership
+        if pending.telegram_user_id != telegram_user_id:
+            return CommandResult(
+                success=False,
+                error_code="FORBIDDEN",
+                error_message="Solo el usuario original puede solicitar corrección",
+            )
+
+        # 3. Validate state - only PENDING commands can be corrected
+        if pending.status != CommandStatus.PENDING:
+            return CommandResult(
+                success=False,
+                error_code="INVALID_STATE",
+                error_message=f"Comando en estado {pending.status.value}, no se puede corregir",
+            )
+
+        # 4. Update to CORRECTION_REQUESTED state
+        updated = self.store.update_status(
+            command_id,
+            CommandStatus.CORRECTION_REQUESTED,
+            correction_requested_at=datetime.now(),
+        )
+        if not updated:
+            return CommandResult(
+                success=False,
+                error_code="STATE_UPDATE_FAILED",
+                error_message="No se pudo actualizar el estado del comando",
+            )
+
+        # 5. Audit correction request
+        await self._audit_correction_requested(pending)
+
+        return CommandResult(success=True)
+
+    # Audit helpers
+
+    async def _audit_correction_requested(self, pending: PendingCommand) -> None:
+        await self.audit.log_from_context(
+            self.ctx,
+            action="command.correction_requested",
+            resource_type=pending.command_type.value,
+            resource_id=str(pending.command_id),
+            success=True,
+            idempotency_key=pending.idempotency_key,
+            telegram_user_id=self.user.telegram_user_id,
+            dolibarr_user_id=self.user.dolibarr_user_id,
+        )
+
     # Audit helpers
 
     async def _audit_preview_created(self, preview: CommandPreview, payload: dict) -> None:
