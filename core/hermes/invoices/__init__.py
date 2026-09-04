@@ -7,6 +7,7 @@ Exports:
 - validator: validate_invoice, infer_missing_totals
 - supplier_resolver: SupplierResolver
 - ingestion: DocumentIngestionService
+- correction: CorrectionParser, CorrectionApplicator (Corregir flow)
 """
 
 from .models import (
@@ -31,6 +32,8 @@ from .extractor import InvoiceExtractor, LocalModelUnavailableError, ExtractionT
 from .validator import validate_invoice, infer_missing_totals, normalize_tax_data
 from .supplier_resolver import SupplierResolver
 from .ingestion import DocumentIngestionService, IngestionResult, create_document_ingestion_service
+from .correction_parser import CorrectionParser, CorrectionResult, create_correction_parser
+from .correction_applicator import CorrectionApplicator, ApplicationResult, create_correction_applicator
 
 __all__ = [
     # Models
@@ -63,4 +66,11 @@ __all__ = [
     "DocumentIngestionService",
     "IngestionResult",
     "create_document_ingestion_service",
+    # Correction (Corregir flow)
+    "CorrectionParser",
+    "CorrectionResult",
+    "create_correction_parser",
+    "CorrectionApplicator",
+    "ApplicationResult",
+    "create_correction_applicator",
 ]

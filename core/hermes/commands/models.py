@@ -61,6 +61,7 @@ class CommandIntent:
     correlation_id: str | None = None
     timestamp: datetime = field(default_factory=datetime.now)
     document_hash: str | None = None  # SHA256 of source document for idempotency
+    chat_id: int = 0  # Telegram chat where command originated
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,7 @@ class PendingCommand:
     instance_id: str
     telegram_user_id: int
     dolibarr_user_id: int
+    chat_id: int  # Chat where the command originated
     command_type: CommandType
     validated_payload: dict[str, Any]
     status: CommandStatus

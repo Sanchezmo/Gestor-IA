@@ -195,6 +195,7 @@ class PendingCommandStore:
             "instance_id": pending.instance_id,
             "telegram_user_id": pending.telegram_user_id,
             "dolibarr_user_id": pending.dolibarr_user_id,
+            "chat_id": pending.chat_id,
             "command_type": pending.command_type.value,
             "validated_payload": _json_safe(pending.validated_payload),
             "status": pending.status.value,
@@ -216,6 +217,7 @@ class PendingCommandStore:
             instance_id=data["instance_id"],
             telegram_user_id=data["telegram_user_id"],
             dolibarr_user_id=data["dolibarr_user_id"],
+            chat_id=data.get("chat_id", 0),
             command_type=CommandType(data["command_type"]),
             validated_payload=data["validated_payload"],
             status=CommandStatus(data["status"]),
@@ -248,6 +250,7 @@ class PendingCommandStore:
             instance_id=pending.instance_id,
             telegram_user_id=pending.telegram_user_id,
             dolibarr_user_id=pending.dolibarr_user_id,
+            chat_id=pending.chat_id,
             command_type=pending.command_type,
             validated_payload=pending.validated_payload,
             status=updates.get("status", pending.status),
@@ -266,3 +269,39 @@ class PendingCommandStore:
     def close(self) -> None:
         """Close Redis connection."""
         self._redis.close()
+
+    def find_correction_requested(
+        self,
+        telegram_user_id: int,
+        chat_id: int | None = None,
+    ) -> PendingCommand | None:
+        """
+        Find a pending command in CORRECTION_REQUESTED state for a user in a specific chat.
+        
+        Uses SCAN to find commands for this user in the instance.
+        Filters by telegram_user_id, chat_id (if provided), and status.
+        """
+        pattern = f"hermes:{self.instance_id}:pending_commands:*"
+        cursor = 0
+        
+        while True:
+            cursor, keys = self._redis.scan(cursor, match=pattern, count=50)
+            for key in keys:
+                data = self._redis.get(key)
+                if not data:
+                    continue
+                try:
+                    pending = self._deserialize(json.loads(data))
+                    if (pending.telegram_user_id == telegram_user_id 
+                        and pending.status == CommandStatus.CORRECTION_REQUESTED):
+                        # Filter by chat_id if provided
+                        if chat_id is not None and pending.chat_id != chat_id:
+                            continue
+                        return pending
+                except Exception:
+                    continue
+            
+            if cursor == 0:
+                break
+        
+        return None

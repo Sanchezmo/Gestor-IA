@@ -736,6 +736,7 @@ async def telegram_webhook(
                         instance_id=ctx.instance_id,
                         telegram_user_id=user_context.telegram_user_id,
                         dolibarr_user_id=user_context.dolibarr_user_id,
+                        chat_id=chat_id,
                         command_type=CommandType.CREATE_SUPPLIER_INVOICE,
                         validated_payload={
                             "draft": draft_dict,
@@ -830,6 +831,51 @@ async def telegram_webhook(
                 await telegram_client.send_message(chat_id=chat_id, text="Solo se procesan mensajes de texto.")
             r.set(idempotency_key, "completed", ex=86400)
             return {"success": True, "update_id": update_id}
+
+        # =====================================================================
+        # CORRECTION FLOW: Check for pending command in CORRECTION_REQUESTED state
+        # =====================================================================
+        if user_context:
+            from core.hermes.commands.store import PendingCommandStore
+            from core.hermes.commands.executor import CommandExecutor
+            from core.hermes.audit import create_audit_logger
+            from core.hermes.commands import command_registry
+
+            store = PendingCommandStore(ctx.instance_id)
+            pending_correction = store.find_correction_requested(
+                telegram_user_id=user_context.telegram_user_id,
+                chat_id=chat_id,
+            )
+
+            if pending_correction:
+                logger.info(
+                    "correction_mode_active",
+                    instance_id=instance_id,
+                    telegram_user_id=user_context.telegram_user_id,
+                    chat_id=chat_id,
+                    command_id=str(pending_correction.command_id),
+                )
+
+                audit_logger = create_audit_logger(instance_config=ctx.instance_config)
+                executor = CommandExecutor(
+                    registry=command_registry,
+                    store=store,
+                    audit_logger=audit_logger,
+                    company_context=ctx,
+                    user_context=user_context,
+                )
+
+                # Handle correction text - this will parse, apply, revalidate, and send new preview
+                result = await executor.handle_correction_text(
+                    telegram_user_id=user_context.telegram_user_id,
+                    chat_id=chat_id,
+                    correction_text=text,
+                    telegram_client=telegram_client,
+                )
+
+                # Mark idempotency completed
+                r.set(idempotency_key, "completed", ex=86400)
+                return {"success": True, "update_id": update_id, "correction_handled": True}
 
         # =====================================================================
         # ENRUTAMIENTO DE COMANDOS
@@ -1280,6 +1326,7 @@ async def telegram_webhook(
                                     telegram_user_id=user_context.telegram_user_id,
                                     dolibarr_user_id=user_context.dolibarr_user_id,
                                     request_id=str(update_id),
+                                    chat_id=chat_id,
                                 )
 
                                 audit_logger = create_audit_logger(instance_config=ctx.instance_config)
