@@ -15,8 +15,8 @@ Adapted for Gestor-IA:
 from __future__ import annotations
 
 import json
-import tempfile
 import os
+import tempfile
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -26,16 +26,17 @@ import structlog
 
 from core.hermes.ai import AIProvider, create_ai_provider
 from core.hermes.instance_config import InstanceConfig
+
 from .models import (
     ClassificationResult,
-    SupplierInvoiceDraft,
-    SupplierInfo,
+    DocumentClassification,
+    ExtractionResult,
+    InvoiceFieldSource,
     InvoiceLine,
+    SupplierInfo,
+    SupplierInvoiceDraft,
     TaxBreakdownItem,
     WithholdingBreakdownItem,
-    DocumentClassification,
-    InvoiceFieldSource,
-    ExtractionResult,
     normalize_tax_id,
 )
 
@@ -66,7 +67,6 @@ logger = structlog.get_logger()
 #   "referencias alfanuméricas" (no scientific notation)
 
 import re
-from decimal import Decimal
 
 _SCIENTIFIC_PERCENT_PATTERN = re.compile(
     r'(\d+(?:\.\d+)?)E([+-]?\d+)%',
@@ -301,52 +301,70 @@ class InvoiceExtractor:
             if mime_type == "application/pdf" or filename.lower().endswith(".pdf"):
                 raw_text, has_native_text, page_images, page_count = await self._process_pdf(temp_file_path)
                 native_text_chars = len(raw_text) if raw_text else 0
+
+                # If no native text layer, use vision-based structured extraction directly on page images
+                if not has_native_text and page_images:
+                    logger.info("pdf_no_native_text_vision_extraction", pages=len(page_images))
+                    extracted_data = await self._extract_structured_data_via_vision(page_images)
+                    inference_count += 1
+                else:
+                    # Has native text - use text-based extraction (fallback)
+                    if not raw_text or len(raw_text.strip()) < 20:
+                        return ExtractionResult(
+                            success=False,
+                            error="No se pudo extraer texto del documento",
+                            error_code="TEXT_EXTRACTION_FAILED",
+                            requires_review=True,
+                        )
             else:
-                # Image - direct OCR
+                # Image - use vision-based structured extraction directly
                 page_count = 1
-                raw_text = await self._ocr_via_vision(temp_file_path)
+                # Read image bytes directly
+                with open(temp_file_path, "rb") as f:
+                    image_bytes = f.read()
+                page_images = [image_bytes]
+                extracted_data = await self._extract_structured_data_via_vision(page_images)
                 inference_count += 1
-                native_text_chars = len(raw_text) if raw_text else 0
+                native_text_chars = 0
+                has_native_text = False
+                raw_text = ""  # No raw text for vision-based extraction
 
-            if not raw_text or len(raw_text.strip()) < 20:
-                return ExtractionResult(
-                    success=False,
-                    error="No se pudo extraer texto del documento",
-                    error_code="TEXT_EXTRACTION_FAILED",
-                    requires_review=True,
-                )
+            # Document classification (skip if we already have extracted_data from vision)
+            if 'extracted_data' not in locals():
+                # Text-based path - need classification first
+                classification = await self._classify_document(raw_text, page_images, page_count, has_native_text)
 
-            # Document classification
-            classification = await self._classify_document(raw_text, page_images, page_count, has_native_text)
+                # Handle non-invoice documents
+                if classification.document_type == DocumentClassification.NOT_INVOICE:
+                    return ExtractionResult(
+                        success=False,
+                        error="El documento no parece una factura de proveedor",
+                        error_code="NOT_INVOICE",
+                        requires_review=False,
+                    )
 
-            # Handle non-invoice documents
-            if classification.document_type == DocumentClassification.NOT_INVOICE:
-                return ExtractionResult(
-                    success=False,
-                    error="El documento no parece una factura de proveedor",
-                    error_code="NOT_INVOICE",
-                    requires_review=False,
-                )
+                if classification.document_type == DocumentClassification.MULTI_DOCUMENT:
+                    return ExtractionResult(
+                        success=False,
+                        error="El documento parece contener varios documentos. Envíe cada factura por separado.",
+                        error_code="MULTI_DOCUMENT",
+                        requires_review=True,
+                    )
 
-            if classification.document_type == DocumentClassification.MULTI_DOCUMENT:
-                return ExtractionResult(
-                    success=False,
-                    error="El documento parece contener varios documentos. Envíe cada factura por separado.",
-                    error_code="MULTI_DOCUMENT",
-                    requires_review=True,
-                )
+                if classification.document_type == DocumentClassification.UNKNOWN:
+                    return ExtractionResult(
+                        success=False,
+                        error="No se puede determinar si es una factura válida",
+                        error_code="DOCUMENT_UNKNOWN",
+                        requires_review=True,
+                    )
 
-            if classification.document_type == DocumentClassification.UNKNOWN:
-                return ExtractionResult(
-                    success=False,
-                    error="No se puede determinar si es una factura válida",
-                    error_code="DOCUMENT_UNKNOWN",
-                    requires_review=True,
-                )
-
-            # Structured extraction
-            extracted_data = await self._extract_structured_data(raw_text)
-            inference_count += 1
+                # Structured extraction (text-based)
+                extracted_data = await self._extract_structured_data(raw_text)
+                inference_count += 1
+            else:
+                # Vision-based path - classify using the extracted data or first page image
+                classification = await self._classify_document_from_vision(page_images, page_count, extracted_data)
 
             # Build draft
             draft = self._build_draft(
@@ -474,6 +492,82 @@ class InvoiceExtractor:
         except Exception as e:
             logger.error("ocr_vision_failed", error=str(e))
             raise ExtractionTimeoutError("OCR timeout") from e
+
+    async def _ocr_via_vision_bytes(self, image_bytes: bytes) -> str:
+        """OCR via Ollama vision model from image bytes (in-memory)."""
+        import tempfile
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp.write(image_bytes)
+                temp_path = tmp.name
+            return await self._ocr_via_vision(temp_path)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+
+    async def _extract_structured_data_via_vision(self, page_images: list[bytes]) -> dict[str, Any]:
+        """
+        Extract structured invoice data directly from page images using vision model with JSON schema.
+
+        This bypasses OCR + text extraction and uses the vision model's ability to
+        understand document layout and extract structured data directly.
+        """
+        if not page_images:
+            raise ValueError("No page images provided for vision extraction")
+
+        # Use the first page for extraction (multi-page invoices: first page usually has header + first lines)
+        # For multi-page, we could send multiple images but Ollama vision typically handles one image at a time
+        primary_image = page_images[0]
+
+        import tempfile
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp.write(primary_image)
+                temp_path = tmp.name
+
+            prompt = """
+Extrae la información de la factura de proveedor de esta imagen y devuelve JSON según el esquema.
+
+REGLAS IMPORTANTES:
+- Fechas: DEVUELVE SIEMPRE en formato ISO YYYY-MM-DD (ej: 2026-08-27). NO uses DD/MM/YYYY ni concatenes día+mes.
+- Líneas: EXTRAE TODAS las líneas de detalle visibles, incluidas líneas con IVA 0%, ajustes negativos.
+- Impuestos: DEVUELVE array "taxes" con TODOS los tipos de IVA (21%, 10%, 4%, 0%) incluyendo base, rate, amount.
+- Retenciones: Si hay retenciones (IRPF, etc.), extrae CADA UNA en "withholdings" con: concept (IRPF/IVA soportado...), rate, base, amount (POSITIVO).
+- NO omitas "withholdings" ni "taxes" si existen en el documento.
+- Si NO hay retenciones, devuelve "withholdings": []. "withholding_total" es la suma de amounts.
+
+Devuelve SOLO el JSON válido, sin texto adicional.
+"""
+
+            result = await self.provider.vision(
+                think=False,
+                image_path=temp_path,
+                prompt=prompt,
+                request_timeout=self.ollama_timeout,
+                format=json.dumps(INVOICE_JSON_SCHEMA),
+            )
+
+            json_str = result.get("text", "").strip()
+            data = json.loads(json_str)
+            return data
+
+        except json.JSONDecodeError as e:
+            logger.error("vision_structured_extraction_invalid_json", error=str(e), response=json_str[:500] if 'json_str' in locals() else "no response")
+            raise
+        except Exception as e:
+            logger.error("vision_structured_extraction_failed", error=str(e))
+            raise
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
 
     # =========================================================================
     # DOCUMENT CLASSIFICATION
@@ -629,7 +723,7 @@ Múltiples facturas = varios números/encabezados distintos.
         page_count: int,
         has_native_text: bool,
     ) -> DocumentClassification:
-        """Main classification entry point."""
+        """Main classification entry point for text-based extraction."""
         if has_native_text and raw_text and len(raw_text.strip()) >= 50:
             doc_type, confidence, signals = self._classify_heuristic(raw_text, page_count)
         else:
@@ -641,6 +735,61 @@ Múltiples facturas = varios números/encabezados distintos.
             signals=signals,
             page_count=page_count,
             classification_strategy="heuristic" if has_native_text and raw_text and len(raw_text.strip()) >= 50 else "llm",
+        )
+
+    async def _classify_document_from_vision(
+        self,
+        page_images: list[bytes],
+        page_count: int,
+        extracted_data: dict[str, Any],
+    ) -> DocumentClassification:
+        """Classification for vision-based extraction using extracted data as signals."""
+        # Use extracted data to determine document type
+        supplier = extracted_data.get("supplier", {})
+        invoice = extracted_data.get("invoice", {})
+        lines = extracted_data.get("lines", [])
+
+        signals = []
+        if supplier.get("name"):
+            signals.append("supplier_name")
+        if supplier.get("tax_id"):
+            signals.append("supplier_tax_id")
+        if invoice.get("number"):
+            signals.append("invoice_number")
+        if invoice.get("date"):
+            signals.append("invoice_date")
+        if lines:
+            signals.append("invoice_lines")
+
+        # Check for multiple invoices in extracted data
+        if isinstance(lines, list) and len(lines) > 0:
+            # If we have structured data with supplier, invoice number, and lines, it's likely a single invoice
+            if supplier.get("tax_id") and invoice.get("number"):
+                return ClassificationResult(
+                    document_type=DocumentClassification.SINGLE_INVOICE,
+                    confidence=Decimal("0.9"),
+                    signals=signals,
+                    page_count=page_count,
+                    classification_strategy="vision_structured",
+                )
+
+        # Fallback to LLM classification on first page image
+        if page_images:
+            doc_type, confidence, llm_signals = await self._classify_llm(page_images, page_count)
+            return ClassificationResult(
+                document_type=doc_type,
+                confidence=confidence,
+                signals=signals + llm_signals,
+                page_count=page_count,
+                classification_strategy="vision_structured_llm",
+            )
+
+        return ClassificationResult(
+            document_type=DocumentClassification.UNKNOWN,
+            confidence=Decimal("0"),
+            signals=signals,
+            page_count=page_count,
+            classification_strategy="vision_structured",
         )
 
     # =========================================================================
@@ -731,13 +880,13 @@ Devuelve SOLO el JSON válido, sin texto adicional.
             supplier_data = self._ensure_dict(supplier_raw[0]) if supplier_raw else {}
         else:
             supplier_data = self._ensure_dict(supplier_raw)
-        
+
         # Fallback to flat structure fields if nested structure is empty
         if not supplier_data.get("name"):
             supplier_data["name"] = extracted_data.get("supplier_name", "")
         if not supplier_data.get("tax_id"):
             supplier_data["tax_id"] = extracted_data.get("supplier_tax_id", "")
-        
+
         supplier = SupplierInfo(
             name=supplier_data.get("name", ""),
             tax_id=normalize_tax_id(supplier_data.get("tax_id", "")),
@@ -753,7 +902,7 @@ Devuelve SOLO el JSON válido, sin texto adicional.
             invoice_data = self._ensure_dict(invoice_raw[0]) if invoice_raw else {}
         else:
             invoice_data = self._ensure_dict(invoice_raw)
-        
+
         # Fallback to flat structure
         if not invoice_data.get("number"):
             invoice_data["number"] = extracted_data.get("invoice_number")
@@ -761,7 +910,7 @@ Devuelve SOLO el JSON válido, sin texto adicional.
             invoice_data["date"] = extracted_data.get("invoice_date")
         if not invoice_data.get("due_date"):
             invoice_data["due_date"] = extracted_data.get("due_date") or extracted_data.get("invoice_due_date")
-        
+
         invoice_number = invoice_data.get("number")
         invoice_date = self._parse_date(invoice_data.get("date"))
         due_date = self._parse_date(invoice_data.get("due_date"))
@@ -772,7 +921,7 @@ Devuelve SOLO el JSON válido, sin texto adicional.
         # If lines is a single dict instead of list, wrap it
         if isinstance(extracted_data.get("lines"), dict):
             lines_data = [extracted_data.get("lines")]
-        
+
         for line_data in lines_data:
             line_data = self._ensure_dict(line_data)
             # Handle vat_rate that might be string with % or null
@@ -785,7 +934,7 @@ Devuelve SOLO el JSON válido, sin texto adicional.
                     vat_rate = Decimal(vat_rate_str)
                 except Exception:
                     vat_rate = Decimal("21")
-            
+
             line = InvoiceLine(
                 description=line_data.get("description", ""),
                 quantity=Decimal(str(line_data.get("quantity", 1))),
@@ -801,7 +950,7 @@ Devuelve SOLO el JSON válido, sin texto adicional.
         taxes_data = self._ensure_list(extracted_data.get("taxes"))
         if isinstance(extracted_data.get("taxes"), dict):
             taxes_data = [extracted_data.get("taxes")]
-        
+
         for tax_data in taxes_data:
             tax_data = self._ensure_dict(tax_data)
             tax_breakdown.append(TaxBreakdownItem(
@@ -833,7 +982,7 @@ Devuelve SOLO el JSON válido, sin texto adicional.
             wh_data_list = [extracted_data.get("retencion")]
         elif isinstance(extracted_data.get("retenciones"), dict):
             wh_data_list = [extracted_data.get("retenciones")]
-        
+
         for wh_data in wh_data_list:
             wh_data = self._ensure_dict(wh_data)
             withholding_breakdown.append(WithholdingBreakdownItem(
