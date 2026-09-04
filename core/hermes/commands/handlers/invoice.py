@@ -212,7 +212,8 @@ class CreateInvoiceHandler(CommandHandler):
         self,
         company_context: CompanyContext,
         user_context: UserContext,
-        validated_payload: dict[str, Any]
+        validated_payload: dict[str, Any],
+        document_hash: str | None = None,
     ) -> CommandResult:
         """Execute invoice creation in Dolibarr."""
         dolibarr = company_context.create_dolibarr_client()
@@ -403,7 +404,8 @@ class CreateInvoiceFromProposalHandler(CommandHandler):
         self,
         company_context: CompanyContext,
         user_context: UserContext,
-        validated_payload: dict[str, Any]
+        validated_payload: dict[str, Any],
+        document_hash: str | None = None,
     ) -> CommandResult:
         """Execute invoice creation from proposal."""
         dolibarr = company_context.create_dolibarr_client()

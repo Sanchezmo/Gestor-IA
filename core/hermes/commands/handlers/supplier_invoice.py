@@ -43,9 +43,11 @@ from core.hermes.invoices.reconciliation import (
 from core.hermes.ai_registry import (
     feature_registry,
     traceability_logger,
+    oversight_recorder,
+    transparency_manager,
+    regulatory_gate,
     AIUsePolicy,
     minimisation_filter,
-    regulatory_gate,
     RuntimeVersionCapture,
     AITraceRecord,
 )
@@ -593,6 +595,33 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
             git_sha=git_sha,
         )
 
+        # ============================================================
+        # AI ACT COMPLIANCE: Policy enforcement & regulatory gate
+        # ============================================================
+        feature_id = "supplier_invoice_extraction"
+        
+        # Check feature registry policy
+        if feature_registry and not feature_registry.check_policy(feature_id, AIUsePolicy.LOCAL_ONLY):
+            return CommandResult(
+                success=False,
+                error_code="AI_POLICY_DENIED",
+                error_message=f"AI feature '{feature_id}' policy does not allow LOCAL_ONLY execution",
+            )
+        
+        # Check regulatory review gate (HR firewall)
+        feature = feature_registry.get(feature_id) if feature_registry else None
+        if feature and regulatory_gate and not regulatory_gate.is_allowed(feature_id, feature):
+            return CommandResult(
+                success=False,
+                error_code="REGULATORY_REVIEW_REQUIRED",
+                error_message=f"AI feature '{feature_id}' requires regulatory review before use",
+            )
+
+        # Generate preview hash for oversight correlation
+        import hashlib
+        preview_content = f"{draft.invoice_number}|{draft.supplier.name if draft.supplier else ''}|{draft.total}"
+        preview_hash = hashlib.sha256(preview_content.encode()).hexdigest()[:16]
+
         async with dolibarr as client:
             try:
                 # ============================================================
@@ -663,6 +692,20 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
                         error_message="Duplicate check integration error; "
                         "invoice CREATE blocked to prevent duplicate. "
                         "Retry after resolving Dolibarr availability.",
+                    )
+
+                # ============================================================
+                # AI ACT COMPLIANCE: Human oversight at confirmation boundary
+                # ============================================================
+                if oversight_recorder:
+                    await oversight_recorder.record_confirmation(
+                        operation_id=doc_hash,
+                        instance_id=company_context.instance_id,
+                        feature_id=feature_id,
+                        confirmed_by=str(user_context.telegram_user_id),
+                        preview_hash=preview_hash,
+                        preview_version="supplier-invoice-v1",
+                        approval_action="confirmed",
                     )
 
                 # ============================================================
@@ -947,19 +990,23 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
                 # ============================================================
                 # STEP 8: COMPLETED
                 # ============================================================
-                # Log AI trace correlation
+                # Log AI trace correlation with full chain
                 if traceability_logger:
                     await traceability_logger.log_execution(
                         operation_id=doc_hash,
                         instance_id=company_context.instance_id,
-                        feature_id="supplier_invoice_extraction",
+                        feature_id=feature_id,
                         provider="ollama",
                         model=company_context.instance_config.ai.ollama_model,
+                        model_version=company_context.instance_config.ai.ollama_model,
                         policy=AIUsePolicy.LOCAL_ONLY,
                         local_or_cloud="local",
                         success=True,
                         latency_ms=0,  # Would be captured at extraction time
                         correlation_id=doc_hash,
+                        preview_id=preview_hash,
+                        confirmation_id=doc_hash,
+                        erp_write_id=str(invoice_id),
                     )
 
                 return CommandResult(

@@ -1,0 +1,103 @@
+# VPS-Ready Instance Configuration Template
+#
+# IMPORTANT: This template contains NO localhost/127.0.0.1 defaults.
+# All network endpoints MUST be explicitly configured for production VPS deployment.
+# FAIL CLOSED: InstanceConfig validation will reject localhost in production.
+#
+# Usage: Copy to config/instances/{instance_id}.yaml and fill in all values.
+
+instance_id: "{INSTANCE_ID}"        # REQUIRED: Unique instance identifier (e.g., empresa_a)
+company_name: "{COMPANY_NAME}"      # REQUIRED: Legal company name
+
+# MariaDB Database Configuration
+# All fields REQUIRED - no defaults
+database:
+  host: "{DB_HOST}"                 # REQUIRED: MariaDB host (e.g., db.internal, 10.0.0.5)
+  port: 3306                        # MariaDB port
+  name: "{DB_NAME}"                 # REQUIRED: Database name (e.g., dolibarr_empresa_a)
+  user: "{DB_USER}"                 # REQUIRED: Database user
+  password: "{DB_PASSWORD}"         # REQUIRED: Database password (use secrets_refs in production)
+
+# Dolibarr ERP Configuration
+# All fields REQUIRED - no localhost defaults
+dolibarr:
+  version: "23.0.4"                 # Dolibarr version
+  internal_url: "{DOLIBARR_INTERNAL_URL}"  # REQUIRED: Internal HTTP URL (e.g., http://dolibarr:80, https://erp.internal)
+  public_url: "{DOLIBARR_PUBLIC_URL}"      # REQUIRED: Public HTTPS URL for webhooks/redirects
+  api_key: "{DOLIBARR_API_KEY}"     # Instance-level API key (fallback only - user-scoped keys preferred)
+  documents_path: "{DOLIBARR_DOCUMENTS_PATH}"  # e.g., /var/lib/dolibarr/documents/{instance_id}
+
+# Telegram Bot Configuration
+# All fields REQUIRED - no defaults
+telegram:
+  bot_token: "{TELEGRAM_BOT_TOKEN}"         # REQUIRED: Bot token from @BotFather
+  webhook_path: "/webhook/{INSTANCE_ID}"    # Webhook path
+  webhook_secret: "{TELEGRAM_WEBHOOK_SECRET}"  # REQUIRED: Secret for webhook validation
+  webhook_secret_required: true             # Enforce secret validation (MUST be true in production)
+  allowed_user_ids: []                      # List of allowed Telegram user IDs (empty = allow all linked)
+  max_file_size_mb: 10                      # Max upload size
+  update_idempotency_ttl_hours: 24          # Idempotency key TTL
+
+# Domain Configuration
+# All fields REQUIRED for production
+domains:
+  base: "{BASE_DOMAIN}"                 # REQUIRED: Base domain (e.g., empresa-a.com)
+  dolibarr: "{DOLIBARR_DOMAIN}"         # REQUIRED: Dolibarr subdomain (e.g., erp.empresa-a.com)
+  hermes: "{HERMES_DOMAIN}"             # REQUIRED: Hermes/bot subdomain (e.g., bot.empresa-a.com)
+  custom: {}                            # Additional custom domains
+
+# AI Configuration
+ai:
+  default_policy: "LOCAL_ONLY"          # Default AI policy (LOCAL_ONLY | CLOUD_ALLOWED | DENY)
+  # Ollama (local inference) - REQUIRED if using local models
+  ollama_endpoint: "{OLLAMA_ENDPOINT}"      # e.g., http://ollama:11434, https://ollama.internal
+  ollama_model: "{OLLAMA_MODEL}"            # e.g., qwen3.5:4b-invoice
+  ollama_vision_model: "{OLLAMA_VISION_MODEL}"  # Optional vision model
+  # Cloud AI (optional) - only used if task_policies allow CLOUD_ALLOWED
+  nvidia_api_key: "{NVIDIA_API_KEY}"        # Optional: NVIDIA NIM API key
+  nvidia_base_url: "https://integrate.api.nvidia.com/v1"
+  nvidia_text_model: "nemotron-3-ultra"
+  nvidia_vision_model: null
+  openai_api_key: "{OPENAI_API_KEY}"        # Optional: OpenAI API key
+  openai_base_url: "https://api.openai.com/v1"
+  openai_text_model: "gpt-4o"
+  openai_vision_model: "gpt-4o"
+  # Per-task policy overrides (feature-level)
+  task_policies:
+    invoice_processing: "LOCAL_ONLY"
+    content_generation: "CLOUD_ALLOWED"
+    general_chat: "CLOUD_ALLOWED"
+
+# Feature flags
+enabled_agents:
+  - invoice_processing
+  - general_assistant
+enabled_workflows:
+  - invoice_approval
+enabled_tools:
+  - dolibarr_search
+  - pdf_extract
+
+# Secrets references for production (use env vars or secret manager)
+# These are resolved at runtime - never commit actual secrets
+secrets_refs:
+  dolibarr_db_password: "env:DOLIBARR_DB_PASSWORD"
+  dolibarr_api_key: "env:DOLIBARR_API_KEY"
+  telegram_bot_token: "env:TELEGRAM_BOT_TOKEN"
+  telegram_webhook_secret: "env:TELEGRAM_WEBHOOK_SECRET"
+  ollama_api_key: "env:OLLAMA_API_KEY"
+  nvidia_api_key: "env:NVIDIA_API_KEY"
+  openai_api_key: "env:OPENAI_API_KEY"
+
+# Filesystem paths
+documents_path: "/var/lib/gestor-ia/{INSTANCE_ID}/documents"
+backups_path: "/var/backups/gestor-ia/{INSTANCE_ID}"
+runtime_path: "/var/lib/gestor-ia/{INSTANCE_ID}/runtime"
+
+# Dolibarr Apache port (internal)
+dolibarr_apache_port: 8081
+
+# Metadata (auto-populated)
+created_at: ""
+updated_at: ""
+active: true

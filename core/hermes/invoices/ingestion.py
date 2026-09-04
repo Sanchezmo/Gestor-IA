@@ -42,6 +42,7 @@ from core.hermes.ai_registry import (
     traceability_logger,
     minimisation_filter,
     regulatory_gate,
+    transparency_manager,
     RuntimeVersionCapture,
     AIUsePolicy,
 )
@@ -804,6 +805,14 @@ class DocumentIngestionService:
     def _generate_preview(self, draft: SupplierInvoiceDraft) -> str:
         """Generate human-readable preview for Telegram."""
         lines = []
+
+        # AI Act Compliance: Transparency notice
+        feature_id = "supplier_invoice_extraction"
+        channel = "telegram"
+        if transparency_manager and transparency_manager.should_show(feature_id, channel):
+            notice = transparency_manager.get_notice(feature_id, channel)
+            if notice:
+                lines.append(f"🤖 <i>{notice.message}</i>\n")
 
         # Header
         lines.append("📄 <b>FACTURA DE PROVEEDOR</b>\n")

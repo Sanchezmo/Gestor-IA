@@ -761,11 +761,18 @@ async def telegram_webhook(
                     )
 
                     # Send preview with canonical confirm/cancel buttons
-                    await send_command_preview(
-                        telegram=telegram_client,
-                        chat_id=chat_id,
-                        preview=preview,
-                    )
+                    # If preview delivery fails, cancel the pending command to avoid stale PENDING
+                    try:
+                        await send_command_preview(
+                            telegram=telegram_client,
+                            chat_id=chat_id,
+                            preview=preview,
+                        )
+                    except Exception as e:
+                        # Preview delivery failed - cancel pending command to avoid stale PENDING
+                        logger.warning("preview_delivery_failed_cancelling_pending", instance_id=instance_id, command_id=str(command_id), error=str(e))
+                        store.cancel(command_id, user_context.telegram_user_id)
+                        raise
                     # Delete processing message
                     try:
                         await telegram_client.delete_message(chat_id, processing_msg.message_id)

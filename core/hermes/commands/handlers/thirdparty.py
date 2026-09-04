@@ -131,7 +131,11 @@ class CreateThirdpartyHandler(CommandHandler):
         )
 
     async def execute(
-        self, company_context: CompanyContext, user_context: UserContext, validated_payload: dict[str, Any]
+        self,
+        company_context: CompanyContext,
+        user_context: UserContext,
+        validated_payload: dict[str, Any],
+        document_hash: str | None = None,
     ) -> CommandResult:
         """Execute thirdparty creation in Dolibarr using user's API key."""
         # Obtener TelegramIdentity del user_context para usar su API key

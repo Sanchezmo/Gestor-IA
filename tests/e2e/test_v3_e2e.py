@@ -450,6 +450,7 @@ class TestV3Idempotency:
         
         mock_registry = MagicMock()
         mock_handler = MagicMock()
+        mock_handler.required_permission = ""
         mock_handler.execute = AsyncMock(return_value=MagicMock(success=True, resource_id=100, resource_type="test", data={}, idempotent=True))
         mock_registry.get_handler.return_value = mock_handler
         

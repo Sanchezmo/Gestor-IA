@@ -144,6 +144,32 @@ def command_registry():
     return command_registry
 
 
+@pytest.fixture(autouse=True)
+def setup_identity_store():
+    """Set up IdentityStore with test identity before each test."""
+    from core.hermes.identity_store import IdentityStore
+    from core.hermes.identity import TelegramIdentity
+    from datetime import UTC, datetime
+    
+    # Create identity for the test user
+    store = IdentityStore("empresa_a")
+    identity = TelegramIdentity(
+        instance_id="empresa_a",
+        telegram_user_id=123456,
+        dolibarr_user_id=17,
+        enabled=True,
+        created_at=datetime.now(UTC),
+        dolibarr_api_key="test_dolibarr_key",
+    )
+    try:
+        store.create(identity)
+    except Exception:
+        # Identity might already exist from previous test
+        pass
+    yield
+    # Cleanup not needed - each test gets fresh DB or we reuse
+
+
 # =========================================================================
 # HELPER FUNCTIONS
 # =========================================================================

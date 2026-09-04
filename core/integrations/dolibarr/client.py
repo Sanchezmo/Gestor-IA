@@ -358,12 +358,15 @@ class DolibarrClient:
         page_size: int = 100,
         max_pages: int = 50,
     ) -> dict[str, Any] | None:
-        """Buscar tercero por NIF/CIF normalizado usando paginación."""
+        """Buscar tercero por NIF/CIF normalizado usando paginación.
+        
+        Starts from page 0 to ensure first page is searched (Dolibarr API is 0-based).
+        """
         if not tax_id:
             return None
         normalized_search = self._normalize_tax_id(tax_id)
 
-        page = 1
+        page = 0  # Start from page 0 (Dolibarr API is 0-based)
         pages_checked = 0
         while pages_checked < max_pages:
             parties = await self.list_thirdparties(

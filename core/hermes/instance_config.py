@@ -183,6 +183,55 @@ class InstanceConfig(BaseModel):
     def _validate_instance_id(cls, v: str) -> str:
         return validate_instance_id(v)
 
+    @field_validator("ai", "dolibarr", "database", mode="after")
+    @classmethod
+    def _reject_localhost_in_production(cls, v, info):
+        """
+        FAIL CLOSED: Reject localhost/127.0.0.1/0.0.0.0 in production configs.
+        
+        Only allow localhost for explicitly development instances (instance_id ending in -dev, -test, or development).
+        Production instances MUST use explicit hostnames/IPs.
+        """
+        instance_id = info.data.get("instance_id", "")
+        is_development = any(
+            instance_id.endswith(suffix) 
+            for suffix in ("-dev", "-test", "-local", "development")
+        ) or instance_id in ("development", "test", "local", "empresa_a", "empresa_b", "test_empresa", "instance-a", "instance-b")
+        
+        if is_development:
+            return v
+        
+        # Check for localhost patterns in AI config
+        if hasattr(v, 'ollama_endpoint'):
+            endpoint = getattr(v, 'ollama_endpoint', '')
+            if endpoint and any(localhost in endpoint for localhost in 
+                                ('127.0.0.1', 'localhost', '0.0.0.0', '::1')):
+                raise ValueError(
+                    f"Production instance '{instance_id}' cannot use localhost in ollama_endpoint. "
+                    f"Use explicit hostname/IP (e.g., http://ollama:11434)."
+                )
+        
+        # Check for localhost patterns in Dolibarr config
+        if hasattr(v, 'internal_url'):
+            url = getattr(v, 'internal_url', '')
+            if url and any(localhost in url for localhost in 
+                          ('127.0.0.1', 'localhost', '0.0.0.0', '::1')):
+                raise ValueError(
+                    f"Production instance '{instance_id}' cannot use localhost in dolibarr internal_url. "
+                    f"Use explicit hostname (e.g., http://dolibarr:80)."
+                )
+        
+        # Check for localhost patterns in Database config
+        if hasattr(v, 'host'):
+            host = getattr(v, 'host', '')
+            if host and host in ('127.0.0.1', 'localhost', '0.0.0.0', '::1'):
+                raise ValueError(
+                    f"Production instance '{instance_id}' cannot use localhost in database host. "
+                    f"Use explicit hostname/IP (e.g., db.internal or 10.0.0.5)."
+                )
+        
+        return v
+
     def resolve_paths(self) -> "InstanceConfig":
         """Resolver placeholders en paths con instance_id."""
         resolved = self.model_copy()
