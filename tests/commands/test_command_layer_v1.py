@@ -1286,6 +1286,121 @@ class TestPendingCommandStoreIntegration:
 
         store.close()
 
+    @pytest.mark.asyncio
+    async def test_uuid_serialization_in_validated_payload(self):
+        """
+        Regression test: UUID in validated_payload (e.g., SupplierInvoiceDraft.correlation_id)
+        must be serialized to string for JSON storage in Redis.
+
+        Real scenario: Telegram supplier invoice ingestion creates PendingCommand with
+        validated_payload containing draft_dict from asdict(SupplierInvoiceDraft),
+        which includes correlation_id as uuid.UUID. This must not raise
+        "TypeError: Object of type UUID is not JSON serializable".
+        """
+        from core.hermes.commands.store import PendingCommandStore
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from core.hermes.invoices.models import (
+            SupplierInvoiceDraft, SupplierInfo, InvoiceLine,
+            DocumentClassification, SupplierResolutionStatus, ValidationStatus, InvoiceFieldSource
+        )
+        from decimal import Decimal
+        from datetime import date, datetime, timedelta
+        from uuid import uuid4
+        from dataclasses import asdict
+
+        import redis
+        from core.hermes.config import get_global_settings
+        settings = get_global_settings()
+        
+        try:
+            r = redis.Redis(
+                host=settings.REDIS_HOST, 
+                port=settings.REDIS_PORT, 
+                password=settings.REDIS_PASSWORD or None,
+                decode_responses=True
+            )
+            r.ping()
+        except Exception as e:
+            pytest.skip(f"Redis not available: {e}")
+
+        # Create a SupplierInvoiceDraft with UUID correlation_id (as real ingestion does)
+        draft = SupplierInvoiceDraft(
+            document_hash="abc123def456",
+            document_filename="test_invoice.pdf",
+            document_mime_type="application/pdf",
+            document_size_bytes=1024,
+            page_count=1,
+            classification=DocumentClassification.SINGLE_INVOICE,
+            classification_confidence=Decimal("0.95"),
+            classification_signals=["invoice_number", "vat_breakdown"],
+            supplier=SupplierInfo(name="Proveedor Test SL", tax_id="B12345678"),
+            invoice_number="INV-2024-001",
+            invoice_date=date.today(),
+            lines=[
+                InvoiceLine(
+                    description="Servicios profesionales",
+                    quantity=Decimal("1"),
+                    unit_price=Decimal("1000"),
+                    vat_rate=Decimal("21"),
+                )
+            ],
+            tax_breakdown=[
+                # Will be validated/normalized
+            ],
+            subtotal=Decimal("1000"),
+            tax_total=Decimal("210"),
+            total=Decimal("1210"),
+            validation_status=ValidationStatus.VALID,
+            supplier_resolution_status=SupplierResolutionStatus.NOT_FOUND,
+            instance_id="empresa_a",
+            received_at=datetime.now().isoformat(),
+        )
+
+        # asdict preserves UUID as uuid.UUID object
+        draft_dict = asdict(draft)
+        assert isinstance(draft_dict["correlation_id"], UUID), "correlation_id should be UUID"
+
+        # Create PendingCommand with draft in validated_payload (exact real path)
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=123456,
+            dolibarr_user_id=17,
+            command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+            validated_payload={
+                "draft": draft_dict,  # Contains UUID correlation_id
+                "document_hash": draft.document_hash,
+                "stored_path": "/tmp/test.pdf",
+                "filename": "test_invoice.pdf",
+                "mime_type": "application/pdf",
+            },
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+            document_hash=draft.document_hash,
+        )
+
+        store = PendingCommandStore("empresa_a")
+
+        # This MUST NOT raise "TypeError: Object of type UUID is not JSON serializable"
+        # The _json_safe function in _serialize should convert UUID to string
+        store.create(pending)
+
+        # Verify we can get it back and UUID was serialized as string
+        retrieved = store.get(cmd_id)
+        assert retrieved is not None
+        assert retrieved.command_id == cmd_id
+        assert retrieved.validated_payload["draft"]["correlation_id"] == str(draft.correlation_id)
+
+        # Verify round-trip: stored value is string, not UUID
+        assert isinstance(retrieved.validated_payload["draft"]["correlation_id"], str)
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
 
 # =========================================================================
 # COMMAND EXECUTOR ERROR HANDLING

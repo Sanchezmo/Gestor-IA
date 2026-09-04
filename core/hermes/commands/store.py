@@ -178,6 +178,8 @@ class PendingCommandStore:
     def _serialize(self, pending: PendingCommand) -> dict[str, Any]:
         def _json_safe(value: Any) -> Any:
             """Convert value to JSON-safe type."""
+            if isinstance(value, UUID):
+                return str(value)
             if isinstance(value, Decimal):
                 return str(value)
             if isinstance(value, date):
