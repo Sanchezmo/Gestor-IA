@@ -364,21 +364,170 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
         elif hasattr(payload, "dict"):
             payload = payload.dict()
 
-        # Payload contains the full draft data from ingestion
-        validated = {
-            "draft": payload.get("draft"),
-            "document_hash": payload.get("document_hash"),
-            "file_content": payload.get("file_content"),
-            "filename": payload.get("filename"),
-            "mime_type": payload.get("mime_type"),
+        # Reconstruct SupplierInvoiceDraft from dict
+        from core.hermes.invoices.models import (
+            SupplierInvoiceDraft, SupplierInfo, InvoiceLine, TaxBreakdownItem, WithholdingBreakdownItem,
+            DocumentClassification, SupplierResolutionStatus, InvoiceFieldSource
+        )
+        from datetime import date
+        from decimal import Decimal
+
+        draft_dict = payload.get("draft")
+        if not draft_dict:
+            raise ValueError("Draft data is required for confirmation")
+
+        # Reconstruct SupplierInvoiceDraft from dict
+        draft = self._reconstruct_draft(draft_dict)
+
+        # Get stored file reference (not raw bytes)
+        stored_path = payload.get("stored_path")
+        filename = payload.get("filename")
+        mime_type = payload.get("mime_type")
+        document_hash = payload.get("document_hash")
+
+        if not document_hash:
+            raise ValueError("Document hash is required")
+        if not stored_path:
+            raise ValueError("Stored file path is required for attachment")
+
+        return {
+            "draft": draft,
+            "document_hash": document_hash,
+            "stored_path": stored_path,
+            "filename": filename,
+            "mime_type": mime_type,
         }
 
-        if not validated["draft"]:
-            raise ValueError("Draft data is required for confirmation")
-        if not validated["document_hash"]:
-            raise ValueError("Document hash is required")
+    def _reconstruct_draft(self, data: dict) -> "SupplierInvoiceDraft":
+        """Reconstruct SupplierInvoiceDraft from serialized dict."""
+        from core.hermes.invoices.models import (
+            SupplierInvoiceDraft, SupplierInfo, InvoiceLine, TaxBreakdownItem, WithholdingBreakdownItem,
+            DocumentClassification, SupplierResolutionStatus, InvoiceFieldSource
+        )
+        from datetime import date
+        from decimal import Decimal
 
-        return validated
+        # Helper to parse dates
+        def parse_date(val):
+            if val is None:
+                return None
+            if isinstance(val, date):
+                return val
+            if isinstance(val, str):
+                try:
+                    return date.fromisoformat(val)
+                except Exception:
+                    return None
+            return None
+
+        # Reconstruct supplier
+        supplier_data = data.get("supplier") or {}
+        supplier = None
+        if supplier_data.get("name") or supplier_data.get("tax_id"):
+            supplier = SupplierInfo(
+                name=supplier_data.get("name", ""),
+                tax_id=supplier_data.get("tax_id", ""),
+                address=supplier_data.get("address"),
+                email=supplier_data.get("email"),
+                phone=supplier_data.get("phone"),
+            )
+
+        # Reconstruct lines
+        lines = []
+        for line_data in data.get("lines", []):
+            lines.append(InvoiceLine(
+                description=line_data.get("description", ""),
+                quantity=Decimal(str(line_data.get("quantity", 1))),
+                unit_price=Decimal(str(line_data.get("unit_price", 0))),
+                vat_rate=Decimal(str(line_data.get("vat_rate", 21))),
+                discount_percent=Decimal(str(line_data.get("discount_percent", 0))),
+                product_ref=line_data.get("product_ref"),
+            ))
+
+        # Reconstruct tax breakdown
+        tax_breakdown = []
+        for tax_data in data.get("tax_breakdown", []):
+            tax_breakdown.append(TaxBreakdownItem(
+                rate=Decimal(str(tax_data.get("rate", 0))),
+                base=Decimal(str(tax_data.get("base", 0))),
+                amount=Decimal(str(tax_data.get("amount", 0))),
+                source=InvoiceFieldSource(tax_data.get("source", "KNOWN")),
+            ))
+
+        # Reconstruct withholding breakdown
+        withholding_breakdown = []
+        for wh_data in data.get("withholding_breakdown", []):
+            withholding_breakdown.append(WithholdingBreakdownItem(
+                concept=wh_data.get("concept", "IRPF"),
+                rate=Decimal(str(wh_data.get("rate", 0))),
+                base=Decimal(str(wh_data.get("base", 0))),
+                amount=Decimal(str(wh_data.get("amount", 0))),
+                source=InvoiceFieldSource(wh_data.get("source", "KNOWN")),
+            ))
+
+        # Reconstruct classification
+        classification = data.get("classification")
+        if isinstance(classification, str):
+            classification = DocumentClassification(classification)
+        elif classification is None:
+            classification = DocumentClassification.UNKNOWN
+
+        supplier_resolution_status = data.get("supplier_resolution_status")
+        if isinstance(supplier_resolution_status, str):
+            supplier_resolution_status = SupplierResolutionStatus(supplier_resolution_status)
+        elif supplier_resolution_status is None:
+            supplier_resolution_status = SupplierResolutionStatus.NOT_FOUND
+
+        validation_status = data.get("validation_status")
+        if isinstance(validation_status, str):
+            validation_status = validation_status  # It's already an enum value string
+        # We'll need to handle enum conversion properly
+
+        return SupplierInvoiceDraft(
+            document_hash=data.get("document_hash", ""),
+            document_filename=data.get("document_filename", ""),
+            document_mime_type=data.get("document_mime_type", ""),
+            document_size_bytes=data.get("document_size_bytes", 0),
+            page_count=data.get("page_count", 1),
+            classification=classification,
+            classification_confidence=Decimal(str(data.get("classification_confidence", 0))),
+            classification_signals=data.get("classification_signals", []),
+            supplier=supplier,
+            invoice_number=data.get("invoice_number"),
+            invoice_number_source=InvoiceFieldSource(data.get("invoice_number_source", "UNKNOWN")),
+            invoice_date=parse_date(data.get("invoice_date")),
+            invoice_date_source=InvoiceFieldSource(data.get("invoice_date_source", "UNKNOWN")),
+            due_date=parse_date(data.get("due_date")),
+            due_date_source=InvoiceFieldSource(data.get("due_date_source", "UNKNOWN")),
+            currency=data.get("currency", "EUR"),
+            payment_terms=data.get("payment_terms"),
+            payment_method=data.get("payment_method"),
+            notes=data.get("notes"),
+            lines=lines,
+            tax_breakdown=tax_breakdown,
+            withholding_breakdown=withholding_breakdown,
+            subtotal=Decimal(str(data.get("subtotal", 0))),
+            subtotal_source=InvoiceFieldSource(data.get("subtotal_source", "UNKNOWN")),
+            tax_total=Decimal(str(data.get("tax_total", 0))),
+            tax_total_source=InvoiceFieldSource(data.get("tax_total_source", "UNKNOWN")),
+            withholding_total=Decimal(str(data.get("withholding_total", 0))),
+            withholding_total_source=InvoiceFieldSource(data.get("withholding_total_source", "UNKNOWN")),
+            total=Decimal(str(data.get("total", 0))),
+            total_source=InvoiceFieldSource(data.get("total_source", "UNKNOWN")),
+            supplier_resolution_status=supplier_resolution_status,
+            supplier_dolibarr_id=data.get("supplier_dolibarr_id"),
+            supplier_candidates=data.get("supplier_candidates", []),
+            validation_status=validation_status if isinstance(validation_status, str) else data.get("validation_status"),
+            validation_errors=data.get("validation_errors", []),
+            validation_warnings=data.get("validation_warnings", []),
+            extraction_confidence=Decimal(str(data.get("extraction_confidence", 0))),
+            extraction_model=data.get("extraction_model", ""),
+            extraction_raw_text_chars=data.get("extraction_raw_text_chars", 0),
+            inference_count=data.get("inference_count", 0),
+            instance_id=data.get("instance_id", ""),
+            received_at=data.get("received_at", ""),
+            correlation_id=data.get("correlation_id", ""),
+        )
 
     async def execute(
         self,
@@ -390,7 +539,7 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
         """Execute the full confirmation workflow with durable state machine."""
         draft = validated_payload["draft"]
         doc_hash = validated_payload["document_hash"]
-        file_content = validated_payload.get("file_content")
+        stored_path = validated_payload.get("stored_path")
         filename = validated_payload.get("filename")
         mime_type = validated_payload.get("mime_type")
 
@@ -706,7 +855,48 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
                 # ============================================================
                 # STEP 7: Attachment Upload (ATTACHMENT_PENDING)
                 # ============================================================
-                if file_content and filename:
+                stored_path = validated_payload.get("stored_path")
+                filename = validated_payload.get("filename")
+                mime_type = validated_payload.get("mime_type")
+                document_hash = validated_payload.get("document_hash")
+
+                if stored_path and filename:
+                    # Validate stored_path is within allowed storage root
+                    allowed_root = Path("/var/lib/gestor-ia") / company_context.instance_id / "documents" / "pending"
+                    try:
+                        stored_path_obj = Path(stored_path).resolve()
+                        allowed_root_obj = allowed_root.resolve()
+                        if not str(stored_path_obj).startswith(str(allowed_root_obj)):
+                            return CommandResult(
+                                success=False,
+                                error_code="INVALID_ATTACHMENT_PATH",
+                                error_message=f"Attachment path outside allowed storage: {stored_path}",
+                            )
+                    except Exception:
+                        return CommandResult(
+                            success=False,
+                            error_code="INVALID_ATTACHMENT_PATH",
+                            error_message=f"Invalid attachment path: {stored_path}",
+                        )
+
+                    # Read file and verify SHA-256 matches document_hash
+                    try:
+                        file_bytes = Path(stored_path).read_bytes()
+                        import hashlib
+                        computed_hash = hashlib.sha256(file_bytes).hexdigest()
+                        if computed_hash != document_hash:
+                            return CommandResult(
+                                success=False,
+                                error_code="ATTACHMENT_HASH_MISMATCH",
+                                error_message=f"Attachment hash mismatch: expected {document_hash}, got {computed_hash}",
+                            )
+                    except Exception as e:
+                        return CommandResult(
+                            success=False,
+                            error_code="ATTACHMENT_READ_FAILED",
+                            error_message=f"Failed to read attachment: {e}",
+                        )
+
                     await idempotency.mark_attachment_pending(
                         instance_id=company_context.instance_id,
                         supplier_tax_id=supplier_tax_id,
@@ -719,7 +909,7 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
                             await client.upload_document(
                                 resource_type="supplierinvoices",
                                 resource_id=invoice_id,
-                                file_data=file_content,
+                                file_data=file_bytes,
                                 filename=filename,
                             )
                             attachment_success = True

@@ -8,7 +8,7 @@ Uses shared Redis + namespace prefix per instance for isolation.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -180,6 +180,8 @@ class PendingCommandStore:
             """Convert value to JSON-safe type."""
             if isinstance(value, Decimal):
                 return str(value)
+            if isinstance(value, date):
+                return value.isoformat()
             if isinstance(value, dict):
                 return {k: _json_safe(v) for k, v in value.items()}
             if isinstance(value, list):
@@ -202,6 +204,7 @@ class PendingCommandStore:
             "result": _json_safe(pending.result) if pending.result else None,
             "error_code": pending.error_code,
             "error_message": pending.error_message,
+            "document_hash": pending.document_hash,
         }
 
     def _deserialize(self, data: dict[str, Any]) -> PendingCommand:
@@ -221,6 +224,7 @@ class PendingCommandStore:
             result=data["result"],
             error_code=data["error_code"],
             error_message=data["error_message"],
+            document_hash=data.get("document_hash"),
         )
 
     def _apply_updates(self, pending: PendingCommand, status: CommandStatus, **extra: Any) -> PendingCommand:
@@ -249,6 +253,7 @@ class PendingCommandStore:
             result=updates.get("result", pending.result),
             error_code=updates.get("error_code", pending.error_code),
             error_message=updates.get("error_message", pending.error_message),
+            document_hash=pending.document_hash,
         )
 
     def close(self) -> None:

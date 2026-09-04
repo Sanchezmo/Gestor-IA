@@ -723,11 +723,12 @@ async def telegram_webhook(
                     # Use canonical callback format: confirm:<command_id> / cancel:<command_id>
                     command_id = uuid4()
                     document_hash = result.draft.document_hash
+                    stored_path = result.stored_path
 
                     audit_logger = create_audit_logger(instance_config=ctx.instance_config)
                     store = PendingCommandStore(ctx.instance_id)
 
-                    # Convert draft to serializable dict
+                    # Convert draft to serializable dict (JSON-safe, no bytes)
                     draft_dict = asdict(result.draft)
 
                     pending = PendingCommand(
@@ -739,7 +740,7 @@ async def telegram_webhook(
                         validated_payload={
                             "draft": draft_dict,
                             "document_hash": document_hash,
-                            "file_content": result.file_content,
+                            "stored_path": stored_path,
                             "filename": result.filename,
                             "mime_type": result.mime_type,
                         },
