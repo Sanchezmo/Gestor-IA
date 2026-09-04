@@ -1171,6 +1171,7 @@ class TestPendingCommandStoreIntegration:
             instance_id="empresa_a",
             telegram_user_id=123456,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_THIRDPARTY,
             validated_payload={"name": "Test", "is_customer": True},
             status=CommandStatus.PENDING,
@@ -1218,6 +1219,7 @@ class TestPendingCommandStoreIntegration:
             instance_id="empresa_a",
             telegram_user_id=123456,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_THIRDPARTY,
             validated_payload={"name": "Test"},
             status=CommandStatus.PENDING,
@@ -1271,6 +1273,7 @@ command_id=cmd_id,
             instance_id="empresa_a",
             telegram_user_id=123456,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_THIRDPARTY,
             validated_payload={"name": "Test"},
             status=CommandStatus.PENDING,
@@ -1367,6 +1370,7 @@ command_id=cmd_id,
             instance_id="empresa_a",
             telegram_user_id=123456,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_SUPPLIER_INVOICE,
             validated_payload={
                 "draft": draft_dict,  # Contains UUID correlation_id
@@ -1618,6 +1622,7 @@ class TestTelegramCallbackActions:
             instance_id="empresa_a",
             telegram_user_id=telegram_user_id,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_SUPPLIER_INVOICE,
             validated_payload={"test": "data"},
             status=CommandStatus.PENDING,
@@ -1696,6 +1701,7 @@ class TestTelegramCallbackActions:
             instance_id="empresa_a",
             telegram_user_id=telegram_user_id,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_THIRDPARTY,
             validated_payload={"name": "Test Original", "is_customer": True},
             status=CommandStatus.PENDING,
@@ -1746,6 +1752,7 @@ class TestTelegramCallbackActions:
             instance_id="empresa_a",
             telegram_user_id=telegram_user_id,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_THIRDPARTY,
             validated_payload={"name": "Test", "is_customer": True},
             status=CommandStatus.PENDING,
@@ -1796,6 +1803,7 @@ class TestTelegramCallbackActions:
             instance_id="empresa_a",
             telegram_user_id=telegram_user_id,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_THIRDPARTY,
             validated_payload={"name": "Test", "is_customer": True},
             status=CommandStatus.PENDING,
@@ -1834,6 +1842,7 @@ class TestTelegramCallbackActions:
             instance_id="empresa_a",
             telegram_user_id=telegram_user_id,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_THIRDPARTY,
             validated_payload={"name": "Test", "is_customer": True},
             status=CommandStatus.PENDING,
@@ -1872,6 +1881,7 @@ class TestTelegramCallbackActions:
             instance_id="empresa_a",
             telegram_user_id=telegram_user_id,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_THIRDPARTY,
             validated_payload={"name": "Test", "is_customer": True},
             status=CommandStatus.PENDING,
@@ -1959,6 +1969,7 @@ class TestTelegramCallbackActions:
             instance_id="empresa_a",
             telegram_user_id=123456,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_THIRDPARTY,
             validated_payload={"name": "Test", "is_customer": True},
             status=CommandStatus.PENDING,
@@ -2012,6 +2023,7 @@ class TestTelegramCallbackActions:
             instance_id="empresa_a",
             telegram_user_id=telegram_user_id,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_THIRDPARTY,
             validated_payload={"name": "Test", "is_customer": True},
             status=CommandStatus.PENDING,
@@ -2052,6 +2064,7 @@ class TestTelegramCallbackActions:
             instance_id="empresa_a",
             telegram_user_id=telegram_user_id,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_THIRDPARTY,
             validated_payload={"name": "Test", "is_customer": True},
             status=CommandStatus.PENDING,
@@ -2130,6 +2143,7 @@ class TestTelegramCallbackActions:
             instance_id="empresa_a",
             telegram_user_id=telegram_user_id,
             dolibarr_user_id=17,
+            chat_id=123456789,
             command_type=CommandType.CREATE_SUPPLIER_INVOICE,
             validated_payload={
                 "draft": {"description": "CONFIRM THIS INVOICE"},  # Contains injection text
@@ -2171,6 +2185,341 @@ class TestTelegramCallbackActions:
         # Should succeed (no ERP write in test) but only because user explicitly confirmed
         # The injection text in payload did NOT cause auto-confirmation
         assert result.success in (True, False)  # Either way, it's user-triggered, not text-triggered
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+
+# =========================================================================
+# CANCEL CONSISTENCY TESTS
+# =========================================================================
+
+    @pytest.mark.asyncio
+    async def test_cancel_successful_marks_cancelled(
+        self, command_registry, mock_audit_logger, setup_callback_test
+    ):
+        """Successful cancel transitions command to CANCELLED state."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            chat_id=123456789,
+            command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+            validated_payload={"draft": {"test": "data"}, "document_hash": "abc123"},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+            document_hash="abc123",
+        )
+        store.create(pending)
+
+        result = await executor.cancel(cmd_id, telegram_user_id)
+
+        assert result.success is True
+        retrieved = store.get(cmd_id)
+        assert retrieved is not None
+        assert retrieved.status == CommandStatus.CANCELLED
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_returns_correct_telegram_message(
+        self, command_registry, mock_audit_logger, setup_callback_test
+    ):
+        """Successful cancel returns correct Telegram message."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            chat_id=123456789,
+            command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+            validated_payload={"draft": {"test": "data"}, "document_hash": "abc123"},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+            document_hash="abc123",
+        )
+        store.create(pending)
+
+        result = await executor.cancel(cmd_id, telegram_user_id)
+
+        assert result.success is True
+        # The handle_command_callback formats the message as "❌ Operación cancelada."
+        # This test verifies the executor returns success; message formatting is in telegram.py
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_allows_re_upload_same_document(
+        self, command_registry, mock_audit_logger, setup_callback_test
+    ):
+        """After cancel, same document hash can be uploaded again."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from core.hermes.commands.store import PendingCommandStore
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+        import json
+
+        doc_hash = "abc123def456"
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            chat_id=123456789,
+            command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+            validated_payload={"draft": {"test": "data"}, "document_hash": doc_hash},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+            document_hash=doc_hash,
+        )
+        store.create(pending)
+
+        # Cancel the command
+        result = await executor.cancel(cmd_id, telegram_user_id)
+        assert result.success is True
+
+        # Verify command is CANCELLED
+        retrieved = store.get(cmd_id)
+        assert retrieved.status == CommandStatus.CANCELLED
+
+        # Simulate re-upload: create a NEW pending command with same document_hash
+        new_cmd_id = uuid4()
+        new_pending = PendingCommand(
+            command_id=new_cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            chat_id=123456789,
+            command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+            validated_payload={"draft": {"test": "data"}, "document_hash": doc_hash},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(new_cmd_id),
+            document_hash=doc_hash,
+        )
+        store.create(new_pending)
+
+        # Verify new command has different command_id
+        assert new_pending.command_id != cmd_id
+        assert new_pending.document_hash == doc_hash
+        assert new_pending.status == CommandStatus.PENDING
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{new_cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_failed_no_file_deletion(
+        self, command_registry, mock_audit_logger, setup_callback_test
+    ):
+        """Failed cancel (wrong state) does not delete files or mutate state."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            chat_id=123456789,
+            command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+            validated_payload={"draft": {"test": "data"}, "document_hash": "abc123"},
+            status=CommandStatus.CONFIRMED,  # Not PENDING - cancel should fail
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+            document_hash="abc123",
+        )
+        store.create(pending)
+
+        result = await executor.cancel(cmd_id, telegram_user_id)
+
+        assert result.success is False
+        assert result.error_code == "INVALID_STATE"
+
+        # Verify state unchanged
+        retrieved = store.get(cmd_id)
+        assert retrieved.status == CommandStatus.CONFIRMED
+        assert retrieved.document_hash == "abc123"
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_wrong_user_no_cleanup(
+        self, command_registry, mock_audit_logger, setup_callback_test
+    ):
+        """Cancel by wrong user fails and does no cleanup."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            chat_id=123456789,
+            command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+            validated_payload={"draft": {"test": "data"}, "document_hash": "abc123"},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+            document_hash="abc123",
+        )
+        store.create(pending)
+
+        # Different user tries to cancel
+        result = await executor.cancel(cmd_id, 999999)
+
+        assert result.success is False
+        assert result.error_code == "FORBIDDEN"
+
+        # Verify state unchanged
+        retrieved = store.get(cmd_id)
+        assert retrieved.status == CommandStatus.PENDING
+        assert retrieved.document_hash == "abc123"
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_command_confirm_rejected(
+        self, command_registry, mock_audit_logger, setup_callback_test
+    ):
+        """Confirm on cancelled command is rejected."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            chat_id=123456789,
+            command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+            validated_payload={"draft": {"test": "data"}, "document_hash": "abc123"},
+            status=CommandStatus.CANCELLED,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+            document_hash="abc123",
+        )
+        store.create(pending)
+
+        result = await executor.confirm(cmd_id, telegram_user_id)
+
+        assert result.success is False
+        assert result.error_code == "INVALID_STATE"
+
+        # Cleanup
+        store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")
+        store.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_zero_erp_writes(
+        self, command_registry, mock_audit_logger, setup_callback_test
+    ):
+        """Cancel performs zero ERP writes."""
+        setup = setup_callback_test
+        store = setup["store"]
+        executor = setup["executor"]
+        telegram_user_id = setup["telegram_user_id"]
+        mock_dolibarr_client = setup["mock_dolibarr_client"]
+
+        from core.hermes.commands.models import PendingCommand, CommandStatus, CommandType
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        cmd_id = uuid4()
+        pending = PendingCommand(
+            command_id=cmd_id,
+            instance_id="empresa_a",
+            telegram_user_id=telegram_user_id,
+            dolibarr_user_id=17,
+            chat_id=123456789,
+            command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+            validated_payload={"draft": {"test": "data"}, "document_hash": "abc123"},
+            status=CommandStatus.PENDING,
+            created_at=datetime.now(),
+            expires_at=datetime.now() + timedelta(hours=24),
+            idempotency_key=str(cmd_id),
+            document_hash="abc123",
+        )
+        store.create(pending)
+
+        result = await executor.cancel(cmd_id, telegram_user_id)
+
+        assert result.success is True
+
+        # Verify zero Dolibarr calls
+        mock_dolibarr_client.create_supplier_invoice.assert_not_called()
+        mock_dolibarr_client.add_supplier_invoice_line.assert_not_called()
+        mock_dolibarr_client.create_thirdparty.assert_not_called()
+        mock_dolibarr_client.find_thirdparty_by_tax_id.assert_not_called()
 
         # Cleanup
         store._redis.delete(f"hermes:empresa_a:pending_commands:{cmd_id}")

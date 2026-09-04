@@ -218,7 +218,12 @@ class CommandExecutor:
             return CommandResult(success=False, error_code="INTERNAL_ERROR", error_message="Error interno")
 
     async def cancel(self, command_id: UUID, telegram_user_id: int) -> CommandResult:
-        """Cancel pending command."""
+        """Cancel pending command.
+        
+        For supplier invoice commands, also marks the document as CANCELLED
+        to allow re-upload of the same document. Never performs file cleanup
+        during cancellation - files are preserved for potential re-upload.
+        """
         cancelled = self.store.cancel(command_id, telegram_user_id)
         if not cancelled:
             existing = self.store.get(command_id)
@@ -228,7 +233,25 @@ class CommandExecutor:
                 return CommandResult(
                     success=False, error_code="FORBIDDEN", error_message="Solo el usuario original puede cancelar"
                 )
-            return CommandResult(success=False, error_code="INVALID_STATE", error_message="No se puede cancelar")
+            return CommandResult(success=False, error_code="INVALID_STATE", error_message="Cancelado")
+
+        # For supplier invoice commands, mark document as CANCELLED to allow re-upload
+        if cancelled.command_type == CommandType.CREATE_SUPPLIER_INVOICE:
+            document_hash = cancelled.validated_payload.get("document_hash")
+            if document_hash:
+                try:
+                    from core.hermes.invoices.ingestion import DocumentIngestionService
+                    ingestion_service = DocumentIngestionService(self.ctx, self.user, None)
+                    await ingestion_service.mark_cancelled(document_hash)
+                except Exception as e:
+                    # Log but don't fail cancellation - document state update is best-effort
+                    logger.warning(
+                        "cancel_document_state_update_failed",
+                        instance_id=self.ctx.instance_id,
+                        command_id=str(command_id),
+                        document_hash=document_hash[:16],
+                        error=str(e),
+                    )
 
         await self._audit_cancelled(cancelled)
         return CommandResult(success=True)

@@ -549,6 +549,106 @@ async def reload_instance(instance_id: str, ctx: CompanyContext = Depends(requir
 
 
 # =========================================================================
+# SHARED CALLBACK QUERY PROCESSING
+# =========================================================================
+# Single implementation used by both /webhook/{instance_id} (main webhook)
+# and /webhook/{instance_id}/callback (dedicated callback endpoint).
+# Handles: confirm:<id> / correct:<id> / cancel:<id>
+# All security checks: user binding, instance binding, status, expiration.
+
+async def _process_callback_query(
+    ctx: CompanyContext,
+    telegram_client,
+    callback_query: dict,
+    update_id: int,
+    r,  # Redis connection
+    idempotency_key: str,
+) -> dict:
+    """
+    Process a Telegram callback query (button press).
+    
+    Shared by main webhook and callback endpoint.
+    Returns result dict with success status and metadata.
+    """
+    callback_id = callback_query.get("id")
+    callback_data = callback_query.get("data")
+    telegram_user_id = callback_query.get("from", {}).get("id")
+    chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
+    message_id = callback_query.get("message", {}).get("message_id")
+
+    if not callback_data:
+        logger.warning("callback_no_data", instance_id=ctx.instance_id, callback_id=callback_id)
+        return {"success": False, "error_code": "NO_CALLBACK_DATA"}
+
+    if not telegram_user_id:
+        logger.warning("callback_no_user_id", instance_id=ctx.instance_id, callback_id=callback_id)
+        return {"success": False, "error_code": "NO_USER_ID"}
+
+    if not chat_id or not message_id:
+        logger.warning("callback_invalid_message", instance_id=ctx.instance_id, callback_id=callback_id)
+        return {"success": False, "error_code": "INVALID_CALLBACK_MESSAGE"}
+
+    # Idempotency check for callback
+    callback_idempotency_key = f"telegram:callback:{callback_id}"
+
+    # ATOMIC: SET NX EX
+    acquired = r.set(callback_idempotency_key, "processing", nx=True, ex=86400)
+    if not acquired:
+        # Duplicate callback - answer with 200 to avoid Telegram retries
+        logger.info("callback_duplicate", instance_id=ctx.instance_id, callback_id=callback_id)
+        # Still need to answer the callback to remove loading state
+        await telegram_client.answer_callback_query(callback_id)
+        return {"success": True, "duplicate": True}
+
+    try:
+        # Resolver identidad -> UserContext
+        user_context = None
+        if telegram_user_id:
+            try:
+                user_context = await resolve_user_context_from_company_context(ctx, telegram_user_id)
+            except HTTPException:
+                pass  # Will be handled by executor
+
+        if not user_context:
+            # Answer callback to remove loading state
+            await telegram_client.answer_callback_query(callback_id, text="No autorizado", show_alert=True)
+            r.set(callback_idempotency_key, "completed", ex=86400)
+            return {"success": True, "unauthorized": True}
+
+        # Crear executor y manejar callback
+        audit_logger = create_audit_logger(instance_config=ctx.instance_config)
+        store = PendingCommandStore(ctx.instance_id)
+
+        executor = CommandExecutor(
+            registry=command_registry,
+            store=store,
+            audit_logger=audit_logger,
+            company_context=ctx,
+            user_context=user_context,
+        )
+
+        await handle_command_callback(
+            executor=executor,
+            telegram=telegram_client,
+            chat_id=chat_id,
+            message_id=message_id,
+            callback_data=callback_data,
+            telegram_user_id=telegram_user_id,
+        )
+
+        # Answer callback query (remove loading state)
+        await telegram_client.answer_callback_query(callback_id)
+
+        r.set(callback_idempotency_key, "completed", ex=86400)
+        return {"success": True}
+
+    except Exception as e:
+        logger.error("callback_processing_failed", instance_id=ctx.instance_id, error=str(e))
+        r.delete(callback_idempotency_key)  # Permitir reintento
+        raise HTTPException(500, "Processing failed")
+
+
+# =========================================================================
 # TELEGRAM WEBHOOK ENDPOINT (Multi-instancia)
 # =========================================================================
 
@@ -652,6 +752,29 @@ async def telegram_webhook(
     try:
         # Obtener Telegram client para esta instancia
         telegram_client = await _get_telegram_client(instance_id, ctx.telegram_config.bot_token)
+
+        # =====================================================================
+        # CALLBACK QUERY HANDLING (inline keyboard button presses)
+        # =====================================================================
+        # Telegram sends callback_query updates to the SAME webhook URL as messages.
+        # Check for callback_query BEFORE the normal message processing.
+        callback_query = update.get("callback_query")
+        if callback_query:
+            logger.info(
+                "callback_query_received",
+                instance_id=ctx.instance_id,
+                callback_id=callback_query.get("id"),
+                data=callback_query.get("data")[:50] if callback_query.get("data") else None,
+            )
+            result = await _process_callback_query(
+                ctx=ctx,
+                telegram_client=telegram_client,
+                callback_query=callback_query,
+                update_id=update_id,
+                r=r,
+                idempotency_key=idempotency_key,
+            )
+            return result
 
         # Extraer mensaje
         message = update.get("message") or update.get("edited_message")
@@ -1590,6 +1713,7 @@ async def telegram_callback(
     Callback query handler for command confirmations.
 
     Handles inline keyboard callbacks: confirm:<command_id> / cancel:<command_id>
+    Delegates to shared _process_callback_query implementation.
     """
     # Verificar que el instance_id del path coincide con el resuelto
     if ctx.instance_id != instance_id:
@@ -1628,12 +1752,11 @@ async def telegram_callback(
     if not chat_id or not message_id:
         raise HTTPException(400, "Invalid callback message")
 
-    # Idempotency check for callback
+    # Get Redis connection for idempotency
     from core.hermes.config import get_global_settings
-
-    settings = get_global_settings()
     import redis
 
+    settings = get_global_settings()
     r = redis.Redis(
         host=settings.REDIS_HOST,
         port=settings.REDIS_PORT,
@@ -1642,6 +1765,7 @@ async def telegram_callback(
         decode_responses=True,
     )
 
+    # Idempotency check for callback (only needed for callback endpoint path)
     callback_id = callback_query.get("id")
     callback_idempotency_key = f"telegram:callback:{callback_id}"
 
@@ -1651,58 +1775,19 @@ async def telegram_callback(
         # Duplicate callback - answer with 200 to avoid Telegram retries
         return {"success": True, "duplicate": True}
 
-    try:
-        # Resolver identidad -> UserContext
-        user_context = None
-        if telegram_user_id:
-            try:
-                user_context = await get_user_context(request)
-            except HTTPException:
-                pass  # Will be handled by executor
+    # Get telegram client
+    telegram_client = await _get_telegram_client(instance_id, ctx.telegram_config.bot_token)
 
-        if not user_context:
-            # Answer callback to remove loading state
-            telegram_client = await _get_telegram_client(instance_id, ctx.telegram_config.bot_token)
-            await telegram_client.answer_callback_query(callback_query["id"], text="No autorizado", show_alert=True)
-            r.set(callback_idempotency_key, "completed", ex=86400)
-            return {"success": True, "unauthorized": True}
-
-        # Crear executor y manejar callback
-        telegram_client = await _get_telegram_client(instance_id, ctx.telegram_config.bot_token)
-
-        # Create instance-specific audit logger
-        audit_logger = create_audit_logger(instance_config=ctx.instance_config)
-
-        # Create pending command store
-        store = PendingCommandStore(ctx.instance_id)
-
-        executor = CommandExecutor(
-            registry=command_registry,
-            store=store,
-            audit_logger=audit_logger,
-            company_context=ctx,
-            user_context=user_context,
-        )
-
-        await handle_command_callback(
-            executor=executor,
-            telegram=telegram_client,
-            chat_id=chat_id,
-            message_id=message_id,
-            callback_data=callback_data,
-            telegram_user_id=telegram_user_id,
-        )
-
-        # Answer callback query (remove loading state)
-        await telegram_client.answer_callback_query(callback_query["id"])
-
-        r.set(callback_idempotency_key, "completed", ex=86400)
-        return {"success": True}
-
-    except Exception as e:
-        logger.error("callback_processing_failed", instance_id=instance_id, error=str(e))
-        r.delete(callback_idempotency_key)  # Permitir reintento
-        raise HTTPException(500, "Processing failed")
+    # Delegate to shared callback processing
+    result = await _process_callback_query(
+        ctx=ctx,
+        telegram_client=telegram_client,
+        callback_query=callback_query,
+        update_id=update.get("update_id", 0),
+        r=r,
+        idempotency_key=idempotency_key,
+    )
+    return result
 
 
 # =========================================================================
