@@ -708,37 +708,80 @@ async def telegram_webhook(
             try:
                 # Import here to avoid circular imports
                 from core.hermes.invoices import create_document_ingestion_service
+                from core.hermes.commands.store import PendingCommandStore
+                from core.hermes.commands.models import CommandType, CommandPreview, PendingCommand, CommandStatus
+                from core.hermes.audit import create_audit_logger
+                from uuid import UUID, uuid4
+                from datetime import datetime, timedelta
+                from dataclasses import asdict
 
                 ingestion_service = create_document_ingestion_service(ctx, user_context, telegram_client)
-                result = await ingestion_service.ingest(file_id, filename, mime_type)
+                result = await ingestion_service.ingest_from_telegram(file_id, filename, mime_type)
 
                 if result.success and result.preview_text:
-                    # FASE 36: Preview ONLY - no ERP writes yet
-                    # Send custom preview with disabled confirm button
-                    from core.integrations.telegram.client import TelegramMessage
-                    from uuid import uuid4
+                    # Create pending command directly for supplier invoice (ingestion already generated preview)
+                    # Use canonical callback format: confirm:<command_id> / cancel:<command_id>
+                    command_id = uuid4()
+                    document_hash = result.draft.document_hash
 
-                    # Build inline keyboard with disabled confirm button
-                    keyboard = {
-                        "inline_keyboard": [
-                            [
-                                {"text": "🔒 Confirmar (Fase 36 - Solo Preview)", "callback_data": "disabled:fase36_preview"},
-                                {"text": "❌ Cancelar", "callback_data": f"cancel:{uuid4()}"},
-                            ]
-                        ]
-                    }
+                    audit_logger = create_audit_logger(instance_config=ctx.instance_config)
+                    store = PendingCommandStore(ctx.instance_id)
 
-                    await telegram_client.send_message(
+                    # Convert draft to serializable dict
+                    draft_dict = asdict(result.draft)
+
+                    pending = PendingCommand(
+                        command_id=command_id,
+                        instance_id=ctx.instance_id,
+                        telegram_user_id=user_context.telegram_user_id,
+                        dolibarr_user_id=user_context.dolibarr_user_id,
+                        command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+                        validated_payload={
+                            "draft": draft_dict,
+                            "document_hash": document_hash,
+                            "file_content": result.file_content,
+                            "filename": result.filename,
+                            "mime_type": result.mime_type,
+                        },
+                        status=CommandStatus.PENDING,
+                        created_at=datetime.now(),
+                        expires_at=datetime.now() + timedelta(hours=24),
+                        idempotency_key=str(command_id),
+                        document_hash=document_hash,
+                    )
+                    store.create(pending)
+
+                    # Create preview object for sending with canonical buttons
+                    preview = CommandPreview(
+                        command_type=CommandType.CREATE_SUPPLIER_INVOICE,
+                        summary=result.preview_text,
+                        structured_data=pending.validated_payload,
+                        command_id=command_id,
+                    )
+
+                    # Send preview with canonical confirm/cancel buttons
+                    await send_command_preview(
+                        telegram=telegram_client,
                         chat_id=chat_id,
-                        text=result.preview_text,
-                        reply_markup=keyboard,
-                        parse_mode="HTML",
+                        preview=preview,
                     )
                     # Delete processing message
                     try:
                         await telegram_client.delete_message(chat_id, processing_msg.message_id)
                     except Exception:
                         pass
+
+                    # Audit preview creation
+                    if audit_logger:
+                        await audit_logger.log_from_context(
+                            ctx,
+                            action="command.preview",
+                            resource_type="supplier_invoice",
+                            resource_id=str(command_id),
+                            success=True,
+                            new_state={"preview": result.preview_text, "payload": pending.validated_payload},
+                            idempotency_key=str(command_id),
+                        )
 
                 else:
                     # Error - send error message

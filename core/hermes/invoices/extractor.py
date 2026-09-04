@@ -232,7 +232,7 @@ class InvoiceExtractor:
     def __init__(
         self,
         instance_config: InstanceConfig,
-        ollama_timeout: float = 900.0,
+        ollama_timeout: float = 1800.0,
         ocr_dpi: int = 150,
         max_pages: int = 10,
     ):
@@ -935,9 +935,11 @@ Devuelve SOLO el JSON válido, sin texto adicional.
         """Check if Ollama model is ready."""
         try:
             # Simple health check - try to generate a minimal response
+            # think=False to avoid thinking model overhead
             result = await self.provider.generate(
                 prompt="OK",
                 num_predict=1,
+                think=False,
                 request_timeout=self.ollama_timeout,
             )
             return True

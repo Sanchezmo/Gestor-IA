@@ -75,6 +75,7 @@ class DolibarrClient:
                 "DOLAPIKEY": self.api_key,
                 "Accept": "application/json",
                 "Content-Type": "application/json",
+                "Accept-Encoding": "identity",
             },
             timeout=self.timeout,
         )
@@ -173,6 +174,20 @@ class DolibarrClient:
 
             if response.status_code == 204:  # No content
                 return {}
+
+            # Handle Dolibarr responses with prepended/appended log errors (server misconfiguration)
+            # Response body may contain log errors before and after the actual JSON
+            text = response.text
+            json_start = text.find("{")
+            if json_start >= 0:
+                # Extract first valid JSON object using raw_decode
+                try:
+                    import json
+                    decoder = json.JSONDecoder()
+                    obj, end = decoder.raw_decode(text[json_start:])
+                    return obj
+                except json.JSONDecodeError:
+                    pass  # Fall through to response.json()
 
             return response.json()
 

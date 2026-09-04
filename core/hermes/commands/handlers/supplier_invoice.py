@@ -681,12 +681,7 @@ class ConfirmSupplierInvoiceHandler(CommandHandler):
                     await client.add_supplier_invoice_line(invoice_id, line_data)
 
                 # ============================================================
-                # STEP 5: Validate Invoice
-                # ============================================================
-                await client.validate_supplier_invoice(invoice_id)
-
-                # ============================================================
-                # STEP 6: Post-Write Verification (Mandatory)
+                # STEP 5: Post-Write Verification (Mandatory)
                 # ============================================================
                 created_invoice = await client.get_supplier_invoice(invoice_id)
 

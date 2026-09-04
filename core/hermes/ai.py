@@ -69,12 +69,18 @@ class OllamaProvider(AIProvider):
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self, timeout: float | None = None) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(
-                base_url=self.endpoint,
-                timeout=timeout or self.default_timeout,
-            )
-        return self._client
+        # Always create a new client with the requested timeout to avoid
+        # timeout caching bugs where first request's timeout is used for all.
+        # Overhead is minimal for local Ollama.
+        return httpx.AsyncClient(
+            base_url=self.endpoint,
+            timeout=httpx.Timeout(
+                connect=10.0,
+                read=timeout or self.default_timeout,
+                write=30.0,
+                pool=10.0,
+            ),
+        )
 
     async def generate(
         self,
@@ -94,6 +100,7 @@ class OllamaProvider(AIProvider):
             "stream": False,
             "temperature": temperature,
             "num_predict": max_tokens,
+            "keep_alive": "30m",  # Keep model loaded for 30 minutes
             **kwargs,
         }
         if format_schema:
@@ -128,6 +135,7 @@ class OllamaProvider(AIProvider):
             "stream": False,
             "temperature": temperature,
             "num_predict": max_tokens,
+            "keep_alive": "30m",  # Keep model loaded for 30 minutes
             **kwargs,
         }
         if format_schema:

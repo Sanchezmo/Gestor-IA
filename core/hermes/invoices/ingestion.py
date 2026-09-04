@@ -85,6 +85,9 @@ class IngestionResult:
         error_code: str | None = None,
         preview_text: str | None = None,
         stored_path: str | None = None,
+        file_content: bytes | None = None,
+        filename: str | None = None,
+        mime_type: str | None = None,
     ):
         self.success = success
         self.draft = draft
@@ -92,6 +95,9 @@ class IngestionResult:
         self.error_code = error_code
         self.preview_text = preview_text
         self.stored_path = stored_path
+        self.file_content = file_content
+        self.filename = filename
+        self.mime_type = mime_type
 
 
 # =========================================================================
@@ -709,6 +715,9 @@ class DocumentIngestionService:
                 draft=draft,
                 preview_text=preview_text,
                 stored_path=stored_path,
+                file_content=file_content,
+                filename=filename,
+                mime_type=mime_type,
             )
 
         except LocalModelUnavailableError:
