@@ -30,6 +30,7 @@ ai:
   ollama_endpoint: http://127.0.0.1:11434
   ollama_model: qwen3.5:4b-invoice
   ollama_vision_model: null
+  ollama_ocr_model: "AuditAid/PaddleOCR-VL-1.6-0.9B:latest"
   nvidia_api_key: null
   nvidia_base_url: https://integrate.api.nvidia.com/v1
   nvidia_text_model: null

@@ -57,4 +57,4 @@ MagicMock/
 
 # Backups
 *.bak
-*.backup
+.atl/.skill-registry.cache.json

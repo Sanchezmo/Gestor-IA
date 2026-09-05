@@ -32,7 +32,7 @@ stop_services() {
     log_step "Parando servicios nativos..."
     
     # Parar Hermes primero
-    sudo -n systemctl stop hermes-development
+    sudo -n systemctl stop hermes-gestor-ia
     
     # Parar infraestructura (orden inverso)
     sudo -n systemctl stop ollama cloudflared apache2 redis-server mariadb 2>/dev/null || true

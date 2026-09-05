@@ -258,6 +258,20 @@ class InvoiceExtractor:
             timeout=ollama_timeout,
         )
 
+        # Optional OCR provider (PaddleOCR-VL)
+        self.ocr_provider: AIProvider | None = None
+        if ai_config.ollama_ocr_model:
+            self.ocr_provider = create_ai_provider(
+                provider_type="ollama",
+                endpoint=ai_config.ollama_endpoint,
+                model=ai_config.ollama_ocr_model,
+                vision_model=ai_config.ollama_ocr_model,
+                timeout=ollama_timeout,
+            )
+            logger.info("ocr_provider_enabled", model=ai_config.ollama_ocr_model)
+        else:
+            logger.info("ocr_provider_disabled", reason="ollama_ocr_model not configured")
+
     async def extract(self, file_content: bytes, filename: str, mime_type: str) -> ExtractionResult:
         """
         Main entry point: extract invoice data from document.
@@ -302,13 +316,24 @@ class InvoiceExtractor:
                 raw_text, has_native_text, page_images, page_count = await self._process_pdf(temp_file_path)
                 native_text_chars = len(raw_text) if raw_text else 0
 
-                # If no native text layer, use vision-based structured extraction directly on page images
+                # If no native text layer, try PaddleOCR first, then fallback to vision
                 if not has_native_text and page_images:
-                    logger.info("pdf_no_native_text_vision_extraction", pages=len(page_images))
-                    extracted_data = await self._extract_structured_data_via_vision(page_images)
-                    inference_count += 1
+                    logger.info("pdf_no_native_text_trying_paddleocr", pages=len(page_images))
+                    ocr_text = await self._ocr_via_paddleocr(page_images)
+                    
+                    if ocr_text and len(ocr_text.strip()) >= 50:
+                        # OCR succeeded - use text-based path
+                        raw_text = ocr_text
+                        has_native_text = True
+                        native_text_chars = len(ocr_text)
+                        logger.info("paddleocr_sufficient_text_using_text_path", chars=len(ocr_text))
+                    else:
+                        # OCR insufficient - fallback to vision
+                        logger.info("paddleocr_insufficient_text_falling_back_to_vision", chars=len(ocr_text) if ocr_text else 0)
+                        extracted_data = await self._extract_structured_data_via_vision(page_images)
+                        inference_count += 1
                 else:
-                    # Has native text - use text-based extraction (fallback)
+                    # Has native text - use text-based extraction
                     if not raw_text or len(raw_text.strip()) < 20:
                         return ExtractionResult(
                             success=False,
@@ -317,17 +342,30 @@ class InvoiceExtractor:
                             requires_review=True,
                         )
             else:
-                # Image - use vision-based structured extraction directly
+                # Image - try PaddleOCR first, then fallback to vision
                 page_count = 1
                 # Read image bytes directly
                 with open(temp_file_path, "rb") as f:
                     image_bytes = f.read()
                 page_images = [image_bytes]
-                extracted_data = await self._extract_structured_data_via_vision(page_images)
-                inference_count += 1
-                native_text_chars = 0
-                has_native_text = False
-                raw_text = ""  # No raw text for vision-based extraction
+                
+                logger.info("image_trying_paddleocr")
+                ocr_text = await self._ocr_via_paddleocr(page_images)
+                
+                if ocr_text and len(ocr_text.strip()) >= 50:
+                    # OCR succeeded - use text-based path
+                    raw_text = ocr_text
+                    has_native_text = True
+                    native_text_chars = len(ocr_text)
+                    logger.info("paddleocr_sufficient_text_using_text_path", chars=len(ocr_text))
+                else:
+                    # OCR insufficient - fallback to vision
+                    logger.info("paddleocr_insufficient_text_falling_back_to_vision", chars=len(ocr_text) if ocr_text else 0)
+                    extracted_data = await self._extract_structured_data_via_vision(page_images)
+                    inference_count += 1
+                    native_text_chars = 0
+                    has_native_text = False
+                    raw_text = ""
 
             # Document classification (skip if we already have extracted_data from vision)
             if 'extracted_data' not in locals():
@@ -509,47 +547,107 @@ class InvoiceExtractor:
                 except Exception:
                     pass
 
+    async def _ocr_via_paddleocr(self, page_images: list[bytes]) -> str:
+        """
+        OCR via PaddleOCR-VL 0.9B model.
+        
+        Processes each page/image individually with the OCR model,
+        concatenates results with page separators.
+        Returns clean combined text or empty string on failure.
+        """
+        if not self.ocr_provider:
+            logger.debug("paddleocr_not_configured")
+            return ""
+        
+        if not page_images:
+            logger.warning("paddleocr_no_images")
+            return ""
+        
+        ocr_texts = []
+        for i, img_bytes in enumerate(page_images):
+            try:
+                import tempfile
+                temp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                        tmp.write(img_bytes)
+                        temp_path = tmp.name
+                    
+                    result = await self.ocr_provider.vision(
+                        think=False,
+                        image_path=temp_path,
+                        prompt="Extract ALL text from this invoice image. Return only the raw text content.",
+                        request_timeout=self.ollama_timeout,
+                    )
+                    page_text = str(result.get("text", "")).strip()
+                    if page_text:
+                        ocr_texts.append(f"\n\n--- PÁGINA {i+1} ---\n\n{page_text}")
+                    else:
+                        ocr_texts.append(f"\n\n--- PÁGINA {i+1} ---\n\n[Sin texto detectado]")
+                        
+                finally:
+                    if temp_path and os.path.exists(temp_path):
+                        try:
+                            os.unlink(temp_path)
+                        except Exception:
+                            pass
+                            
+            except Exception as e:
+                logger.error("paddleocr_page_failed", page=i+1, error=str(e))
+                ocr_texts.append(f"\n\n--- PÁGINA {i+1} ---\n\n[Error OCR: {str(e)}]")
+        
+        combined = "".join(ocr_texts).strip()
+        logger.info("paddleocr_completed", pages=len(page_images), chars=len(combined))
+        return combined
+
     async def _extract_structured_data_via_vision(self, page_images: list[bytes]) -> dict[str, Any]:
         """
         Extract structured invoice data directly from page images using vision model with JSON schema.
 
         This bypasses OCR + text extraction and uses the vision model's ability to
         understand document layout and extract structured data directly.
+
+        Supports multi-page PDFs: all pages are sent to the vision model in a single request,
+        and the model is instructed to extract from all pages, combine lines, and avoid duplicates.
         """
         if not page_images:
             raise ValueError("No page images provided for vision extraction")
 
-        # Use the first page for extraction (multi-page invoices: first page usually has header + first lines)
-        # For multi-page, we could send multiple images but Ollama vision typically handles one image at a time
-        primary_image = page_images[0]
-
+        import base64
         import tempfile
-        temp_path = None
+        import os
+
+        # Convert all page images to base64 for Ollama multi-image request
+        # Ollama supports multiple images in one request via the "images" array
+        base64_images = [
+            base64.b64encode(img_bytes).decode() for img_bytes in page_images
+        ]
+
+        # Write the first page to a temp file so OllamaProvider.vision()
+        # has a valid image_path (it requires image_path: str, not None).
+        # All images are passed in the "images" kwarg, which overwrites
+        # the single-image "images": [b64] in the payload via **kwargs spread.
+        first_temp_path = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                tmp.write(primary_image)
-                temp_path = tmp.name
+                tmp.write(page_images[0])
+                first_temp_path = tmp.name
 
-            prompt = """
-Extrae la información de la factura de proveedor de esta imagen y devuelve JSON según el esquema.
+            # Build prompt that instructs model to extract from ALL pages, combine lines, avoid duplicates
+            # Primary data (supplier, invoice number, date, totals) come from first page
+            prompt = self._build_multi_page_vision_prompt(len(page_images))
 
-REGLAS IMPORTANTES:
-- Fechas: DEVUELVE SIEMPRE en formato ISO YYYY-MM-DD (ej: 2026-08-27). NO uses DD/MM/YYYY ni concatenes día+mes.
-- Líneas: EXTRAE TODAS las líneas de detalle visibles, incluidas líneas con IVA 0%, ajustes negativos.
-- Impuestos: DEVUELVE array "taxes" con TODOS los tipos de IVA (21%, 10%, 4%, 0%) incluyendo base, rate, amount.
-- Retenciones: Si hay retenciones (IRPF, etc.), extrae CADA UNA en "withholdings" con: concept (IRPF/IVA soportado...), rate, base, amount (POSITIVO).
-- NO omitas "withholdings" ni "taxes" si existen en el documento.
-- Si NO hay retenciones, devuelve "withholdings": []. "withholding_total" es la suma de amounts.
-
-Devuelve SOLO el JSON válido, sin texto adicional.
-"""
-
+            # Send all images in a single Ollama vision request.
+            # The "images" kwarg contains all base64-encoded pages;
+            # **kwargs spread in OllamaProvider.vision() overwrites
+            # the "images": [b64] computed from the temp file.
             result = await self.provider.vision(
                 think=False,
-                image_path=temp_path,
+                image_path=first_temp_path,
                 prompt=prompt,
                 request_timeout=self.ollama_timeout,
                 format=json.dumps(INVOICE_JSON_SCHEMA),
+                images=base64_images,
             )
 
             json_str = result.get("text", "").strip()
@@ -557,17 +655,71 @@ Devuelve SOLO el JSON válido, sin texto adicional.
             return data
 
         except json.JSONDecodeError as e:
-            logger.error("vision_structured_extraction_invalid_json", error=str(e), response=json_str[:500] if 'json_str' in locals() else "no response")
+            logger.error("vision_structured_extraction_invalid_json", error=str(e))
             raise
         except Exception as e:
             logger.error("vision_structured_extraction_failed", error=str(e))
             raise
         finally:
-            if temp_path and os.path.exists(temp_path):
+            if first_temp_path and os.path.exists(first_temp_path):
                 try:
-                    os.unlink(temp_path)
+                    os.unlink(first_temp_path)
                 except Exception:
                     pass
+
+    def _build_multi_page_vision_prompt(self, page_count: int) -> str:
+        """
+        Build prompt for multi-page vision extraction.
+
+        Instructs the model to:
+        - Extract from ALL pages
+        - Combine lines from all pages, avoiding duplicates
+        - Primary data (supplier, invoice number, date, totals) from first page
+        - Output only valid JSON according to INVOICE_JSON_SCHEMA
+        """
+        base_prompt = """
+Extrae la información de la factura de proveedor de todas las páginas y devuelve JSON según el esquema.
+
+PÁGINAS: Este documento tiene {page_count} páginas. Extrae información de TODAS las páginas.
+
+PROCESAMIENTO:
+- Proveedor, número de factura, fecha, totales: PROVENEN de la PÁGINA 1 (cabeza de factura).
+- Líneas de detalle: EXTRAE de TODAS las páginas, COMPBINA todas las líneas y ELIMINA duplicados (mismas descripción+cantidad+precio_unitario en diferentes páginas cuentan una sola vez).
+- Impuestos: DEVUELVE array "taxes" con TODOS los tipos de IVA (21%, 10%, 4%, 0%) incluyendo base, rate, amount.
+- Retenciones: Si hay retenciones (IRPF, etc.), extrae CADA UNA en "withholdings" con: concept (IRPF/IVA soportado...), rate, base, amount (POSITIVO).
+- NO omitas "withholdings" ni "taxes" si existen en el documento.
+- Si NO hay retenciones, devuelve "withholdings": []. "withholding_total" es la suma de amounts.
+
+FORMATEO:
+- Fechas: DEVUELVE SIEMPRE en formato ISO YYYY-MM-DD (ej: 2026-08-27). NOuses DD/MM/YYYY ni concatenes día+mes.
+- Líneas: EXTRAE TODAS las líneas de detalle visibles, incluidas líneas con IVA 0%, ajustes negativos.
+- Cada línea requiere: description, quantity, unit_price. Optional: discount_percent, product_ref, vat_rate.
+
+Devuelve SOLO el JSON válido, sin texto adicional, ajustado al esquema INVOICE_JSON_SCHEMA.
+""".format(page_count=page_count)
+
+        # Add page-specific instructions
+        if page_count == 1:
+            base_prompt += """
+IMPORTANTE: Esta es una sola página. Extrae todas las líneas y datos de esta página única.
+"""
+        else:
+            base_prompt += f"""
+IMPORTANTE: Este documento tiene {page_count} páginas. Extrae líneas de TODAS las páginas y combina sin duplicados.
+
+Para combinar líneas entre páginas: si una línea aparece en múltiples páginas (misma descripción, cantidad y precio unitario), inclúyela solo una vez en el resultado final. Prioriza los datos de la página 1 para campos superpuestos (precios, cantidades, descripciones).
+"""
+
+        base_prompt += """
+Estructura esperada (JSON solo, sin texto adicional):
+"""
+
+        # Include schema reference
+        base_prompt += json.dumps(INVOICE_JSON_SCHEMA, indent=2)
+
+        return base_prompt
+
+
 
     # =========================================================================
     # DOCUMENT CLASSIFICATION

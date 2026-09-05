@@ -45,9 +45,9 @@ class InternalSecretsRotation(RotationBase):
             raise PreflightError(f"Missing keys in .env: {missing}")
 
         # Check Hermes service
-        res = run_cmd(["systemctl", "status", "hermes-development"], check=False, sudo=True)
+        res = run_cmd(["systemctl", "status", "hermes-gestor-ia"], check=False, sudo=True)
         if res.returncode not in (0, 3):
-            raise PreflightError("hermes-development service not found")
+            raise PreflightError("hermes-gestor-ia service not found")
 
         print("    Current secrets:")
         for k in required:
@@ -59,8 +59,8 @@ class InternalSecretsRotation(RotationBase):
         env_file = get_global_env_path()
         backup.files[env_file] = env_file.read_text()
 
-        res = run_cmd(["systemctl", "is-active", "hermes-development"], check=False, sudo=True)
-        backup.service_state["hermes-development"] = res.returncode == 0
+        res = run_cmd(["systemctl", "is-active", "hermes-gestor-ia"], check=False, sudo=True)
+        backup.service_state["hermes-gestor-ia"] = res.returncode == 0
 
         return backup
 
@@ -85,9 +85,9 @@ class InternalSecretsRotation(RotationBase):
             result.changed_files.extend(changed)
 
             # Restart Hermes
-            run_cmd(["systemctl", "restart", "hermes-development"], check=False, sudo=True)
+            run_cmd(["systemctl", "restart", "hermes-gestor-ia"], check=False, sudo=True)
             time.sleep(3)
-            result.changed_services.append("hermes-development")
+            result.changed_services.append("hermes-gestor-ia")
 
         result.message = "Internal secrets rotated"
         return result

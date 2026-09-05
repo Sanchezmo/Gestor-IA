@@ -35,7 +35,7 @@ start_services() {
     sudo -n systemctl start mariadb redis-server apache2 cloudflared ollama 2>/dev/null || true
     
     # Hermes (después de la infraestructura)
-    sudo -n systemctl start hermes-development
+    sudo -n systemctl start hermes-gestor-ia
     
     log_info "Esperando a que los servicios estén listos..."
     sleep 3
@@ -55,7 +55,7 @@ check_health() {
     fi
     
     # Verificar servicios systemd
-    for svc in mariadb redis-server apache2 cloudflared ollama hermes-development; do
+    for svc in mariadb redis-server apache2 cloudflared ollama hermes-gestor-ia; do
         if sudo -n systemctl is-active "$svc" >/dev/null 2>&1; then
             log_info "$svc: activo"
         else

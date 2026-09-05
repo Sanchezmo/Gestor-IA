@@ -1,6 +1,6 @@
 # Gestor-IA
 
-Plataforma empresarial multiempresa y multisector asistida por IA — on-premise, multiinstancia, con aislamiento probado.
+Plataforma empresarial multiempresa y multisectorial asistida por IA — on-premise, multiinstancia, con aislamiento probado.
 
 ---
 

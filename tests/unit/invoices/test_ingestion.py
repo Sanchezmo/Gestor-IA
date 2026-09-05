@@ -842,8 +842,8 @@ class TestCrashRecovery:
         durable_record.dolibarr_invoice_ref = "FAC-2024-001"
         durable_record.attachment_uploaded = False
 
-        with patch.object(service.idempotency_manager, 'get_by_document_hash', new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = durable_record
+        with patch.object(service.idempotency_manager, 'check_duplicate', new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = durable_record
             service.redis.hgetall = MagicMock(return_value={})
 
             with patch.object(service.supplier_resolver, 'resolve', new_callable=AsyncMock) as mock_resolve:
@@ -878,8 +878,8 @@ class TestCrashRecovery:
         durable_record.invoice_dolibarr_id = 456
         durable_record.attachment_uploaded = False
 
-        with patch.object(service.idempotency_manager, 'get_by_document_hash', new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = durable_record
+        with patch.object(service.idempotency_manager, 'check_duplicate', new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = durable_record
             service.redis.hgetall = MagicMock(return_value={})
 
             with patch.object(service.supplier_resolver, 'resolve', new_callable=AsyncMock) as mock_resolve:
@@ -916,11 +916,14 @@ class TestCrashRecovery:
         durable_record.dolibarr_invoice_ref = "FAC-2024-001"
         durable_record.attachment_uploaded = True
 
-        with patch.object(service.idempotency_manager, 'get_by_document_hash', new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = durable_record
+        with patch.object(service.idempotency_manager, 'check_duplicate', new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = durable_record
             service.redis.hgetall = MagicMock(return_value={})
 
-            result = await service.ingest_bytes(sample_pdf_content, "test.pdf", "application/pdf")
+            with patch.object(service.extractor, 'extract', new_callable=AsyncMock) as mock_extract:
+                mock_extract.return_value = MagicMock(success=True, draft=valid_draft)
+
+                result = await service.ingest_bytes(sample_pdf_content, "test.pdf", "application/pdf")
 
             assert result.success is False
             assert result.error_code == "DOCUMENT_COMPLETED"
@@ -955,8 +958,8 @@ class TestRedisLossRecovery:
         # Redis is empty (total loss)
         service.redis.hgetall = MagicMock(return_value={})
 
-        with patch.object(service.idempotency_manager, 'get_by_document_hash', new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = durable_record
+        with patch.object(service.idempotency_manager, 'check_duplicate', new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = durable_record
 
             with patch.object(service.supplier_resolver, 'resolve', new_callable=AsyncMock) as mock_resolve:
                 mock_resolve.return_value = MagicMock(
@@ -1726,8 +1729,8 @@ class TestDurableStateMachineInvariants:
         durable_record.invoice_dolibarr_id = None
         durable_record.attachment_uploaded = False
 
-        with patch.object(service.idempotency_manager, 'get_by_document_hash', new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = durable_record
+        with patch.object(service.idempotency_manager, 'check_duplicate', new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = durable_record
             service.redis.hgetall = MagicMock(return_value={})
 
             with patch.object(service.supplier_resolver, 'resolve', new_callable=AsyncMock) as mock_resolve:
@@ -1939,8 +1942,8 @@ class TestRecoveryScenarios:
         durable_record.dolibarr_invoice_ref = "FAC-2024-001"
         durable_record.attachment_uploaded = False
 
-        with patch.object(service.idempotency_manager, 'get_by_document_hash', new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = durable_record
+        with patch.object(service.idempotency_manager, 'check_duplicate', new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = durable_record
             service.redis.hgetall = MagicMock(return_value={})
 
             with patch.object(service.supplier_resolver, 'resolve', new_callable=AsyncMock) as mock_resolve:
@@ -1975,8 +1978,8 @@ class TestRecoveryScenarios:
         durable_record.invoice_dolibarr_id = None
         durable_record.attachment_uploaded = False
 
-        with patch.object(service.idempotency_manager, 'get_by_document_hash', new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = durable_record
+        with patch.object(service.idempotency_manager, 'check_duplicate', new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = durable_record
             service.redis.hgetall = MagicMock(return_value={})
 
             with patch.object(service.supplier_resolver, 'resolve', new_callable=AsyncMock) as mock_resolve:
@@ -2011,8 +2014,8 @@ class TestRecoveryScenarios:
         durable_record.invoice_dolibarr_id = 456
         durable_record.attachment_uploaded = False
 
-        with patch.object(service.idempotency_manager, 'get_by_document_hash', new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = durable_record
+        with patch.object(service.idempotency_manager, 'check_duplicate', new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = durable_record
             service.redis.hgetall = MagicMock(return_value={})
 
             with patch.object(service.supplier_resolver, 'resolve', new_callable=AsyncMock) as mock_resolve:
@@ -2047,8 +2050,8 @@ class TestRecoveryScenarios:
         durable_record.invoice_dolibarr_id = 456
         durable_record.attachment_uploaded = False
 
-        with patch.object(service.idempotency_manager, 'get_by_document_hash', new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = durable_record
+        with patch.object(service.idempotency_manager, 'check_duplicate', new_callable=AsyncMock) as mock_check:
+            mock_check.return_value = durable_record
             service.redis.hgetall = MagicMock(return_value={})
 
             with patch.object(service.supplier_resolver, 'resolve', new_callable=AsyncMock) as mock_resolve:

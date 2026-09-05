@@ -236,7 +236,7 @@ def main():
     print("\n🔄 REINICIANDO SERVICIOS...")
     print("-" * 40)
 
-    for svc in ["mariadb", "redis-server", "hermes-development"]:
+    for svc in ["mariadb", "redis-server", "hermes-gestor-ia"]:
         result = run(["sudo", "systemctl", "restart", svc], check=False)
         if result.returncode == 0:
             print(f"  ✅ {svc} reiniciado")

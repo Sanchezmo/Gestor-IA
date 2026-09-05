@@ -105,6 +105,7 @@ class AIConfig(BaseModel):
     ollama_endpoint: str = "http://127.0.0.1:11434"
     ollama_model: str  # Requerido - ej: "qwen3.5:4b", "llama3.1:8b", etc.
     ollama_vision_model: str | None = None
+    ollama_ocr_model: str | None = None  # Modelo OCR dedicado (ej: PaddleOCR-VL)
 
     # NVIDIA (cloud)
     nvidia_api_key: str | None = None
@@ -409,6 +410,7 @@ ai:
   ollama_endpoint: "http://127.0.0.1:11434"  # VPS: http://ollama-server:11434 (remoto privado via WireGuard/VPN)
   ollama_model: "qwen3.5:4b"  # EJEMPLO - cambiar según modelo disponible
   ollama_vision_model: null
+  ollama_ocr_model: null
   nvidia_api_key: null
   nvidia_base_url: "https://integrate.api.nvidia.com/v1"
   nvidia_text_model: null

@@ -208,14 +208,14 @@ dev-install: install-python install-hermes ## Instalación solo desarrollo (sin 
 dev-start: ## Iniciar entorno DEVELOPMENT nativo (systemd)
 	@echo "$(GREEN)=== Iniciando DEVELOPMENT GESTOR-IA (native) ===$(NC)"
 	@sudo -n systemctl start mariadb redis-server apache2 cloudflared ollama 2>/dev/null || true
-	@sudo -n systemctl start hermes-development
+	@sudo -n systemctl start hermes-gestor-ia
 	@echo "$(GREEN)Esperando servicios...$(NC)"
 	@sleep 3
 	@curl -sf http://localhost:8000/health 2>/dev/null && echo "Hermes API: $(GREEN)OK$(NC)" || echo "Hermes API: $(RED)DOWN$(NC)"
 
 dev-stop: ## Parar entorno DEVELOPMENT nativo
 	@echo "$(YELLOW)=== Parando DEVELOPMENT GESTOR-IA (native) ===$(NC)"
-	@sudo -n systemctl stop hermes-development
+	@sudo -n systemctl stop hermes-gestor-ia
 	@sudo -n systemctl stop ollama cloudflared apache2 redis-server mariadb 2>/dev/null || true
 
 dev-restart: dev-stop dev-start ## Reiniciar entorno DEVELOPMENT nativo
@@ -227,7 +227,7 @@ dev-status: ## Ver estado de servicios DEVELOPMENT nativos
 	@sudo -n systemctl is-active apache2 >/dev/null 2>&1 && echo "Apache:     $(GREEN)active$(NC)" || echo "Apache:     $(RED)inactive$(NC)"
 	@sudo -n systemctl is-active cloudflared >/dev/null 2>&1 && echo "cloudflared:$(GREEN)active$(NC)" || echo "cloudflared:$(RED)inactive$(NC)"
 	@sudo -n systemctl is-active ollama >/dev/null 2>&1 && echo "Ollama:     $(GREEN)active$(NC)" || echo "Ollama:     $(RED)inactive$(NC)"
-	@sudo -n systemctl is-active hermes-development >/dev/null 2>&1 && echo "Hermes:     $(GREEN)active$(NC)" || echo "Hermes:     $(RED)inactive$(NC)"
+	@sudo -n systemctl is-active hermes-gestor-ia >/dev/null 2>&1 && echo "Hermes:     $(GREEN)active$(NC)" || echo "Hermes:     $(RED)inactive$(NC)"
 	@echo ""
 	@curl -sf http://localhost:8000/health 2>/dev/null && echo "Hermes API: $(GREEN)OK$(NC)" || echo "Hermes API: $(RED)DOWN$(NC)"
 
@@ -236,7 +236,7 @@ dev-health: ## Healthcheck completo DEVELOPMENT nativo
 	@.venv/bin/python -m core.hermes.cli healthcheck
 
 dev-logs: ## Ver logs Hermes DEVELOPMENT (systemd journal)
-	@sudo -n journalctl -u hermes-development -f
+	@sudo -n journalctl -u hermes-gestor-ia -f
 
 # =============================================================================
 # DOCKER (SOLO PARA TESTS/CI - NO PRODUCCIÓN)
