@@ -570,5 +570,263 @@ class TestInferMissingTotals:
         assert inferred.tax_total is None or inferred.tax_total == Decimal("21")
 
 
+# =========================================================================
+# TESTS FOR TAX BREAKDOWN BASE CORRECTION (GI-20260905-008)
+# =========================================================================
+
+class TestTaxBreakdownBaseCorrection:
+    """Tests for base correction in normalize_tax_data when model extracts base=0."""
+
+    def test_single_vat_base_zero_corrected(self):
+        """Test that base=0 from extraction is corrected to line-computed base."""
+        draft = SupplierInvoiceDraft(
+            document_hash="abc123",
+            document_filename="test.pdf",
+            document_mime_type="application/pdf",
+            document_size_bytes=1024,
+            supplier=SupplierInfo(name="Test", tax_id="B12345678"),
+            invoice_number="FAC-001",
+            invoice_number_source=InvoiceFieldSource.KNOWN,
+            invoice_date=date(2024, 1, 15),
+            invoice_date_source=InvoiceFieldSource.KNOWN,
+            currency="EUR",
+            lines=[
+                InvoiceLine(description="Product A", quantity=Decimal("2"), unit_price=Decimal("100"), vat_rate=Decimal("21")),
+            ],
+            # Model extracted base=0 (common when model doesn't compute base)
+            tax_breakdown=[
+                TaxBreakdownItem(rate=Decimal("21"), base=Decimal("0"), amount=Decimal("42"), source=InvoiceFieldSource.KNOWN),
+            ],
+            tax_total=Decimal("42"),
+            tax_total_source=InvoiceFieldSource.KNOWN,
+            subtotal=Decimal("200"),
+            subtotal_source=InvoiceFieldSource.KNOWN,
+            total=Decimal("242"),
+            total_source=InvoiceFieldSource.KNOWN,
+        )
+
+        normalized = normalize_tax_data(draft)
+
+        # Base should be corrected from 0 to 200 (computed from lines)
+        assert normalized.tax_breakdown[0].base == Decimal("200")
+        assert normalized.tax_breakdown[0].amount == Decimal("42")
+        assert normalized.tax_breakdown[0].rate == Decimal("21")
+
+    def test_multiple_vat_rates_each_base_correct(self):
+        """Test multiple VAT rates - each with correct base from lines."""
+        draft = SupplierInvoiceDraft(
+            document_hash="abc123",
+            document_filename="test.pdf",
+            document_mime_type="application/pdf",
+            document_size_bytes=1024,
+            supplier=SupplierInfo(name="Test", tax_id="B12345678"),
+            invoice_number="FAC-001",
+            invoice_number_source=InvoiceFieldSource.KNOWN,
+            invoice_date=date(2024, 1, 15),
+            invoice_date_source=InvoiceFieldSource.KNOWN,
+            currency="EUR",
+            lines=[
+                InvoiceLine(description="Product A", quantity=Decimal("1"), unit_price=Decimal("100"), vat_rate=Decimal("21")),
+                InvoiceLine(description="Product B", quantity=Decimal("2"), unit_price=Decimal("50"), vat_rate=Decimal("10")),
+            ],
+            # Model extracted both bases as 0
+            tax_breakdown=[
+                TaxBreakdownItem(rate=Decimal("21"), base=Decimal("0"), amount=Decimal("21"), source=InvoiceFieldSource.KNOWN),
+                TaxBreakdownItem(rate=Decimal("10"), base=Decimal("0"), amount=Decimal("10"), source=InvoiceFieldSource.KNOWN),
+            ],
+            tax_total=Decimal("31"),
+            tax_total_source=InvoiceFieldSource.KNOWN,
+            subtotal=Decimal("200"),
+            subtotal_source=InvoiceFieldSource.KNOWN,
+            total=Decimal("231"),
+            total_source=InvoiceFieldSource.KNOWN,
+        )
+
+        normalized = normalize_tax_data(draft)
+
+        # Both bases should be corrected from 0 to correct values
+        base_by_rate = {t.rate: t.base for t in normalized.tax_breakdown}
+        assert base_by_rate[Decimal("21")] == Decimal("100")  # 1 * 100
+        assert base_by_rate[Decimal("10")] == Decimal("100")  # 2 * 50
+
+    def test_lines_without_vat_no_breakdown(self):
+        """Test that lines with vat_rate=0 don't create VAT breakdown."""
+        draft = SupplierInvoiceDraft(
+            document_hash="abc123",
+            document_filename="test.pdf",
+            document_mime_type="application/pdf",
+            document_size_bytes=1024,
+            supplier=SupplierInfo(name="Test", tax_id="B12345678"),
+            invoice_number="FAC-001",
+            invoice_number_source=InvoiceFieldSource.KNOWN,
+            invoice_date=date(2024, 1, 15),
+            invoice_date_source=InvoiceFieldSource.KNOWN,
+            currency="EUR",
+            lines=[
+                InvoiceLine(description="Exempt service", quantity=Decimal("1"), unit_price=Decimal("100"), vat_rate=Decimal("0")),
+            ],
+            tax_breakdown=[],
+            tax_total=Decimal("0"),
+            tax_total_source=InvoiceFieldSource.KNOWN,
+            subtotal=Decimal("100"),
+            subtotal_source=InvoiceFieldSource.KNOWN,
+            total=Decimal("100"),
+            total_source=InvoiceFieldSource.KNOWN,
+        )
+
+        normalized = normalize_tax_data(draft)
+
+        # No VAT breakdown for 0% lines
+        assert len(normalized.tax_breakdown) == 0
+
+    def test_partial_tax_breakdown_completed(self):
+        """Test partial tax breakdown (missing base) is completed from lines."""
+        draft = SupplierInvoiceDraft(
+            document_hash="abc123",
+            document_filename="test.pdf",
+            document_mime_type="application/pdf",
+            document_size_bytes=1024,
+            supplier=SupplierInfo(name="Test", tax_id="B12345678"),
+            invoice_number="FAC-001",
+            invoice_number_source=InvoiceFieldSource.KNOWN,
+            invoice_date=date(2024, 1, 15),
+            invoice_date_source=InvoiceFieldSource.KNOWN,
+            currency="EUR",
+            lines=[
+                InvoiceLine(description="Product A", quantity=Decimal("3"), unit_price=Decimal("50"), vat_rate=Decimal("21")),
+            ],
+            # Partial breakdown - has rate and amount but base=0
+            tax_breakdown=[
+                TaxBreakdownItem(rate=Decimal("21"), base=Decimal("0"), amount=Decimal("31.50"), source=InvoiceFieldSource.KNOWN),
+            ],
+            tax_total=Decimal("31.50"),
+            tax_total_source=InvoiceFieldSource.KNOWN,
+            subtotal=Decimal("150"),
+            subtotal_source=InvoiceFieldSource.KNOWN,
+            total=Decimal("181.50"),
+            total_source=InvoiceFieldSource.KNOWN,
+        )
+
+        normalized = normalize_tax_data(draft)
+
+        assert normalized.tax_breakdown[0].base == Decimal("150")
+        assert normalized.tax_breakdown[0].amount == Decimal("31.50")
+
+    def test_monetary_rounding_correct(self):
+        """Test that monetary amounts round correctly to 2 decimals."""
+        draft = SupplierInvoiceDraft(
+            document_hash="abc123",
+            document_filename="test.pdf",
+            document_mime_type="application/pdf",
+            document_size_bytes=1024,
+            supplier=SupplierInfo(name="Test", tax_id="B12345678"),
+            invoice_number="FAC-001",
+            invoice_number_source=InvoiceFieldSource.KNOWN,
+            invoice_date=date(2024, 1, 15),
+            invoice_date_source=InvoiceFieldSource.KNOWN,
+            currency="EUR",
+            lines=[
+                InvoiceLine(description="Product A", quantity=Decimal("1"), unit_price=Decimal("33.33"), vat_rate=Decimal("21")),
+            ],
+            # 33.33 * 0.21 = 6.9993 -> should round to 7.00
+            tax_breakdown=[
+                TaxBreakdownItem(rate=Decimal("21"), base=Decimal("0"), amount=Decimal("7.00"), source=InvoiceFieldSource.KNOWN),
+            ],
+            tax_total=Decimal("7.00"),
+            tax_total_source=InvoiceFieldSource.KNOWN,
+            subtotal=Decimal("33.33"),
+            subtotal_source=InvoiceFieldSource.KNOWN,
+            total=Decimal("40.33"),
+            total_source=InvoiceFieldSource.KNOWN,
+        )
+
+        normalized = normalize_tax_data(draft)
+
+        assert normalized.tax_breakdown[0].base == Decimal("33.33")
+        # Amount should remain 7.00 (already correct from extraction)
+
+    def test_withholding_coexists_with_vat(self):
+        """Test withholding breakdown also corrects base=0 when coexisting with VAT."""
+        draft = SupplierInvoiceDraft(
+            document_hash="abc123",
+            document_filename="test.pdf",
+            document_mime_type="application/pdf",
+            document_size_bytes=1024,
+            supplier=SupplierInfo(name="Test", tax_id="B12345678"),
+            invoice_number="FAC-001",
+            invoice_number_source=InvoiceFieldSource.KNOWN,
+            invoice_date=date(2024, 1, 15),
+            invoice_date_source=InvoiceFieldSource.KNOWN,
+            currency="EUR",
+            lines=[
+                InvoiceLine(description="Services", quantity=Decimal("1"), unit_price=Decimal("1000"), vat_rate=Decimal("21")),
+            ],
+            tax_breakdown=[
+                TaxBreakdownItem(rate=Decimal("21"), base=Decimal("0"), amount=Decimal("210"), source=InvoiceFieldSource.KNOWN),
+            ],
+            tax_total=Decimal("210"),
+            tax_total_source=InvoiceFieldSource.KNOWN,
+            withholding_breakdown=[
+                # Model extracted withholding base=0
+                WithholdingBreakdownItem(concept="IRPF", rate=Decimal("15"), base=Decimal("0"), amount=Decimal("150"), source=InvoiceFieldSource.KNOWN),
+            ],
+            withholding_total=Decimal("150"),
+            withholding_total_source=InvoiceFieldSource.KNOWN,
+            subtotal=Decimal("1000"),
+            subtotal_source=InvoiceFieldSource.KNOWN,
+            total=Decimal("1060"),  # 1000 + 210 - 150 = 1060
+            total_source=InvoiceFieldSource.KNOWN,
+        )
+
+        normalized = normalize_tax_data(draft)
+
+        # VAT base corrected
+        assert normalized.tax_breakdown[0].base == Decimal("1000")
+        # Withholding base also corrected (should use subtotal as base)
+        assert normalized.withholding_breakdown[0].base == Decimal("1000")
+
+    def test_validation_base_vat_withholding_equals_total(self):
+        """Test validation: base + VAT + withholding = total (withholding negative)."""
+        draft = SupplierInvoiceDraft(
+            document_hash="abc123",
+            document_filename="test.pdf",
+            document_mime_type="application/pdf",
+            document_size_bytes=1024,
+            supplier=SupplierInfo(name="Test", tax_id="B12345678"),
+            invoice_number="PTM-2026-0905-TEST",
+            invoice_number_source=InvoiceFieldSource.KNOWN,
+            invoice_date=date(2026, 9, 5),
+            invoice_date_source=InvoiceFieldSource.KNOWN,
+            currency="EUR",
+            lines=[
+                InvoiceLine(description="Pintura interior", quantity=Decimal("1"), unit_price=Decimal("1451.90"), vat_rate=Decimal("21")),
+            ],
+            tax_breakdown=[
+                TaxBreakdownItem(rate=Decimal("21"), base=Decimal("0"), amount=Decimal("304.90"), source=InvoiceFieldSource.KNOWN),
+            ],
+            tax_total=Decimal("304.90"),
+            tax_total_source=InvoiceFieldSource.KNOWN,
+            withholding_breakdown=[
+                WithholdingBreakdownItem(concept="IRPF", rate=Decimal("5"), base=Decimal("0"), amount=Decimal("72.60"), source=InvoiceFieldSource.KNOWN),
+            ],
+            withholding_total=Decimal("72.60"),
+            withholding_total_source=InvoiceFieldSource.KNOWN,
+            subtotal=Decimal("1451.90"),
+            subtotal_source=InvoiceFieldSource.KNOWN,
+            total=Decimal("1684.20"),  # 1451.90 + 304.90 - 72.60 = 1684.20
+            total_source=InvoiceFieldSource.KNOWN,
+        )
+
+        normalized = normalize_tax_data(draft)
+        from core.hermes.invoices.validator import validate_invoice
+        result = validate_invoice(normalized)
+
+        # Should be VALID
+        assert result.status == ValidationStatus.VALID
+        # Bases should be corrected
+        assert normalized.tax_breakdown[0].base == Decimal("1451.90")
+        assert normalized.withholding_breakdown[0].base == Decimal("1451.90")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

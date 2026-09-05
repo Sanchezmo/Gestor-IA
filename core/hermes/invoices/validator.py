@@ -92,7 +92,7 @@ def normalize_tax_data(draft: SupplierInvoiceDraft) -> SupplierInvoiceDraft:
                 amount = Decimal("0")
 
             # Ensure base field exists
-            if base is None and rate in base_by_rate:
+            if (base is None or base == 0) and rate in base_by_rate:
                 base = base_by_rate[rate]
 
             normalized_tax_breakdown.append(TaxBreakdownItem(
@@ -143,11 +143,16 @@ def normalize_tax_data(draft: SupplierInvoiceDraft) -> SupplierInvoiceDraft:
             base = wh.base
             concept = wh.concept
 
+            # If rate is valid but amount is missing/zero, compute amount from base
             if rate is not None and rate > 0 and (amount is None or amount == 0):
-                if base is None:
+                if base is None or base == 0:
                     # Withholding base is typically the taxable base (subtotal)
                     base = draft.subtotal or Decimal("0")
                 amount = (base * rate / Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+            # If base is missing/zero but we have subtotal, correct the base
+            if (base is None or base == 0) and draft.subtotal is not None:
+                base = draft.subtotal
 
             if amount is None:
                 amount = Decimal("0")
